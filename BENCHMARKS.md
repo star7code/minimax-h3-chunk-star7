@@ -12,6 +12,9 @@ This document records one local Windows/ComfyUI case. It is evidence for configu
 | Task | MiniMax H3 single-reference mode; one reference image connected |
 | Case A | 1.0MP portrait, 10 seconds, 24fps, approximately 243 frames |
 | Case B | 0.6MP portrait, 15 seconds, 24fps, approximately 362 frames |
+| Case C | 0.4MP portrait, 10 seconds, 24fps, approximately 243 frames |
+| Case D | 0.4MP portrait, 5 seconds, 24fps, approximately 124 frames |
+| Reference conditioning | [T8mars/comfyui-minimax-h3-audio-T8](https://github.com/T8mars/comfyui-minimax-h3-audio-T8), one reference image |
 | DiT | INT8 Tensorwise + ConvRot MiniMax H3 FL2VA |
 | Text encoder | Qwen3-VL 32B MiniMax H3 INT4 ConvRot |
 | Video VAE | MiniMax H3 video VAE INT8 ConvRot |
@@ -26,11 +29,11 @@ This document records one local Windows/ComfyUI case. It is evidence for configu
 
 | Attention path | Observed sampling time |
 |---|---:|
-| KJNodes Mem Efficient Sage | approximately 170 seconds/step |
+| KJNodes custom SM75 SageAttention 2 path | approximately 170 seconds/step |
 | KJNodes Low VRAM Attention, `head_chunks=4` | approximately 177 seconds/step |
 | Comfy Kitchen INT8 | approximately 120 seconds/step |
 
-Compared with the observed Sage path, CK INT8 reduced step time by approximately `50s`, or `29.4%`, and raised step throughput by approximately `1.42×`. Compared with Low VRAM Attention it reduced step time by approximately `57s`, or `32.2%`, for approximately `1.48×` throughput.
+Compared with the observed [KJNodes](https://github.com/kijai/ComfyUI-KJNodes) custom SM75 SageAttention 2 path, CK INT8 reduced step time by approximately `50s`, or `29.4%`, and raised step throughput by approximately `1.42×`. Compared with Low VRAM Attention it reduced step time by approximately `57s`, or `32.2%`, for approximately `1.48×` throughput. This is a Turing/SM75 result for the recorded local software stack, not a claim that CK is faster than Sage on every GPU architecture.
 
 The four denoising steps of the 1.0MP/10-second case account for approximately 480 seconds. The currently confirmed end-to-end results are:
 
@@ -38,8 +41,42 @@ The four denoising steps of the 1.0MP/10-second case account for approximately 4
 |---|---:|
 | 1.0MP, 10 seconds, 4-step Turbo LoRA | approximately 620 seconds |
 | 0.6MP, 15 seconds, 4-step Turbo LoRA | approximately 530 seconds |
+| 0.4MP, 10 seconds, 4-step Turbo LoRA | approximately 180 seconds |
+| 0.4MP, 5 seconds, 4-step Turbo LoRA | approximately 85 seconds |
 
-These totals include the current workflow's setup, decoding, super-resolution, audio work, and video output. Post-processing is still being tuned. Because the two cases use different spatial and temporal budgets, their total times are reported as observations rather than a linear speed comparison.
+These totals include the current workflow's setup, decoding, super-resolution, audio work, and video output. Post-processing is still being tuned. Because the four cases use different spatial and temporal budgets, their total times are reported as observations rather than a linear speed comparison.
+
+## Scaling model
+
+Let `S` be the packed H3 sequence length. A useful engineering approximation is:
+
+```text
+S ≈ S_condition + k × spatial_tokens × temporal_tokens
+T ≈ T_fixed + aS + bS² + T_post
+```
+
+RoPE, normalization, projections, and MLP work are primarily linear in `S`. Full self-attention includes QK/AV work that is approximately quadratic in `S`; memory-efficient kernels reduce residency but do not remove all attention arithmetic. VAE, super-resolution, and encoding add a separate component that is approximately proportional to pixels times frames plus fixed overhead.
+
+The A/C spatial-duration budget ratio is approximately `2.5×`, while the observed end-to-end time ratio is `620/180 ≈ 3.44×`. The C/D budget ratio is approximately `2×`, while the time ratio is `180/85 ≈ 2.12×`. These observations are consistent with a mixture of fixed, linear, quadratic-attention, and post-processing costs rather than one constant linear multiplier.
+
+Activation chunking does not reduce theoretical FLOPs. If a workload already fits dedicated VRAM without allocator pressure or host-memory migration, chunking alone should not be expected to improve speed and can add small-GEMM/kernel-launch overhead. The recorded 170-to-120 seconds/step improvement came primarily from selecting CK INT8 instead of the custom SM75 SageAttention 2 path.
+
+## VRAM tuning decision guide
+
+| Failure point | Primary control |
+|---|---|
+| eager split-half RoPE | reduce `chunk_tokens` |
+| `fc1`/SwiGLU/`fc2` activation | reduce `mlp_chunk_tokens` |
+| next-block prefetch | set `disable_dynamic_prefetch=true` |
+| QKV/attention | change or chunk the attention backend |
+| model loading | loader, quantization, or offload policy; chunk values do not apply yet |
+
+| Dedicated VRAM | RoPE start | MLP start | Prefetch |
+|---:|---:|---:|---|
+| 20–24GB | 8192 | 4096 | enabled first; disable after OOM |
+| 16–20GB | 4096 | 2048–4096 | disabled for validation |
+| 12–16GB | 2048–4096 | 1024–2048 | disabled |
+| below 12GB | 1024–2048 | 512–1024 | disabled; long-video success is not guaranteed |
 
 ## Memory observation
 
