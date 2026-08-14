@@ -19,6 +19,21 @@ RoPE 沿 sequence/token 维分块并原位写回 Q/K。MLP 按 token 分块计�
 
 ## 安装
 
+ComfyUI Manager / Comfy Registry：
+
+```text
+搜索：MiniMax H3 Activation Chunk - Star7
+包名：minimax-h3-chunk-star7
+```
+
+Comfy CLI：
+
+```bash
+comfy node install minimax-h3-chunk-star7
+```
+
+也可以从 GitHub 手动安装：
+
 ```text
 ComfyUI/
 └─ custom_nodes/
