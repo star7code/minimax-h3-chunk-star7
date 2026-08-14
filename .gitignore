@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+logs/
+test_outputs/
+.idea/
+.vscode/
+*.log
+Thumbs.db
+.DS_Store
+docs/assets/end-to-end-task-times.png
+create_workflow.py
