@@ -1,0 +1,21 @@
+[project]
+name = "minimax-h3-chunk-star7"
+version = "2.1.0"
+description = "RoPE and MLP activation chunking for ComfyUI MiniMax H3, with an optional Comfy Kitchen INT8 attention path."
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = []
+classifiers = [
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: GPU :: NVIDIA CUDA",
+]
+
+[project.urls]
+Repository = "https://github.com/star7code/minimax-h3-chunk-star7"
+Documentation = "https://github.com/star7code/minimax-h3-chunk-star7#readme"
+"Bug Tracker" = "https://github.com/star7code/minimax-h3-chunk-star7/issues"
+
+[tool.comfy]
+PublisherId = "star7code"
+DisplayName = "MiniMax H3 Activation Chunk - Star7"
