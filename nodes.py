@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.1.0"
+NODE_VERSION = "2.1.1"
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None

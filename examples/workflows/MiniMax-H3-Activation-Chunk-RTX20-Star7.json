@@ -763,69 +763,6 @@
       }
     },
     {
-      "id": 292,
-      "type": "RTXVideoSuperResolution",
-      "pos": [
-        -984.2639650337791,
-        5963.189786411657
-      ],
-      "size": [
-        285.8072916666667,
-        106
-      ],
-      "flags": {
-        "collapsed": false
-      },
-      "order": 21,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 319
-        }
-      ],
-      "outputs": [
-        {
-          "name": "upscaled_images",
-          "type": "IMAGE",
-          "links": [
-            410
-          ]
-        }
-      ],
-      "title": "RTX视频超分（可旁路）",
-      "properties": {
-        "cnr_id": "comfyui_nvidia_rtx_nodes",
-        "ver": "0.1.3",
-        "Node name for S&R": "RTXVideoSuperResolution",
-        "enableTabs": false,
-        "tabWidth": 65,
-        "tabXOffset": 10,
-        "hasSecondTab": false,
-        "secondTabText": "Send Back",
-        "secondTabOffset": 80,
-        "secondTabWidth": 65,
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "version": "7.5.2",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "scale by multiplier",
-        2.0,
-        "ULTRA"
-      ],
-      "widgets_values_named": {
-        "resize_type": "scale by multiplier",
-        "resize_type.scale": 1.5,
-        "quality": "ULTRA"
-      },
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
       "id": 121,
       "type": "VAELoader",
       "pos": [
@@ -1219,7 +1156,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            319
+            410
           ]
         }
       ],
@@ -1595,14 +1532,6 @@
       "AUDIO"
     ],
     [
-      319,
-      124,
-      0,
-      292,
-      0,
-      "IMAGE"
-    ],
-    [
       341,
       299,
       0,
@@ -1692,7 +1621,7 @@
     ],
     [
       410,
-      292,
+      124,
       0,
       150,
       0,

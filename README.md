@@ -201,7 +201,7 @@ attention_backend = existing
 - [通用工作流](examples/workflows/MiniMax-H3-Activation-Chunk-Star7.json)：普通 `UNETLoader`，适合自行选择原生、Sage或CK注意力的环境。
 - [RTX 20系工作流](examples/workflows/MiniMax-H3-Activation-Chunk-RTX20-Star7.json)：使用 Native FP16 Loader，并默认采用 CK INT8。
 
-两份工作流的参考条件由 [T8mars/comfyui-minimax-h3-audio-T8](https://github.com/T8mars/comfyui-minimax-h3-audio-T8) 提供，并保留一个 `ref_image_0` 接口。本次 A/B/C/D 案例均采用该 T8 参考节点的单参考图模式。仓库不附带可能存在版权或隐私问题的原始参考素材；导入后请把 `replace-with-your-reference-image.png` 替换为自己的图片。工作流还使用了 VideoHelperSuite、NVIDIA RTX Nodes 等可选节点；缺失节点需按 ComfyUI 提示安装。
+两份工作流的参考条件由 [T8mars/comfyui-minimax-h3-audio-T8](https://github.com/T8mars/comfyui-minimax-h3-audio-T8) 提供，并保留一个 `ref_image_0` 接口。本次 A/B/C/D 案例均采用该 T8 参考节点的单参考图模式。仓库不附带可能存在版权或隐私问题的原始参考素材；导入后请把 `replace-with-your-reference-image.png` 替换为自己的图片。为保证导入后可以直接生成，发布版已移除 NVIDIA RTX Video Super Resolution 节点，VAE 解码结果直接交给 VideoHelperSuite 封装；需要超分的用户可自行在解码后添加。
 
 ## 数值与兼容性
 
@@ -215,7 +215,7 @@ attention_backend = existing
 节点只对首个同形状 block 输出紧凑信息，例如：
 
 ```text
-[Star7 H3 Chunk] v2.1.0 active | blocks=... | fp16=...
+[Star7 H3 Chunk] v2.1.1 active | blocks=... | fp16=...
 [Star7 H3 Chunk] Attention profile (one block) | ...
 [Star7 H3 Chunk] MLP profile (one block) | chunks=... | weights=resident-quantized
 ```
