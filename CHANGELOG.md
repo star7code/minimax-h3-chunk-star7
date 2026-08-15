@@ -8,6 +8,11 @@
 - Clarified the RTX 20-series CK INT8 comparison against the custom SM75 SageAttention 2 path.
 - Linked the T8 single-reference conditioning node used by the example workflows.
 
+## 2.1.1 - 2026-08-15
+
+- Removed NVIDIA RTX Video Super Resolution from every packaged example workflow.
+- Connected VAE decode directly to video output so the examples no longer require RTX upscaler nodes or models.
+
 ## 2.1.0 - 2026-08-15
 
 - Added chunked, in-place eager split-half RoPE handling for MiniMax H3 Q/K tensors.
