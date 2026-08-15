@@ -8,6 +8,11 @@
 - Clarified the RTX 20-series CK INT8 comparison against the custom SM75 SageAttention 2 path.
 - Linked the T8 single-reference conditioning node used by the example workflows.
 
+## 2.1.2 - 2026-08-15
+
+- Replaced the external Jjk-Nodes prompt box with ComfyUI's built-in multiline text node in both packaged workflows.
+- Preserved the prompt node ID, position, size, content, and downstream link so the published layouts remain unchanged.
+
 ## 2.1.1 - 2026-08-15
 
 - Removed NVIDIA RTX Video Super Resolution from every packaged example workflow.

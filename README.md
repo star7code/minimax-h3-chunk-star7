@@ -201,7 +201,7 @@ attention_backend = existing
 - [通用工作流](examples/workflows/MiniMax-H3-Activation-Chunk-Star7.json)：普通 `UNETLoader`，适合自行选择原生、Sage或CK注意力的环境。
 - [RTX 20系工作流](examples/workflows/MiniMax-H3-Activation-Chunk-RTX20-Star7.json)：使用 Native FP16 Loader，并默认采用 CK INT8。
 
-两份工作流的参考条件由 [T8mars/comfyui-minimax-h3-audio-T8](https://github.com/T8mars/comfyui-minimax-h3-audio-T8) 提供，并保留一个 `ref_image_0` 接口。本次 A/B/C/D 案例均采用该 T8 参考节点的单参考图模式。仓库不附带可能存在版权或隐私问题的原始参考素材；导入后请把 `replace-with-your-reference-image.png` 替换为自己的图片。为保证导入后可以直接生成，发布版已移除 NVIDIA RTX Video Super Resolution 节点，VAE 解码结果直接交给 VideoHelperSuite 封装；需要超分的用户可自行在解码后添加。
+两份工作流的参考条件由 [T8mars/comfyui-minimax-h3-audio-T8](https://github.com/T8mars/comfyui-minimax-h3-audio-T8) 提供，并保留一个 `ref_image_0` 接口。本次 A/B/C/D 案例均采用该 T8 参考节点的单参考图模式。提示词输入已改用 ComfyUI 自带的 `Text (Multiline)`，不再要求安装 ComfyUI-Jjk-Nodes。仓库不附带可能存在版权或隐私问题的原始参考素材；导入后请把 `replace-with-your-reference-image.png` 替换为自己的图片。为保证导入后可以直接生成，发布版已移除 NVIDIA RTX Video Super Resolution 节点，VAE 解码结果直接交给 VideoHelperSuite 封装；需要超分的用户可自行在解码后添加。
 
 ## 数值与兼容性
 
