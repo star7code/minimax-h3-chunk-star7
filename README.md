@@ -88,7 +88,7 @@ Native FP16 Loader 已包含精确防溢出处理，不要再串接旧的后置 
 | `auto_halve_on_oom` | 当前 chunk OOM 时自动减半重试 | `true` |
 | `disable_dynamic_prefetch` | 禁止下一 block 权重预取，省显存但可能变慢 | `false` |
 | `reuse_mlp_weights` | token chunks 之间复用已准备权重 | `true` |
-| `attention_backend` | 保留上游后端或显式采用 CK INT8 | `comfy_kitchen_int8` |
+| `attention_backend` | 保留上游后端或显式采用 CK INT8 | `existing` |
 | `verbose` | 输出首个同形状 block 的紧凑诊断 | `true` |
 
 参数越大不等于必然更快。较大的 chunk 减少 kernel 启动次数，但会增加瞬时激活和权重预取竞争。比较参数时必须固定模型、seed、分辨率、帧数、步数和注意力后端。
@@ -202,7 +202,9 @@ Loader -> LoRA -> Sage Attention Patch -> Activation Chunk - Star7
 attention_backend = existing
 ```
 
-这样本节点保留上游 Sage，只负责 RoPE/MLP 激活分块。若仍设为 `comfy_kitchen_int8`，本节点会覆盖更早安装的 Sage patch。Sage 与 CK INT8 都属于近似注意力，速度和画面质量应在同 seed、同分辨率下比较。
+这样本节点保留上游 Sage，只负责 RoPE/MLP 激活分块。若前面没有注意力节点，`existing` 就使用当前 ComfyUI 环境为该模型选择的原生后端；它不会自动切换成 CK 或 XFormers。
+
+若选择 `comfy_kitchen_int8`，本节点会覆盖更早安装的 Sage、XFormers 或其他 MiniMax H3 注意力 patch，只对本节点输出的模型生效。CK 组件不可用时会记录警告并自动保留原有后端，不会因导入失败中断工作流。50 系显卡同样可以使用 CK，但最终速度和显存表现取决于已安装的 Comfy Kitchen/CUDA 支持；`existing` 则交给当前环境的原生后端选择。
 
 ## 小显存补充说明
 

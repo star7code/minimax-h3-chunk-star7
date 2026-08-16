@@ -882,8 +882,18 @@ def install_model_patch(
 
     ck_attention = False
     if attention_backend == "comfy_kitchen_int8":
-        import comfy_kitchen
-        if comfy_kitchen.int8_attention_is_available():
+        try:
+            import comfy_kitchen
+            ck_available = comfy_kitchen.int8_attention_is_available()
+        except (ImportError, AttributeError, RuntimeError) as exc:
+            ck_available = False
+            if verbose:
+                _LOG.warning(
+                    "[Star7 H3 Chunk] Comfy Kitchen INT8 is unavailable (%s); "
+                    "keeping the existing attention backend",
+                    exc,
+                )
+        if ck_available:
             for index, block in enumerate(diffusion_model.blocks):
                 patched.add_object_patch(
                     f"diffusion_model.blocks.{index}.attn.forward",
