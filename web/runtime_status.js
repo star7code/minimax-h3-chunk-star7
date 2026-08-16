@@ -14,7 +14,8 @@ function formatValue(label, effective, configured) {
 
 function removeLegacyStatusWidget(node) {
     const index = node.widgets?.findIndex(
-        (item) => item.name === "star7_runtime_status",
+        (item) => item.__star7StatusName === "star7_runtime_status"
+            || item.name === "star7_runtime_status",
     );
     if (index == null || index < 0) {
         return;
@@ -24,7 +25,9 @@ function removeLegacyStatusWidget(node) {
 }
 
 function makeStatusWidget(node, name, label, value) {
-    let widget = node.widgets?.find((item) => item.name === name);
+    let widget = node.widgets?.find(
+        (item) => item.__star7StatusName === name || item.name === name,
+    );
     if (!widget) {
         widget = node.addWidget(
             "text",
@@ -33,11 +36,25 @@ function makeStatusWidget(node, name, label, value) {
             () => {},
             { serialize: false },
         );
-        widget.name = name;
+        widget.__star7StatusName = name;
         widget.disabled = true;
         widget.serializeValue = async () => undefined;
     }
     return widget;
+}
+
+function normalizeConfiguredInputs(node) {
+    for (const [name, fallback] of [
+        ["chunk_tokens", 8192],
+        ["mlp_chunk_tokens", 4096],
+    ]) {
+        const widget = node.widgets?.find((item) => item.name === name);
+        if (!widget || Number.isFinite(Number(widget.value)) && Number(widget.value) >= 256) {
+            continue;
+        }
+        widget.value = fallback;
+        widget.callback?.(fallback);
+    }
 }
 
 function moveAfter(node, widget, anchorName) {
@@ -53,6 +70,7 @@ function moveAfter(node, widget, anchorName) {
 
 function ensureStatusWidgets(node) {
     removeLegacyStatusWidget(node);
+    normalizeConfiguredInputs(node);
     const configuredRope = Number(
         node.widgets?.find((item) => item.name === "chunk_tokens")?.value ?? 4096,
     );

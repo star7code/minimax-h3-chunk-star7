@@ -18,9 +18,9 @@ _LOGGED_MLP_SHAPES = set()
 _PROFILED_MLP_SHAPES = set()
 _PROFILED_ATTENTION_SHAPES = set()
 _CONFIG = {
-    "chunk_tokens": 4096,
+    "chunk_tokens": 8192,
     "mlp_chunk_tokens": 4096,
-    "effective_chunk_tokens": 4096,
+    "effective_chunk_tokens": 8192,
     "effective_mlp_chunk_tokens": 4096,
     "auto_halve_on_oom": True,
     "verbose": True,
@@ -942,7 +942,7 @@ class MiniMaxH3ActivationChunkStar7:
                 "chunk_tokens": (
                     "INT",
                     {
-                        "default": 4096,
+                        "default": 8192,
                         "min": 256,
                         "max": 65536,
                         "step": 256,
@@ -1015,7 +1015,7 @@ class MiniMaxH3ActivationChunkStar7:
     )
 
     def patch(
-        self, model, chunk_tokens=4096, auto_halve_on_oom=True, verbose=True,
+        self, model, chunk_tokens=8192, auto_halve_on_oom=True, verbose=True,
         mlp_chunk_tokens=4096, disable_dynamic_prefetch=True,
         reuse_mlp_weights=True, attention_backend="existing", unique_id=None,
     ):
