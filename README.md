@@ -83,8 +83,8 @@ Native FP16 Loader 已包含精确防溢出处理，不要再串接旧的后置 
 
 | 参数 | 作用 | RTX 2080 Ti 22GB 实测值 |
 |---|---|---:|
-| `chunk_tokens` | RoPE 的 token 分块大小 | `8192` |
-| `mlp_chunk_tokens` | MLP 的 token 分块大小 | `4096` |
+| `chunk_tokens` | RoPE 的目标 token 分块上限；节点下方会显示本次实际生效值 | `8192` |
+| `mlp_chunk_tokens` | MLP 的目标 token 分块上限；节点下方会显示本次实际生效值 | `4096` |
 | `auto_halve_on_oom` | 当前 chunk OOM 时自动减半重试 | `true` |
 | `disable_dynamic_prefetch` | 禁止下一 block 权重预取，省显存但可能变慢 | `false` |
 | `reuse_mlp_weights` | token chunks 之间复用已准备权重 | `true` |
@@ -92,6 +92,16 @@ Native FP16 Loader 已包含精确防溢出处理，不要再串接旧的后置 
 | `verbose` | 输出首个同形状 block 的紧凑诊断 | `true` |
 
 参数越大不等于必然更快。较大的 chunk 减少 kernel 启动次数，但会增加瞬时激活和权重预取竞争。比较参数时必须固定模型、seed、分辨率、帧数、步数和注意力后端。
+
+节点会在两个数值输入的正下方分别显示 `RoPE 当前使用` 和 `MLP 当前使用`。正常时会显示
+`当前使用 N（设定值）`；发生显存不足后会显示 `已降级为 N（设定 M）`。这里的 `M` 是工作流
+里的目标上限，`N` 是本次模型会话实际采用的上限。输入框本身不会被偷偷改写，也不会把临时
+降级值保存进工作流。
+
+`auto_halve_on_oom=true` 时，RoPE 或 MLP 当前分块 OOM 会按当前值整数减半，最低到 `256`。
+找到可用值后，后续 H3 block 和同一次模型会话中的后续 forward 会直接沿用该值，避免每个
+block 反复以失败的大块重试。用户手动修改任一分块输入并重新执行节点后，记忆值会用新的
+设定值重置；例如旧值曾自动降到 `2048`，手动改成 `3072` 后不会继续沿用 `2048`。
 
 ### 按 OOM 位置调整，而不是盲目同时降低两个值
 

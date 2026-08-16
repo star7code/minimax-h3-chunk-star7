@@ -20,9 +20,12 @@ _PROFILED_ATTENTION_SHAPES = set()
 _CONFIG = {
     "chunk_tokens": 4096,
     "mlp_chunk_tokens": 4096,
+    "effective_chunk_tokens": 4096,
+    "effective_mlp_chunk_tokens": 4096,
     "auto_halve_on_oom": True,
     "verbose": True,
     "reuse_mlp_weights": True,
+    "node_id": None,
 }
 
 
@@ -41,6 +44,73 @@ def _clear_cuda_after_oom(device: torch.device) -> None:
             torch.cuda.empty_cache()
         except Exception:
             pass
+
+
+def _runtime_status_payload(reason: str) -> dict:
+    return {
+        "node_id": _CONFIG.get("node_id"),
+        "configured_rope": int(_CONFIG["chunk_tokens"]),
+        "effective_rope": int(_CONFIG["effective_chunk_tokens"]),
+        "configured_mlp": int(_CONFIG["mlp_chunk_tokens"]),
+        "effective_mlp": int(_CONFIG["effective_mlp_chunk_tokens"]),
+        "reason": reason,
+    }
+
+
+def _send_runtime_status(reason: str) -> None:
+    node_id = _CONFIG.get("node_id")
+    if node_id is None:
+        return
+    try:
+        from server import PromptServer
+
+        PromptServer.instance.send_sync(
+            "star7-h3-chunk-status", _runtime_status_payload(reason)
+        )
+    except Exception as exc:
+        _LOG.debug("Unable to update the Star7 chunk status widget: %s", exc)
+
+
+def _remember_effective_chunk(kind: str, failed: int, effective: int) -> None:
+    if kind == "RoPE":
+        configured_key = "chunk_tokens"
+        effective_key = "effective_chunk_tokens"
+    elif kind == "MLP":
+        configured_key = "mlp_chunk_tokens"
+        effective_key = "effective_mlp_chunk_tokens"
+    else:
+        raise ValueError(f"unknown chunk kind: {kind}")
+
+    configured = int(_CONFIG[configured_key])
+    previous = int(_CONFIG[effective_key])
+    effective = min(previous, max(256, int(effective)))
+    _CONFIG[effective_key] = effective
+    _LOG.warning(
+        "[Star7 H3 Chunk] %s VRAM fallback: configured=%d, failed-at=%d, "
+        "now-using=%d for later blocks in this model session.",
+        kind, configured, failed, effective,
+    )
+    _send_runtime_status(f"{kind.lower()}_oom")
+
+
+def _configure_runtime(
+    chunk_tokens: int,
+    mlp_chunk_tokens: int,
+    auto_halve_on_oom: bool,
+    verbose: bool,
+    reuse_mlp_weights: bool,
+    node_id=None,
+) -> None:
+    """Start a fresh runtime budget whenever the node inputs are re-executed."""
+    _CONFIG["chunk_tokens"] = int(chunk_tokens)
+    _CONFIG["mlp_chunk_tokens"] = int(mlp_chunk_tokens)
+    _CONFIG["effective_chunk_tokens"] = int(chunk_tokens)
+    _CONFIG["effective_mlp_chunk_tokens"] = int(mlp_chunk_tokens)
+    _CONFIG["auto_halve_on_oom"] = bool(auto_halve_on_oom)
+    _CONFIG["verbose"] = bool(verbose)
+    _CONFIG["reuse_mlp_weights"] = bool(reuse_mlp_weights)
+    _CONFIG["node_id"] = str(node_id) if node_id is not None else None
+    _send_runtime_status("configured")
 
 
 def _slice_freqs_for_tokens(freqs_cis: torch.Tensor, start: int, end: int, seq_len: int) -> torch.Tensor:
@@ -129,7 +199,7 @@ def _chunked_rms_rope_split_half_inplace(
         )
 
     seq_len = q.shape[1]
-    preferred = max(256, int(_CONFIG["chunk_tokens"]))
+    preferred = max(256, int(_CONFIG["effective_chunk_tokens"]))
     chunk = min(preferred, seq_len)
     auto_halve = bool(_CONFIG["auto_halve_on_oom"])
 
@@ -149,7 +219,9 @@ def _chunked_rms_rope_split_half_inplace(
     # Process one tensor and one token chunk at a time, writing back in place.
     for tensor, scale, label in ((q, q_scale, "q"), (k, k_scale, "k")):
         start = 0
-        current_chunk = chunk
+        current_chunk = min(
+            chunk, max(256, int(_CONFIG["effective_chunk_tokens"]))
+        )
         while start < seq_len:
             end = min(start + current_chunk, seq_len)
             freq_chunk = _slice_freqs_for_tokens(freqs_cis, start, end, seq_len)
@@ -166,10 +238,7 @@ def _chunked_rms_rope_split_half_inplace(
                 if not (_is_cuda_oom(exc) and auto_halve and current_chunk > 256):
                     raise
                 new_chunk = max(256, current_chunk // 2)
-                _LOG.warning(
-                    "H3 RoPE %s chunk OOM at %d tokens; retrying current slice with %d tokens",
-                    label, current_chunk, new_chunk,
-                )
+                _remember_effective_chunk("RoPE", current_chunk, new_chunk)
                 # Drop traceback-held chunk temporaries before empty_cache/retry.
                 exc.__traceback__ = None
                 _clear_cuda_after_oom(tensor.device)
@@ -352,7 +421,7 @@ def _run_chunked_h3_mlp(
     is needed. A different GEMM tile can change only the final float32 rounding
     bit; dtype, formula, weights, and token order remain unchanged.
     """
-    chunk = max(256, int(_CONFIG["mlp_chunk_tokens"]))
+    chunk = max(256, int(_CONFIG["effective_mlp_chunk_tokens"]))
     import comfy.ops
 
     if x.ndim != 2:
@@ -447,10 +516,7 @@ def _run_chunked_h3_mlp(
                 if not (_is_cuda_oom(exc) and auto_halve and current_chunk > 256):
                     raise
                 new_chunk = max(256, current_chunk // 2)
-                _LOG.warning(
-                    "H3 MLP chunk OOM at %d tokens; retrying current slice with %d tokens",
-                    current_chunk, new_chunk,
-                )
+                _remember_effective_chunk("MLP", current_chunk, new_chunk)
                 del result, expanded, gate, up, activated, scaled, chunk_input
                 # The handled exception traceback can otherwise retain fc1 output.
                 exc.__traceback__ = None
@@ -726,6 +792,7 @@ def install_patch(
     verbose: bool,
     mlp_chunk_tokens: int = 4096,
     reuse_mlp_weights: bool = True,
+    node_id=None,
 ):
     global _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE, _PATCHED_CK
 
@@ -739,11 +806,10 @@ def install_patch(
         _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = ck.rms_rope_split_half_
         _PATCHED_CK = ck
 
-    _CONFIG["chunk_tokens"] = int(chunk_tokens)
-    _CONFIG["mlp_chunk_tokens"] = int(mlp_chunk_tokens)
-    _CONFIG["auto_halve_on_oom"] = bool(auto_halve_on_oom)
-    _CONFIG["verbose"] = bool(verbose)
-    _CONFIG["reuse_mlp_weights"] = bool(reuse_mlp_weights)
+    _configure_runtime(
+        chunk_tokens, mlp_chunk_tokens, auto_halve_on_oom, verbose,
+        reuse_mlp_weights, node_id,
+    )
 
     # Replace only the public in-place function used by ComfyUI MiniMax H3.
     # The separate model patch below controls the explicit optional attention
@@ -777,10 +843,11 @@ def install_model_patch(
     disable_dynamic_prefetch: bool,
     reuse_mlp_weights: bool,
     attention_backend: str,
+    node_id=None,
 ):
     install_patch(
         chunk_tokens, auto_halve_on_oom, verbose,
-        mlp_chunk_tokens, reuse_mlp_weights,
+        mlp_chunk_tokens, reuse_mlp_weights, node_id,
     )
 
     from comfy.ldm.minimax import model as h3_model
@@ -931,7 +998,8 @@ class MiniMaxH3ActivationChunkStar7:
                         ),
                     },
                 ),
-            }
+            },
+            "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
     RETURN_TYPES = ("MODEL",)
@@ -949,12 +1017,12 @@ class MiniMaxH3ActivationChunkStar7:
     def patch(
         self, model, chunk_tokens=4096, auto_halve_on_oom=True, verbose=True,
         mlp_chunk_tokens=4096, disable_dynamic_prefetch=True,
-        reuse_mlp_weights=True, attention_backend="existing",
+        reuse_mlp_weights=True, attention_backend="existing", unique_id=None,
     ):
         return (install_model_patch(
             model, chunk_tokens, auto_halve_on_oom, verbose,
             mlp_chunk_tokens, disable_dynamic_prefetch, reuse_mlp_weights,
-            attention_backend,
+            attention_backend, unique_id,
         ),)
 
 

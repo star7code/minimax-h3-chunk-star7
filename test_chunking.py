@@ -1,6 +1,7 @@
 import importlib.util
 import pathlib
 import sys
+from types import SimpleNamespace
 
 import torch
 
@@ -294,6 +295,114 @@ def test_adaptive_prefetch_retries_without_overlap():
     ]
 
 
+def test_rope_oom_value_is_reused_for_k_and_later_calls():
+    attempts = []
+    original = chunk_nodes._rms_rope_one_chunk_inplace
+    original_config = chunk_nodes._CONFIG.copy()
+
+    def limited_chunk(tensor, *_args, **_kwargs):
+        size = tensor.shape[1]
+        attempts.append(size)
+        if size > 512:
+            raise RuntimeError("out of memory")
+
+    try:
+        chunk_nodes._rms_rope_one_chunk_inplace = limited_chunk
+        chunk_nodes._CONFIG.update(
+            chunk_tokens=1024,
+            effective_chunk_tokens=1024,
+            auto_halve_on_oom=True,
+            verbose=False,
+            node_id=None,
+        )
+        q = torch.zeros(1, 1024, 1, 128)
+        k = torch.zeros_like(q)
+        freqs = torch.zeros(1, 1024, 1, 48, 2, 2)
+        scale = torch.ones(128)
+
+        chunk_nodes._chunked_rms_rope_split_half_inplace(
+            q, k, freqs, scale, rot_dim=96
+        )
+        first_call_attempts = attempts.copy()
+        chunk_nodes._chunked_rms_rope_split_half_inplace(
+            q, k, freqs, scale, rot_dim=96
+        )
+
+        assert first_call_attempts == [1024, 512, 512, 512, 512]
+        assert attempts[len(first_call_attempts):] == [512, 512, 512, 512]
+        assert chunk_nodes._CONFIG["effective_chunk_tokens"] == 512
+    finally:
+        chunk_nodes._rms_rope_one_chunk_inplace = original
+        chunk_nodes._CONFIG.clear()
+        chunk_nodes._CONFIG.update(original_config)
+
+
+def test_mlp_oom_value_is_reused_for_later_blocks():
+    attempts = []
+    original_config = chunk_nodes._CONFIG.copy()
+
+    class LimitedFC1:
+        out_features = 4
+
+        def __call__(self, tensor):
+            attempts.append(tensor.shape[0])
+            if tensor.shape[0] > 512:
+                raise RuntimeError("out of memory")
+            return torch.zeros(tensor.shape[0], 4, dtype=tensor.dtype)
+
+    class FC2:
+        def __call__(self, tensor):
+            return torch.zeros(tensor.shape[0], 2, dtype=tensor.dtype)
+
+    mlp = SimpleNamespace(fc1=LimitedFC1(), fc2=FC2())
+    value = torch.zeros(1024, 2, dtype=torch.float16)
+
+    try:
+        chunk_nodes._CONFIG.update(
+            mlp_chunk_tokens=1024,
+            effective_mlp_chunk_tokens=1024,
+            auto_halve_on_oom=True,
+            verbose=False,
+            reuse_mlp_weights=False,
+            node_id=None,
+        )
+        chunk_nodes._run_chunked_h3_mlp(mlp, value, star7_fp16=True)
+        first_call_attempts = attempts.copy()
+        chunk_nodes._run_chunked_h3_mlp(mlp, value, star7_fp16=True)
+
+        assert first_call_attempts == [1024, 512, 512]
+        assert attempts[len(first_call_attempts):] == [512, 512]
+        assert chunk_nodes._CONFIG["effective_mlp_chunk_tokens"] == 512
+        assert chunk_nodes._runtime_status_payload("test") == {
+            "node_id": None,
+            "configured_rope": original_config["chunk_tokens"],
+            "effective_rope": original_config["effective_chunk_tokens"],
+            "configured_mlp": 1024,
+            "effective_mlp": 512,
+            "reason": "test",
+        }
+    finally:
+        chunk_nodes._CONFIG.clear()
+        chunk_nodes._CONFIG.update(original_config)
+
+
+def test_manual_settings_reset_learned_runtime_values():
+    original_config = chunk_nodes._CONFIG.copy()
+    try:
+        chunk_nodes._CONFIG["effective_chunk_tokens"] = 2048
+        chunk_nodes._CONFIG["effective_mlp_chunk_tokens"] = 1024
+        chunk_nodes._configure_runtime(
+            3072, 1536, True, False, True, node_id=None
+        )
+        assert chunk_nodes._CONFIG["chunk_tokens"] == 3072
+        assert chunk_nodes._CONFIG["effective_chunk_tokens"] == 3072
+        assert chunk_nodes._CONFIG["mlp_chunk_tokens"] == 1536
+        assert chunk_nodes._CONFIG["effective_mlp_chunk_tokens"] == 1536
+    finally:
+        chunk_nodes._CONFIG.clear()
+        chunk_nodes._CONFIG.update(original_config)
+
+
 def test_comfy_kitchen_int8_attention_forward_cuda():
     if not torch.cuda.is_available():
         return
@@ -338,5 +447,8 @@ if __name__ == "__main__":
         print(f"MiniMax H3 RoPE/MLP chunk tests passed on {test_device}")
     test_prefetch_wrapper_forces_off()
     test_adaptive_prefetch_retries_without_overlap()
+    test_rope_oom_value_is_reused_for_k_and_later_calls()
+    test_mlp_oom_value_is_reused_for_later_blocks()
+    test_manual_settings_reset_learned_runtime_values()
     test_comfy_kitchen_int8_attention_forward_cuda()
     print("MiniMax H3 dynamic prefetch wrapper test passed")

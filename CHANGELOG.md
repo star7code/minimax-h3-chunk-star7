@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added visible per-parameter runtime status rows for the effective RoPE and
+  MLP chunk values.
+- Added clear VRAM fallback diagnostics and remembered successful chunk caps
+  across later H3 blocks, Q/K processing, and repeated forwards in the same
+  model session.
+- Reset remembered effective values whenever the node inputs are re-executed,
+  so manual parameter changes always take effect.
 - Added per-VRAM and per-OOM-location parameter guidance.
 - Added confirmed C/D cases: 0.4MP/10s at 180s and 0.4MP/5s at 85s.
 - Clarified that chunking controls memory residency rather than FLOPs, and documented mixed linear/quadratic sequence scaling.
