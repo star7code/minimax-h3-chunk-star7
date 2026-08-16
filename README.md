@@ -2,7 +2,7 @@
 
 [中文说明](#中文说明) · [Benchmark](BENCHMARKS.md) · [Example workflows](examples/workflows)
 
-Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with limited VRAM: this ComfyUI node chunks the two largest RoPE and MLP activation peaks so those operations fit in dedicated VRAM instead of spilling into much slower shared system memory. For workloads that would otherwise OOM or page through shared memory, this can greatly improve the practical video size and runtime; when a workload already fits entirely in VRAM, chunking alone is not a speedup. The default path does not change the sampler, latent, VAE, video duration, or spatial resolution, and an explicit Comfy Kitchen INT8 attention option is available for GPUs where the existing Sage path is not competitive.
+Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with limited VRAM: this ComfyUI node chunks the two largest RoPE and MLP activation peaks so those operations fit in dedicated VRAM instead of spilling into much slower shared system memory. For workloads that would otherwise OOM or page through shared memory, this can greatly improve the practical video size and runtime; when a workload already fits entirely in VRAM, chunking alone is not a speedup. The default path uses Comfy Kitchen INT8 attention and does not change the sampler, latent, VAE, video duration, or spatial resolution; choose `existing` to preserve an upstream Sage or environment-selected attention backend.
 
 > This is an independent community project. MiniMax, ComfyUI, Comfy Kitchen, KJNodes, and NVIDIA are trademarks or projects of their respective owners.
 
@@ -17,7 +17,7 @@ Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with li
 
 RoPE 沿 sequence/token 维分块并原位写回 Q/K。MLP 按 token 分块计算，把各段 `fc2` 结果直接累加回 residual，避免同时保留完整扩展激活和完整 MLP 输出。对于 `int8_tensorwise + ConvRot` 权重，节点保持 `QuantizedTensor` 路径，并允许各 token chunk 复用已经准备好的权重。
 
-默认 `attention_backend = existing` 时，本项目不会修改注意力算法，也不会改变采样器、sigma、seed、VAE、latent、帧数或画面分辨率。`comfy_kitchen_int8` 是用户显式选择的近似注意力后端，不属于无损默认路径。
+默认 `attention_backend = comfy_kitchen_int8` 时，本项目会使用 Comfy Kitchen INT8 注意力；它是近似注意力路径。若要完全保留前置节点或当前环境的注意力算法，请选择 `existing`。两种模式都不会改变采样器、sigma、seed、VAE、latent、帧数或画面分辨率。
 
 ## 安装
 
@@ -86,9 +86,9 @@ Native FP16 Loader 已包含精确防溢出处理，不要再串接旧的后置 
 | `chunk_tokens` | RoPE 的目标 token 分块上限；节点下方会显示本次实际生效值 | `8192` |
 | `mlp_chunk_tokens` | MLP 的目标 token 分块上限；节点下方会显示本次实际生效值 | `4096` |
 | `auto_halve_on_oom` | 当前 chunk OOM 时自动减半重试 | `true` |
-| `disable_dynamic_prefetch` | 禁止下一 block 权重预取，省显存但可能变慢 | `false` |
+| `disable_dynamic_prefetch` | 禁止下一 block 权重预取，省显存但可能变慢 | `true` |
 | `reuse_mlp_weights` | token chunks 之间复用已准备权重 | `true` |
-| `attention_backend` | 保留上游后端或显式采用 CK INT8 | `existing` |
+| `attention_backend` | 保留上游后端或显式采用 CK INT8 | `comfy_kitchen_int8` |
 | `verbose` | 输出首个同形状 block 的紧凑诊断 | `true` |
 
 参数越大不等于必然更快。较大的 chunk 减少 kernel 启动次数，但会增加瞬时激活和权重预取竞争。比较参数时必须固定模型、seed、分辨率、帧数、步数和注意力后端。
@@ -117,10 +117,10 @@ block 反复以失败的大块重试。用户手动修改任一分块输入并�
 
 | 专用显存 | `chunk_tokens` 起点 | `mlp_chunk_tokens` 起点 | 预取建议 |
 |---:|---:|---:|---|
-| 20–24GB | `8192` | `4096` | 先 `false`，OOM 再改 `true` |
-| 16–20GB | `4096` | `2048–4096` | 建议先 `true` 验证 |
-| 12–16GB | `2048–4096` | `1024–2048` | `true` |
-| 12GB以下 | `1024–2048` | `512–1024` | `true`；可能仍需模型卸载，不保证长视频可行 |
+| 20–24GB | `8192` | `4096` | `true`；稳定后可自行测试 `false` |
+| 16–20GB | `6144–8192` | `4096` | `true`；OOM 时自动降级 |
+| 12–16GB | `4096–6144` | `2048–4096` | `true`；OOM 时自动降级 |
+| 12GB以下 | `2048–4096` | `1024–2048` | `true`；可能仍需模型卸载，不保证长视频可行 |
 
 保持 `auto_halve_on_oom=true` 可以让 RoPE chunk 自动降档，但 MLP、attention 或模型加载 OOM 仍需根据 traceback 手动选择正确参数。
 

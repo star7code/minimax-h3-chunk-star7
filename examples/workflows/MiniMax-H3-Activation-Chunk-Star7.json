@@ -931,7 +931,7 @@
         true,
         true,
         4096,
-        false,
+        true,
         true,
         "comfy_kitchen_int8"
       ],
@@ -940,7 +940,7 @@
         "auto_halve_on_oom": true,
         "verbose": true,
         "mlp_chunk_tokens": 4096,
-        "disable_dynamic_prefetch": false,
+        "disable_dynamic_prefetch": true,
         "reuse_mlp_weights": true,
         "attention_backend": "comfy_kitchen_int8"
       },

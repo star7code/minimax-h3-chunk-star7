@@ -1007,7 +1007,7 @@ class MiniMaxH3ActivationChunkStar7:
                 "attention_backend": (
                     ["existing", "comfy_kitchen_int8"],
                     {
-                        "default": "existing",
+                        "default": "comfy_kitchen_int8",
                         "tooltip": (
                             "existing keeps the incoming attention patch (for example KJ Sage). "
                             "comfy_kitchen_int8 selects ComfyUI's native INT8 attention and "
@@ -1027,14 +1027,14 @@ class MiniMaxH3ActivationChunkStar7:
         "Low-VRAM MiniMax H3 patch. Chunks fused RMSNorm + split-half RoPE, streams "
         "MLP norm/modulation, preserves INT8/ConvRot weights, and accumulates fc2 "
         "chunks directly into the residual. Can safely retry without AIMDO prefetch. "
-        "Compatible with FP16 Exact Fix - Star7. The default existing attention mode "
-        "does not change attention math; the optional Comfy Kitchen INT8 mode is approximate."
+        "Compatible with FP16 Exact Fix - Star7. The default Comfy Kitchen INT8 "
+        "attention mode is approximate; select existing to preserve upstream attention math."
     )
 
     def patch(
         self, model, chunk_tokens=8192, auto_halve_on_oom=True, verbose=True,
         mlp_chunk_tokens=4096, disable_dynamic_prefetch=True,
-        reuse_mlp_weights=True, attention_backend="existing", unique_id=None,
+        reuse_mlp_weights=True, attention_backend="comfy_kitchen_int8", unique_id=None,
     ):
         return (install_model_patch(
             model, chunk_tokens, auto_halve_on_oom, verbose,
