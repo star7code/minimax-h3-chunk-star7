@@ -102,10 +102,17 @@ def _configure_runtime(
     node_id=None,
 ) -> None:
     """Start a fresh runtime budget whenever the node inputs are re-executed."""
-    _CONFIG["chunk_tokens"] = int(chunk_tokens)
-    _CONFIG["mlp_chunk_tokens"] = int(mlp_chunk_tokens)
-    _CONFIG["effective_chunk_tokens"] = int(chunk_tokens)
-    _CONFIG["effective_mlp_chunk_tokens"] = int(mlp_chunk_tokens)
+    configured_rope = int(chunk_tokens)
+    configured_mlp = int(mlp_chunk_tokens)
+    # Older workflows may contain the pre-MLP field's zero placeholder.
+    if configured_rope < 256:
+        configured_rope = 8192
+    if configured_mlp < 256:
+        configured_mlp = 4096
+    _CONFIG["chunk_tokens"] = configured_rope
+    _CONFIG["mlp_chunk_tokens"] = configured_mlp
+    _CONFIG["effective_chunk_tokens"] = configured_rope
+    _CONFIG["effective_mlp_chunk_tokens"] = configured_mlp
     _CONFIG["auto_halve_on_oom"] = bool(auto_halve_on_oom)
     _CONFIG["verbose"] = bool(verbose)
     _CONFIG["reuse_mlp_weights"] = bool(reuse_mlp_weights)
