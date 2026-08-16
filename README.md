@@ -2,13 +2,15 @@
 
 [中文说明](#中文说明) · [Benchmark](BENCHMARKS.md) · [Example workflows](examples/workflows)
 
-Activation-memory control for local MiniMax H3 inference in ComfyUI. The default path chunks eager RoPE and H3 MLP activations without changing the sampler, latent, VAE, video duration, or spatial resolution. An explicit Comfy Kitchen INT8 attention option is available for GPUs where the existing Sage path is not competitive.
+Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with limited VRAM: this ComfyUI node chunks the two largest RoPE and MLP activation peaks so those operations fit in dedicated VRAM instead of spilling into much slower shared system memory. For workloads that would otherwise OOM or page through shared memory, this can greatly improve the practical video size and runtime; when a workload already fits entirely in VRAM, chunking alone is not a speedup. The default path does not change the sampler, latent, VAE, video duration, or spatial resolution, and an explicit Comfy Kitchen INT8 attention option is available for GPUs where the existing Sage path is not competitive.
 
 > This is an independent community project. MiniMax, ComfyUI, Comfy Kitchen, KJNodes, and NVIDIA are trademarks or projects of their respective owners.
 
 ## 中文说明
 
-这个节点针对 MiniMax H3 长序列推理的两个显存峰值：
+让高画质、长时长 MiniMax H3 视频在有限显存的显卡上高效运行：本节点把最容易爆显存的 RoPE 与 MLP 激活按 token 分块，使这两段关键计算适配专用显存，避免溢出到速度远低于显存的共享系统内存。对于原本会 OOM 或发生共享显存换页的任务，这能显著提升可运行规模与实际生成效率；如果任务本来就能完整装入显存，分块本身不会凭空加速。
+
+节点针对 MiniMax H3 长序列推理的两个显存峰值：
 
 - `RMSNorm -> split-half RoPE (Q/K)`；
 - `fc1 -> SwiGLU -> fc2` MLP 扩展激活。
