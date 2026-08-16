@@ -12,16 +12,25 @@ function formatValue(label, effective, configured) {
         : `${label}：已降级为 ${effective}（设定 ${configured}）`;
 }
 
-function removeLegacyStatusWidget(node) {
-    const index = node.widgets?.findIndex(
-        (item) => item.__star7StatusName === "star7_runtime_status"
-            || item.name === "star7_runtime_status",
-    );
-    if (index == null || index < 0) {
-        return;
+function removeStatusWidgets(node) {
+    const statusNames = new Set([
+        "star7_runtime_status",
+        "star7_rope_runtime_status",
+        "star7_mlp_runtime_status",
+        "RoPE 当前使用",
+        "MLP 当前使用",
+    ]);
+    for (let index = (node.widgets?.length ?? 0) - 1; index >= 0; index -= 1) {
+        const widget = node.widgets[index];
+        if (
+            !statusNames.has(widget.__star7StatusName)
+            && !statusNames.has(widget.name)
+        ) {
+            continue;
+        }
+        widget.onRemove?.();
+        node.widgets.splice(index, 1);
     }
-    node.widgets[index]?.onRemove?.();
-    node.widgets.splice(index, 1);
 }
 
 function makeStatusWidget(node, name, label, value) {
@@ -69,7 +78,7 @@ function moveAfter(node, widget, anchorName) {
 }
 
 function ensureStatusWidgets(node) {
-    removeLegacyStatusWidget(node);
+    removeStatusWidgets(node);
     normalizeConfiguredInputs(node);
     const configuredRope = Number(
         node.widgets?.find((item) => item.name === "chunk_tokens")?.value ?? 4096,
@@ -137,6 +146,16 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             original?.apply(this, arguments);
             ensureStatusWidgets(this);
+        };
+
+        const originalConfigure = nodeType.prototype.configure;
+        nodeType.prototype.configure = function () {
+            // Legacy ComfyUI restores widget values by array position. Keep
+            // display-only rows out of that array until real inputs are loaded.
+            removeStatusWidgets(this);
+            const result = originalConfigure?.apply(this, arguments);
+            ensureStatusWidgets(this);
+            return result;
         };
     },
 });

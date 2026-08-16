@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixed legacy ComfyUI workflow loading so display-only runtime status rows no
+  longer shift saved widget values or reset `attention_backend` to `existing`.
+
 - Added visible per-parameter runtime status rows for the effective RoPE and
   MLP chunk values.
 - Added clear VRAM fallback diagnostics and remembered successful chunk caps
