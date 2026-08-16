@@ -74,4 +74,54 @@ assert.equal(
     node.widgets.filter((widget) => widget.__star7StatusName).length,
     2,
 );
+
+const corrupted = new MockNode();
+corrupted.onNodeCreated();
+corrupted.configure({
+    widgets_values: [
+        8192,
+        "RoPE status",
+        true,
+        true,
+        4096,
+        "MLP status",
+        4096,
+        true,
+        "comfy_kitchen_int8",
+    ],
+    widgets_values_named: {
+        chunk_tokens: 8192,
+        "RoPE 当前使用": "RoPE status",
+        auto_halve_on_oom: "RoPE status",
+        verbose: "RoPE status",
+        mlp_chunk_tokens: 4096,
+        "MLP 当前使用": "MLP status",
+        disable_dynamic_prefetch: 4096,
+        reuse_mlp_weights: "MLP status",
+        attention_backend: "comfy_kitchen_int8",
+    },
+});
+
+const restored = Object.fromEntries(
+    corrupted.widgets
+        .filter((widget) => !widget.__star7StatusName)
+        .map((widget) => [widget.name, widget.value]),
+);
+assert.deepEqual(restored, {
+    chunk_tokens: 8192,
+    auto_halve_on_oom: true,
+    verbose: true,
+    mlp_chunk_tokens: 4096,
+    disable_dynamic_prefetch: true,
+    reuse_mlp_weights: true,
+    attention_backend: "comfy_kitchen_int8",
+});
+
+const serialized = {};
+corrupted.onSerialize(serialized);
+assert.equal(
+    JSON.stringify(serialized.widgets_values),
+    JSON.stringify([8192, true, true, 4096, true, true, "comfy_kitchen_int8"]),
+);
+assert.equal(JSON.stringify(serialized.widgets_values_named), JSON.stringify(restored));
 console.log("Runtime status workflow restore test passed");

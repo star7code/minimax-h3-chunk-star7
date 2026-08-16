@@ -5,6 +5,16 @@ const NODE_NAMES = new Set([
     "MiniMaxH3ActivationChunkStar7",
     "MiniMaxH3RoPEChunkPatch",
 ]);
+const REAL_WIDGET_DEFAULTS = {
+    chunk_tokens: 8192,
+    auto_halve_on_oom: true,
+    verbose: true,
+    mlp_chunk_tokens: 4096,
+    disable_dynamic_prefetch: true,
+    reuse_mlp_weights: true,
+    attention_backend: "comfy_kitchen_int8",
+};
+const REAL_WIDGET_NAMES = Object.keys(REAL_WIDGET_DEFAULTS);
 
 function formatValue(label, effective, configured) {
     return effective === configured
@@ -64,6 +74,53 @@ function normalizeConfiguredInputs(node) {
         widget.value = fallback;
         widget.callback?.(fallback);
     }
+}
+
+function validSavedValue(name, value) {
+    if (name === "chunk_tokens" || name === "mlp_chunk_tokens") {
+        return Number.isInteger(Number(value)) && Number(value) >= 256;
+    }
+    if (name === "attention_backend") {
+        return value === "existing" || value === "comfy_kitchen_int8";
+    }
+    return typeof value === "boolean";
+}
+
+function cleanSavedValues(info) {
+    const named = info?.widgets_values_named ?? {};
+    const positional = Array.isArray(info?.widgets_values)
+        && info.widgets_values.length === REAL_WIDGET_NAMES.length
+        ? info.widgets_values
+        : [];
+    const values = REAL_WIDGET_NAMES.map((name, index) => {
+        const namedValue = named[name];
+        if (validSavedValue(name, namedValue)) {
+            return namedValue;
+        }
+        const positionalValue = positional[index];
+        if (validSavedValue(name, positionalValue)) {
+            return positionalValue;
+        }
+        return REAL_WIDGET_DEFAULTS[name];
+    });
+    return {
+        ...info,
+        widgets_values: values,
+        widgets_values_named: Object.fromEntries(
+            REAL_WIDGET_NAMES.map((name, index) => [name, values[index]]),
+        ),
+    };
+}
+
+function serializeRealWidgets(node, info) {
+    const values = REAL_WIDGET_NAMES.map((name) => {
+        const value = node.widgets?.find((widget) => widget.name === name)?.value;
+        return validSavedValue(name, value) ? value : REAL_WIDGET_DEFAULTS[name];
+    });
+    info.widgets_values = values;
+    info.widgets_values_named = Object.fromEntries(
+        REAL_WIDGET_NAMES.map((name, index) => [name, values[index]]),
+    );
 }
 
 function moveAfter(node, widget, anchorName) {
@@ -153,9 +210,17 @@ app.registerExtension({
             // Legacy ComfyUI restores widget values by array position. Keep
             // display-only rows out of that array until real inputs are loaded.
             removeStatusWidgets(this);
-            const result = originalConfigure?.apply(this, arguments);
+            const args = [...arguments];
+            args[0] = cleanSavedValues(args[0]);
+            const result = originalConfigure?.apply(this, args);
             ensureStatusWidgets(this);
             return result;
+        };
+
+        const originalSerialize = nodeType.prototype.onSerialize;
+        nodeType.prototype.onSerialize = function (info) {
+            originalSerialize?.apply(this, arguments);
+            serializeRealWidgets(this, info);
         };
     },
 });

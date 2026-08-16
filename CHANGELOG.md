@@ -4,6 +4,8 @@
 
 - Fixed legacy ComfyUI workflow loading so display-only runtime status rows no
   longer shift saved widget values or reset `attention_backend` to `existing`.
+- Sanitize workflows already saved with status rows in `widgets_values`, and
+  serialize only the seven real node inputs on subsequent saves.
 
 - Added visible per-parameter runtime status rows for the effective RoPE and
   MLP chunk values.
