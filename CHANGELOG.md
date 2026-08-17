@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reduced both example workflows from 35 Mbps to 15 Mbps H.264 output for a
+  better quality/size balance at the packaged 1.0 MP, 24 fps target.
+- Moved the guider and custom sampler down to clear the taller runtime-status
+  layout of the activation chunk node.
+
 - Hid the legacy `MiniMaxH3RoPEChunkPatch` alias from new-node search while
   retaining its class ID for old workflow compatibility.
 - Migrated both packaged workflows to `MiniMaxH3ActivationChunkStar7` so only
