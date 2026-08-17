@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Hid the legacy `MiniMaxH3RoPEChunkPatch` alias from new-node search while
+  retaining its class ID for old workflow compatibility.
+- Migrated both packaged workflows to `MiniMaxH3ActivationChunkStar7` so only
+  the canonical activation chunk node is used in new examples.
+
 - Fixed legacy ComfyUI workflow loading so display-only runtime status rows no
   longer shift saved widget values or reset `attention_backend` to `existing`.
 - Sanitize workflows already saved with status rows in `widgets_values`, and

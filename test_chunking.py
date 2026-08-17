@@ -403,6 +403,16 @@ def test_manual_settings_reset_learned_runtime_values():
         chunk_nodes._CONFIG.update(original_config)
 
 
+def test_legacy_node_alias_is_deprecated():
+    assert chunk_nodes.NODE_CLASS_MAPPINGS["MiniMaxH3ActivationChunkStar7"] is (
+        chunk_nodes.MiniMaxH3ActivationChunkStar7
+    )
+    assert chunk_nodes.NODE_CLASS_MAPPINGS["MiniMaxH3RoPEChunkPatch"] is (
+        chunk_nodes.MiniMaxH3RoPEChunkPatch
+    )
+    assert chunk_nodes.MiniMaxH3RoPEChunkPatch.DEPRECATED is True
+
+
 def test_comfy_kitchen_int8_attention_forward_cuda():
     if not torch.cuda.is_available():
         return
@@ -450,5 +460,6 @@ if __name__ == "__main__":
     test_rope_oom_value_is_reused_for_k_and_later_calls()
     test_mlp_oom_value_is_reused_for_later_blocks()
     test_manual_settings_reset_learned_runtime_values()
+    test_legacy_node_alias_is_deprecated()
     test_comfy_kitchen_int8_attention_forward_cuda()
     print("MiniMax H3 dynamic prefetch wrapper test passed")

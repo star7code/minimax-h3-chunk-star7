@@ -1043,16 +1043,19 @@ class MiniMaxH3ActivationChunkStar7:
         ),)
 
 
-MiniMaxH3RoPEChunkPatch = MiniMaxH3ActivationChunkStar7
+class MiniMaxH3RoPEChunkPatch(MiniMaxH3ActivationChunkStar7):
+    """Legacy class ID retained only so existing workflows keep loading."""
+
+    DEPRECATED = True
 
 
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3ActivationChunkStar7": MiniMaxH3ActivationChunkStar7,
     # Compatibility alias for workflows saved before the package was renamed.
-    "MiniMaxH3RoPEChunkPatch": MiniMaxH3ActivationChunkStar7,
+    "MiniMaxH3RoPEChunkPatch": MiniMaxH3RoPEChunkPatch,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3ActivationChunkStar7": "MiniMax H3 Activation Chunk (RoPE + MLP) - Star7",
-    "MiniMaxH3RoPEChunkPatch": "MiniMax H3 Activation Chunk (RoPE + MLP) - Star7",
+    "MiniMaxH3RoPEChunkPatch": "MiniMax H3 RoPE Chunk Patch (Legacy) - Star7",
 }

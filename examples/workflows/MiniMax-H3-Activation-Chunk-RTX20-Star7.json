@@ -889,7 +889,7 @@
     },
     {
       "id": 299,
-      "type": "MiniMaxH3RoPEChunkPatch",
+      "type": "MiniMaxH3ActivationChunkStar7",
       "pos": [
         -1042.410153021493,
         5144.492526778848
@@ -919,7 +919,7 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "MiniMaxH3RoPEChunkPatch",
+        "Node name for S&R": "MiniMaxH3ActivationChunkStar7",
         "ue_properties": {
           "version": "7.5.2",
           "widget_ue_connectable": {},
