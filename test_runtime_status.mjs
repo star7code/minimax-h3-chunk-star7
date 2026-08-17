@@ -3,11 +3,18 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 let extension;
+let statusHandler;
 const source = fs.readFileSync(new URL("./web/runtime_status.js", import.meta.url), "utf8")
     .replace(/^import .*?;\r?\n/gm, "");
 
 const context = {
-    api: { addEventListener() {} },
+    api: {
+        addEventListener(name, handler) {
+            if (name === "star7-h3-chunk-status") {
+                statusHandler = handler;
+            }
+        },
+    },
     app: {
         registerExtension(value) {
             extension = value;
@@ -74,6 +81,10 @@ assert.equal(
     node.widgets.filter((widget) => widget.__star7StatusName).length,
     2,
 );
+assert.match(
+    node.widgets.find((widget) => widget.__star7StatusName === "star7_rope_runtime_status").name,
+    /8192/,
+);
 
 const corrupted = new MockNode();
 corrupted.onNodeCreated();
@@ -124,4 +135,27 @@ assert.equal(
     JSON.stringify([8192, true, true, 4096, true, true, "comfy_kitchen_int8"]),
 );
 assert.equal(JSON.stringify(serialized.widgets_values_named), JSON.stringify(restored));
+
+context.app.graph = { getNodeById: () => corrupted };
+statusHandler({
+    detail: {
+        node_id: "299",
+        configured_rope: 8192,
+        effective_rope: 4096,
+        configured_mlp: 4096,
+        effective_mlp: 2048,
+    },
+});
+assert.match(
+    corrupted.widgets.find(
+        (widget) => widget.__star7StatusName === "star7_rope_runtime_status",
+    ).name,
+    /已降级：4096（设定 8192）/,
+);
+assert.match(
+    corrupted.widgets.find(
+        (widget) => widget.__star7StatusName === "star7_mlp_runtime_status",
+    ).name,
+    /已降级：2048（设定 4096）/,
+);
 console.log("Runtime status workflow restore test passed");

@@ -6,6 +6,8 @@
   longer shift saved widget values or reset `attention_backend` to `existing`.
 - Sanitize workflows already saved with status rows in `widgets_values`, and
   serialize only the seven real node inputs on subsequent saves.
+- Render effective RoPE and MLP values in the always-visible status label for
+  ComfyUI themes that hide disabled text-widget values.
 
 - Added visible per-parameter runtime status rows for the effective RoPE and
   MLP chunk values.
