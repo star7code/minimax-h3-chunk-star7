@@ -150,12 +150,29 @@ assert.match(
     corrupted.widgets.find(
         (widget) => widget.__star7StatusName === "star7_rope_runtime_status",
     ).name,
-    /已降级：4096（设定 8192）/,
+    /已降级为：4096（设定 8192）/,
 );
 assert.match(
     corrupted.widgets.find(
         (widget) => widget.__star7StatusName === "star7_mlp_runtime_status",
     ).name,
-    /已降级：2048（设定 4096）/,
+    /已降级为：2048（设定 4096）/,
+);
+
+statusHandler({
+    detail: {
+        node_id: "299",
+        configured_rope: 8192,
+        effective_rope: 2048,
+        configured_mlp: 4096,
+        effective_mlp: 2048,
+        reason: "sequence_limit",
+    },
+});
+assert.match(
+    corrupted.widgets.find(
+        (widget) => widget.__star7StatusName === "star7_rope_runtime_status",
+    ).name,
+    /当前使用：2048（设定 8192，受序列长度限制）/,
 );
 console.log("Runtime status workflow restore test passed");

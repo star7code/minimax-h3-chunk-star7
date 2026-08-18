@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.1.1"
+NODE_VERSION = "2.2.8"
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -22,6 +22,10 @@ _CONFIG = {
     "mlp_chunk_tokens": 4096,
     "effective_chunk_tokens": 8192,
     "effective_mlp_chunk_tokens": 4096,
+    "status_effective_chunk_tokens": 8192,
+    "status_effective_mlp_chunk_tokens": 4096,
+    "status_sequence_rope": None,
+    "status_sequence_mlp": None,
     "auto_halve_on_oom": True,
     "verbose": True,
     "reuse_mlp_weights": True,
@@ -50,9 +54,9 @@ def _runtime_status_payload(reason: str) -> dict:
     return {
         "node_id": _CONFIG.get("node_id"),
         "configured_rope": int(_CONFIG["chunk_tokens"]),
-        "effective_rope": int(_CONFIG["effective_chunk_tokens"]),
+        "effective_rope": int(_CONFIG["status_effective_chunk_tokens"]),
         "configured_mlp": int(_CONFIG["mlp_chunk_tokens"]),
-        "effective_mlp": int(_CONFIG["effective_mlp_chunk_tokens"]),
+        "effective_mlp": int(_CONFIG["status_effective_mlp_chunk_tokens"]),
         "reason": reason,
     }
 
@@ -85,6 +89,16 @@ def _remember_effective_chunk(kind: str, failed: int, effective: int) -> None:
     previous = int(_CONFIG[effective_key])
     effective = min(previous, max(256, int(effective)))
     _CONFIG[effective_key] = effective
+    status_key = (
+        "status_effective_chunk_tokens"
+        if kind == "RoPE" else "status_effective_mlp_chunk_tokens"
+    )
+    sequence_key = (
+        "status_sequence_rope"
+        if kind == "RoPE" else "status_sequence_mlp"
+    )
+    sequence = _CONFIG.get(sequence_key)
+    _CONFIG[status_key] = min(effective, int(sequence)) if sequence else effective
     _LOG.warning(
         "[Star7 H3 Chunk] %s VRAM fallback: configured=%d, failed-at=%d, "
         "now-using=%d for later blocks in this model session.",
@@ -113,11 +127,40 @@ def _configure_runtime(
     _CONFIG["mlp_chunk_tokens"] = configured_mlp
     _CONFIG["effective_chunk_tokens"] = configured_rope
     _CONFIG["effective_mlp_chunk_tokens"] = configured_mlp
+    _CONFIG["status_effective_chunk_tokens"] = configured_rope
+    _CONFIG["status_effective_mlp_chunk_tokens"] = configured_mlp
+    _CONFIG["status_sequence_rope"] = None
+    _CONFIG["status_sequence_mlp"] = None
     _CONFIG["auto_halve_on_oom"] = bool(auto_halve_on_oom)
     _CONFIG["verbose"] = bool(verbose)
     _CONFIG["reuse_mlp_weights"] = bool(reuse_mlp_weights)
     _CONFIG["node_id"] = str(node_id) if node_id is not None else None
     _send_runtime_status("configured")
+
+
+def _set_sequence_status(kind: str, sequence_length: int) -> None:
+    """Expose the cap used by this forward without learning it as an OOM cap."""
+    sequence_length = max(1, int(sequence_length))
+    if kind == "RoPE":
+        learned_key = "effective_chunk_tokens"
+        status_key = "status_effective_chunk_tokens"
+        sequence_key = "status_sequence_rope"
+    elif kind == "MLP":
+        learned_key = "effective_mlp_chunk_tokens"
+        status_key = "status_effective_mlp_chunk_tokens"
+        sequence_key = "status_sequence_mlp"
+    else:
+        raise ValueError(f"unknown chunk kind: {kind}")
+
+    actual = min(int(_CONFIG[learned_key]), sequence_length)
+    changed = (
+        _CONFIG.get(status_key) != actual
+        or _CONFIG.get(sequence_key) != sequence_length
+    )
+    _CONFIG[status_key] = actual
+    _CONFIG[sequence_key] = sequence_length
+    if changed:
+        _send_runtime_status("sequence_limit" if actual < int(_CONFIG[learned_key]) else "active")
 
 
 def _slice_freqs_for_tokens(freqs_cis: torch.Tensor, start: int, end: int, seq_len: int) -> torch.Tensor:
@@ -206,6 +249,7 @@ def _chunked_rms_rope_split_half_inplace(
         )
 
     seq_len = q.shape[1]
+    _set_sequence_status("RoPE", seq_len)
     preferred = max(256, int(_CONFIG["effective_chunk_tokens"]))
     chunk = min(preferred, seq_len)
     auto_halve = bool(_CONFIG["auto_halve_on_oom"])
@@ -307,7 +351,12 @@ def _resident_linear_forward(linear, x, weight, bias, quant_mode):
 
 
 def _resident_mlp_callers(self, x: torch.Tensor, stack: contextlib.ExitStack):
-    """Prepare fc1/fc2 once and return callables that reuse those exact weights."""
+    """Prepare private fc1/fc2 snapshots and reuse them across token chunks.
+
+    AIMDO/VBAR may return views into a shared cast buffer.  Preparing one layer
+    at a time, cloning its fully patched result, and then releasing the context
+    prevents the next layer from overwriting a weight still used by this MLP.
+    """
     import comfy.ops
 
     if not (_linear_can_reuse_weights(self.fc1) and _linear_can_reuse_weights(self.fc2)):
@@ -321,29 +370,28 @@ def _resident_mlp_callers(self, x: torch.Tensor, stack: contextlib.ExitStack):
     # the entire matrix before the first token chunk.
     fc1_stage_dtype = self.fc1.weight.dtype if fc1_quant == "weight-only" else x.dtype
     fc2_stage_dtype = self.fc2.weight.dtype if fc2_quant == "weight-only" else torch.float16
-    fc1_weight, fc1_bias = stack.enter_context(
-        comfy.ops.CastBiasWeightContext(
-            self.fc1,
+    def snapshot(linear, stage_dtype, bias_dtype, compute_dtype, quant_mode):
+        with comfy.ops.CastBiasWeightContext(
+            linear,
             input=None,
-            dtype=fc1_stage_dtype,
+            dtype=stage_dtype,
             device=x.device,
-            bias_dtype=x.dtype,
+            bias_dtype=bias_dtype,
             offloadable=True,
-            compute_dtype=x.dtype,
-            want_requant=fc1_quant is not None,
-        )
+            compute_dtype=compute_dtype,
+            want_requant=quant_mode is not None,
+        ) as (weight, bias):
+            # clone() preserves QuantizedTensor layout/metadata while giving
+            # the resident caller storage independent of AIMDO's cast buffer.
+            private_weight = weight.detach().clone() if weight is not None else None
+            private_bias = bias.detach().clone() if bias is not None else None
+        return private_weight, private_bias
+
+    fc1_weight, fc1_bias = snapshot(
+        self.fc1, fc1_stage_dtype, x.dtype, x.dtype, fc1_quant
     )
-    fc2_weight, fc2_bias = stack.enter_context(
-        comfy.ops.CastBiasWeightContext(
-            self.fc2,
-            input=None,
-            dtype=fc2_stage_dtype,
-            device=x.device,
-            bias_dtype=torch.float16,
-            offloadable=True,
-            compute_dtype=torch.float16,
-            want_requant=fc2_quant is not None,
-        )
+    fc2_weight, fc2_bias = snapshot(
+        self.fc2, fc2_stage_dtype, torch.float16, torch.float16, fc2_quant
     )
 
     # This changes only QuantizedTensor.orig_dtype metadata and keeps its INT8
@@ -435,6 +483,7 @@ def _run_chunked_h3_mlp(
         return comfy.ops.linear_input_act(self.fc2, self.fc1(x), "swiglu")
 
     seq_len = x.shape[0]
+    _set_sequence_status("MLP", seq_len)
     effective_input_dtype = input_dtype or x.dtype
     use_star7_fp16 = bool(star7_fp16 and effective_input_dtype == torch.float16)
     output_dtype = torch.float32 if use_star7_fp16 else x.dtype
@@ -455,17 +504,16 @@ def _run_chunked_h3_mlp(
     )
     if _CONFIG["verbose"] and shape_key not in _LOGGED_MLP_SHAPES:
         _LOGGED_MLP_SHAPES.add(shape_key)
-        avoided_mib = (
-            seq_len * x.shape[1] * torch.empty((), dtype=output_dtype).element_size()
+        expansion_mib = (
+            current_chunk * self.fc1.out_features
+            * torch.empty((), dtype=effective_input_dtype).element_size()
             / (1024 ** 2)
-            if fuse_residual else 0.0
         )
         _LOG.info(
             "[Star7 H3 Chunk] MLP active | S=%d | hidden=%d | ffn_x2=%d | "
-            "chunk=%d | dtype=%s | mode=%s | avoided-output=%.1fMiB",
+            "chunk=%d | dtype=%s | mode=%s | chunk-expansion=%.1fMiB",
             seq_len, x.shape[1], self.fc1.out_features, current_chunk,
-            effective_input_dtype,
-            mode, avoided_mib,
+            effective_input_dtype, mode, expansion_mib,
         )
 
     staging_input = x if input_factory is None else torch.empty(
@@ -549,6 +597,18 @@ def _run_chunked_h3_mlp(
         and _linear_can_reuse_weights(self.fc1)
         and _linear_can_reuse_weights(self.fc2)
     )
+    if (
+        _CONFIG["reuse_mlp_weights"]
+        and use_star7_fp16
+        and not reuse_weights
+        and _CONFIG["verbose"]
+        and "dynamic-residency" not in _LOGGED_MLP_SHAPES
+    ):
+        _LOGGED_MLP_SHAPES.add("dynamic-residency")
+        _LOG.info(
+            "[Star7 H3 Chunk] Resident MLP reuse disabled automatically: "
+            "dynamic/low-VRAM weight residency detected; using streamed-safe path"
+        )
     if reuse_weights:
         try:
             with contextlib.ExitStack() as stack:
@@ -913,13 +973,16 @@ def install_model_patch(
                 "but is unavailable; keeping the existing attention backend"
             )
 
-    # Patch the whole block so each MLP result chunk can be gated directly into
-    # the residual stream. This removes the full [S, hidden] MLP output buffer.
-    block_forward = _make_chunked_h3_block_forward(star7_fp16, h3_model)
+    # Patch only the MLP.  The block itself is deliberately left untouched so
+    # an upstream FP16 exact, Sage, low-VRAM, or third-party model patch keeps
+    # ownership of its residual/attention execution.  The previous whole-block
+    # replacement was numerically fragile when no LoRA was present and added
+    # extra norm/modulation kernels to every token chunk.
+    mlp_forward = _make_chunked_h3_mlp_forward(star7_fp16)
     for index, block in enumerate(diffusion_model.blocks):
         patched.add_object_patch(
-            f"diffusion_model.blocks.{index}.forward",
-            MethodType(block_forward, block),
+            f"diffusion_model.blocks.{index}.mlp.forward",
+            MethodType(mlp_forward, block.mlp),
         )
 
     prefetch_wrapper = (
@@ -936,7 +999,7 @@ def install_model_patch(
     if verbose:
         _LOG.info(
             "[Star7 H3 Chunk] Model ready v%s | blocks=%d | FP16 Exact=%s | "
-            "dynamic prefetch=%s | fused residual=True | attention=%s",
+            "dynamic prefetch=%s | block=preserved | attention=%s",
             NODE_VERSION, len(diffusion_model.blocks), star7_fp16,
             not disable_dynamic_prefetch,
             (
@@ -987,7 +1050,7 @@ class MiniMaxH3ActivationChunkStar7:
                         "min": 256,
                         "max": 65536,
                         "step": 256,
-                        "tooltip": "H3 MLP tokens per chunk. v2 also streams norm/modulation and fuses each result into the residual. Start at 4096.",
+                        "tooltip": "H3 MLP tokens per chunk. Keeps the upstream block path while streaming the large expansion activation. Start at 4096.",
                     },
                 ),
                 "disable_dynamic_prefetch": (
@@ -1001,7 +1064,7 @@ class MiniMaxH3ActivationChunkStar7:
                     "BOOLEAN",
                     {
                         "default": True,
-                        "tooltip": "Prepare fc1/fc2 once per block. v2 preserves INT8/ConvRot QuantizedTensor weights and falls back automatically if residency exceeds VRAM.",
+                        "tooltip": "Automatic MLP weight strategy: reuse only when weights are static and unpatched; otherwise switch to streamed-safe mode.",
                     },
                 ),
                 "attention_backend": (
@@ -1024,9 +1087,10 @@ class MiniMaxH3ActivationChunkStar7:
     FUNCTION = "patch"
     CATEGORY = "Star7/MiniMax H3"
     DESCRIPTION = (
-        "Low-VRAM MiniMax H3 patch. Chunks fused RMSNorm + split-half RoPE, streams "
-        "MLP norm/modulation, preserves INT8/ConvRot weights, and accumulates fc2 "
-        "chunks directly into the residual. Can safely retry without AIMDO prefetch. "
+        "Low-VRAM MiniMax H3 patch. Chunks fused split-half RoPE and the large MLP "
+        "expansion activation, preserves INT8/ConvRot weights, and keeps the upstream "
+        "DiT block path for FP16/BF16, Sage, LoRA, and third-party compatibility. "
+        "Can safely retry without AIMDO prefetch. "
         "Compatible with FP16 Exact Fix - Star7. The default Comfy Kitchen INT8 "
         "attention mode is approximate; select existing to preserve upstream attention math."
     )

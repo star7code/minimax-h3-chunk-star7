@@ -179,6 +179,34 @@ def test_weight_only_quantized_resident_path_stays_quantized(device=torch.device
         assert actual.count_nonzero().item() == 0
 
 
+def test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse():
+    dynamic = SimpleNamespace(
+        _v=object(),
+        weight=object(),
+        weight_function=[],
+        bias_function=[],
+        _forward=lambda *args: None,
+    )
+    assert chunk_nodes._linear_can_reuse_weights(dynamic) is True
+
+    low_vram = SimpleNamespace(
+        weight=object(),
+        weight_function=[],
+        bias_function=[],
+        weight_lowvram_function=object(),
+        _forward=lambda *args: None,
+    )
+    assert chunk_nodes._linear_can_reuse_weights(low_vram) is True
+
+    patched = SimpleNamespace(
+        weight=object(),
+        weight_function=[object()],
+        bias_function=[],
+        _forward=lambda *args: None,
+    )
+    assert chunk_nodes._linear_can_reuse_weights(patched) is True
+
+
 def test_fused_residual_matches_materialized_mlp(device=torch.device("cpu")):
     from comfy.ldm.minimax import model as h3_model
 
@@ -259,6 +287,73 @@ def test_fp16_block_patch_matches_materialized_formula(device=torch.device("cpu"
         transformer_options={},
     )
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_install_preserves_upstream_block_patch():
+    from comfy.ldm.minimax import model as h3_model
+
+    diffusion_model = h3_model.MiniMaxH3Model(
+        hidden_size=16,
+        num_layers=2,
+        token_refiner_num_layers=1,
+        num_attention_heads=2,
+        attention_head_dim=8,
+        ffn_hidden_size=24,
+        latents_dim=4,
+        audio_latents_dim=4,
+        text_dim=16,
+        timestep_input_dim=8,
+        time_embed_hidden_size=16,
+        time_embed_dim=8,
+        rope_inv_freq_len=2,
+        dtype=torch.float16,
+        device="cpu",
+        operations=torch.nn,
+    )
+    upstream_block_patch = object()
+
+    class FakeModelPatcher:
+        def __init__(self):
+            self.model_options = {
+                "transformer_options": {
+                    "star7_minimax_h3_fp16_exact_fix": "test",
+                }
+            }
+            self.object_patches = {
+                "diffusion_model.blocks.0.forward": upstream_block_patch,
+            }
+            self.wrappers = {}
+
+        def clone(self):
+            return self
+
+        def get_model_object(self, name):
+            assert name == "diffusion_model"
+            return diffusion_model
+
+        def add_object_patch(self, name, value):
+            self.object_patches[name] = value
+
+        def add_wrapper_with_key(self, wrapper_type, key, value):
+            self.wrappers[(wrapper_type, key)] = value
+
+    patched = chunk_nodes.install_model_patch(
+        FakeModelPatcher(),
+        chunk_tokens=8192,
+        auto_halve_on_oom=True,
+        verbose=False,
+        mlp_chunk_tokens=4096,
+        disable_dynamic_prefetch=True,
+        reuse_mlp_weights=True,
+        attention_backend="existing",
+    )
+
+    assert patched.object_patches["diffusion_model.blocks.0.forward"] is upstream_block_patch
+    assert "diffusion_model.blocks.1.forward" not in patched.object_patches
+    for index in range(2):
+        key = f"diffusion_model.blocks.{index}.mlp.forward"
+        assert key in patched.object_patches
+        assert patched.object_patches[key].__func__.__name__ == "forward"
 
 
 def test_prefetch_wrapper_forces_off():
@@ -376,7 +471,7 @@ def test_mlp_oom_value_is_reused_for_later_blocks():
         assert chunk_nodes._runtime_status_payload("test") == {
             "node_id": None,
             "configured_rope": original_config["chunk_tokens"],
-            "effective_rope": original_config["effective_chunk_tokens"],
+            "effective_rope": original_config["status_effective_chunk_tokens"],
             "configured_mlp": 1024,
             "effective_mlp": 512,
             "reason": "test",
@@ -461,5 +556,7 @@ if __name__ == "__main__":
     test_mlp_oom_value_is_reused_for_later_blocks()
     test_manual_settings_reset_learned_runtime_values()
     test_legacy_node_alias_is_deprecated()
+    test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse()
+    test_install_preserves_upstream_block_patch()
     test_comfy_kitchen_int8_attention_forward_cuda()
     print("MiniMax H3 dynamic prefetch wrapper test passed")

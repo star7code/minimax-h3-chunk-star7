@@ -21,7 +21,7 @@ This document records one local Windows/ComfyUI case. It is evidence for configu
 | Audio VAE | MiniMax H3 audio VAE FP32 |
 | LoRA | MiniMax H3 FL2V Turbo 4-step v1.0 768p, strength 1.0 |
 | Sampling | Euler, simple scheduler, 4 steps, denoise 1.0 |
-| Chunking | RoPE 8192; MLP 4096; prefetch enabled; weight reuse enabled |
+| Chunking | RoPE 8192; MLP 4096; prefetch enabled; automatic MLP weight strategy |
 | Attention | Comfy Kitchen INT8 |
 | Output | RTX Video Super Resolution 2× Ultra; NVENC H.264 at 35Mbps |
 
@@ -74,9 +74,9 @@ Activation chunking does not reduce theoretical FLOPs. If a workload already fit
 | Dedicated VRAM | RoPE start | MLP start | Prefetch |
 |---:|---:|---:|---|
 | 20–24GB | 8192 | 4096 | enabled first; disable after OOM |
-| 16–20GB | 4096 | 2048–4096 | disabled for validation |
-| 12–16GB | 2048–4096 | 1024–2048 | disabled |
-| below 12GB | 1024–2048 | 512–1024 | disabled; long-video success is not guaranteed |
+| 16–20GB | 8192 | 2048–4096 | enabled; lower MLP first |
+| 12–16GB | 8192 | 1024–2048 | enabled; lower RoPE only on RoPE OOM |
+| below 12GB | 4096–8192 | 512–1024 | enabled; long-video success is not guaranteed |
 
 ## Memory observation
 
@@ -99,7 +99,7 @@ chunk_tokens = 8192
 mlp_chunk_tokens = 4096
 auto_halve_on_oom = true
 disable_dynamic_prefetch = false
-reuse_mlp_weights = true
+reuse_mlp_weights = true  # auto-detects resident vs streamed safely
 attention_backend = comfy_kitchen_int8
 ```
 

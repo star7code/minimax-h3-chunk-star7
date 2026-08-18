@@ -16,10 +16,14 @@ const REAL_WIDGET_DEFAULTS = {
 };
 const REAL_WIDGET_NAMES = Object.keys(REAL_WIDGET_DEFAULTS);
 
-function formatValue(label, effective, configured) {
-    return effective === configured
-        ? `${label} 当前使用：${effective}（设定值）`
-        : `${label} 已降级：${effective}（设定 ${configured}）`;
+function formatValue(label, effective, configured, reason = "active") {
+    if (effective === configured) {
+        return `${label} 当前使用：${effective}（设定值）`;
+    }
+    if (reason === "sequence_limit") {
+        return `${label} 当前使用：${effective}（设定 ${configured}，受序列长度限制）`;
+    }
+    return `${label} 已降级为：${effective}（设定 ${configured}）`;
 }
 
 function removeStatusWidgets(node) {
@@ -177,10 +181,10 @@ api.addEventListener("star7-h3-chunk-status", ({ detail }) => {
     }
     const widgets = ensureStatusWidgets(node);
     widgets.rope.name = formatValue(
-        "RoPE", detail.effective_rope, detail.configured_rope,
+        "RoPE", detail.effective_rope, detail.configured_rope, detail.reason,
     );
     widgets.mlp.name = formatValue(
-        "MLP", detail.effective_mlp, detail.configured_mlp,
+        "MLP", detail.effective_mlp, detail.configured_mlp, detail.reason,
     );
     node.setDirtyCanvas?.(true, true);
 });

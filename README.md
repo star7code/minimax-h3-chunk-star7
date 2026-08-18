@@ -15,7 +15,7 @@ Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with li
 - `RMSNorm -> split-half RoPE (Q/K)`；
 - `fc1 -> SwiGLU -> fc2` MLP 扩展激活。
 
-RoPE 沿 sequence/token 维分块并原位写回 Q/K。MLP 按 token 分块计算，把各段 `fc2` 结果直接累加回 residual，避免同时保留完整扩展激活和完整 MLP 输出。对于 `int8_tensorwise + ConvRot` 权重，节点保持 `QuantizedTensor` 路径，并允许各 token chunk 复用已经准备好的权重。
+RoPE 沿 sequence/token 维分块并原位写回 Q/K。MLP 按 token 分块计算，避免同时保留完整的扩展激活；MLP 输出仍交给上游 block 处理，以保留 FP16 Exact、Sage、低显存 attention 和第三方模型补丁的兼容性。对于 `int8_tensorwise + ConvRot` 权重，节点保持 `QuantizedTensor` 路径，并允许各 token chunk 复用已经准备好的权重。
 
 默认 `attention_backend = comfy_kitchen_int8` 时，本项目会使用 Comfy Kitchen INT8 注意力；它是近似注意力路径。若要完全保留前置节点或当前环境的注意力算法，请选择 `existing`。两种模式都不会改变采样器、sigma、seed、VAE、latent、帧数或画面分辨率。
 
@@ -83,11 +83,11 @@ Native FP16 Loader 已包含精确防溢出处理，不要再串接旧的后置 
 
 | 参数 | 作用 | RTX 2080 Ti 22GB 实测值 |
 |---|---|---:|
-| `chunk_tokens` | RoPE 的目标 token 分块上限；节点下方会显示本次实际生效值 | `8192` |
+| `chunk_tokens` | RoPE 的目标 token 分块上限；RoPE 工作集相对较小，优先保持较大值 | `8192` |
 | `mlp_chunk_tokens` | MLP 的目标 token 分块上限；节点下方会显示本次实际生效值 | `4096` |
 | `auto_halve_on_oom` | 当前 chunk OOM 时自动减半重试 | `true` |
 | `disable_dynamic_prefetch` | 禁止下一 block 权重预取，省显存但可能变慢 | `true` |
-| `reuse_mlp_weights` | token chunks 之间复用已准备权重 | `true` |
+| `reuse_mlp_weights` | 自动策略：将已准备权重复制到独立快照后复用；无法快照或 OOM 时改用 streamed | `true` |
 | `attention_backend` | 保留上游后端或显式采用 CK INT8 | `comfy_kitchen_int8` |
 | `verbose` | 输出首个同形状 block 的紧凑诊断 | `true` |
 
@@ -98,17 +98,29 @@ Native FP16 Loader 已包含精确防溢出处理，不要再串接旧的后置 
 里的目标上限，`N` 是本次模型会话实际采用的上限。输入框本身不会被偷偷改写，也不会把临时
 降级值保存进工作流。
 
+如果当前 packed sequence 本身短于设定值，状态会显示
+`当前使用 N（设定 M，受序列长度限制）`。这是本次 forward 的真实 token 上限，不是 OOM
+降级，也不会把较短序列的值记忆到后续较长序列。
+
 `auto_halve_on_oom=true` 时，RoPE 或 MLP 当前分块 OOM 会按当前值整数减半，最低到 `256`。
 找到可用值后，后续 H3 block 和同一次模型会话中的后续 forward 会直接沿用该值，避免每个
 block 反复以失败的大块重试。用户手动修改任一分块输入并重新执行节点后，记忆值会用新的
 设定值重置；例如旧值曾自动降到 `2048`，手动改成 `3072` 后不会继续沿用 `2048`。
 
+### 优先调整 MLP，不要先动 RoPE
+
+本机真实 ConvRot 权重的单 MLP 工作集测试显示：`MLP 8192` 约 `1970 MiB`、`4096` 约
+`1228 MiB`、`2048` 约 `858 MiB`、`1024` 约 `672 MiB`。同条件 RoPE 约为：`8192`
+`820 MiB`、`4096` `638 MiB`、`2048` `550 MiB`、`1024` `501 MiB`。因此显存紧张时，
+先降低 `mlp_chunk_tokens` 通常更有效；RoPE 从 `8192` 降低到 `4096` 的收益相对有限，
+除非日志明确指出 RoPE OOM，否则建议保持 `8192`。
+
 ### 按 OOM 位置调整，而不是盲目同时降低两个值
 
 | 报错位置或现象 | 应优先调整 | 建议动作 |
 |---|---|---|
-| `rms_rope_split_half_` / `apply_rope_split_half1` | `chunk_tokens` | `8192 -> 4096 -> 2048 -> 1024` |
 | `fc1` / SwiGLU / `fc2` MLP 激活 OOM | `mlp_chunk_tokens` | `4096 -> 2048 -> 1024 -> 512` |
+| `rms_rope_split_half_` / `apply_rope_split_half1` | `chunk_tokens` | 只有明确 RoPE OOM 时才 `8192 -> 4096 -> 2048` |
 | 下一 block 预取或 block 切换时 OOM | `disable_dynamic_prefetch` | 改为 `true`，牺牲部分重叠速度换显存余量 |
 | QKV 或 attention kernel OOM | 注意力后端 | 改用 CK INT8，或保留上游 Low VRAM/Sage；两个 chunk 值不是主要控制项 |
 | 模型加载阶段已经 OOM | 加载器/量化/卸载策略 | 分块节点尚未执行，调 chunk 无效 |
@@ -117,10 +129,10 @@ block 反复以失败的大块重试。用户手动修改任一分块输入并�
 
 | 专用显存 | `chunk_tokens` 起点 | `mlp_chunk_tokens` 起点 | 预取建议 |
 |---:|---:|---:|---|
-| 20–24GB | `8192` | `4096` | `true`；稳定后可自行测试 `false` |
-| 16–20GB | `6144–8192` | `4096` | `true`；OOM 时自动降级 |
-| 12–16GB | `4096–6144` | `2048–4096` | `true`；OOM 时自动降级 |
-| 12GB以下 | `2048–4096` | `1024–2048` | `true`；可能仍需模型卸载，不保证长视频可行 |
+| 20–24GB | `8192` | `4096` | `true`；稳定后可测试 `false` |
+| 16–20GB | `8192` | `2048–4096` | `true`；优先降低 MLP |
+| 12–16GB | `8192` | `1024–2048` | `true`；RoPE OOM 再降 RoPE |
+| 12GB以下 | `4096–8192` | `512–1024` | `true`；长视频成功率取决于模型卸载 |
 
 保持 `auto_halve_on_oom=true` 可以让 RoPE chunk 自动降档，但 MLP、attention 或模型加载 OOM 仍需根据 traceback 手动选择正确参数。
 
@@ -208,7 +220,9 @@ attention_backend = existing
 
 ## 小显存补充说明
 
-建议始终保持 `reuse_mlp_weights=true`，并从前面的显存档位表开始。小显存卡能否完成目标还取决于模型权重、LoRA是否触发反量化、注意力工作集、ComfyUI卸载策略和操作系统。分块降低的是激活峰值，不会让全部模型权重凭空消失。
+`reuse_mlp_weights` 是自动策略请求，而不是强制命令。节点会先按 ComfyUI 当前路径准备并应用 LoRA/权重补丁，再把每层结果复制到独立 resident 快照，避免 AIMDO/VBAR 共享 staging buffer 被后续层覆盖。快照不支持、复制失败或显存不足时才改用 streamed-safe 路径。旧工作流里的 `true` 仍会按这个规则自动判断。小显存卡能否完成目标还取决于模型权重、LoRA 是否触发反量化、注意力工作集、ComfyUI 卸载策略和操作系统。分块降低的是扩展激活峰值，不会让全部模型权重凭空消失。
+
+该字段保留在节点界面，方便高级用户手动关闭 resident 策略进行排查或兼容性验证。开启时会使用独立权重快照，失败或 OOM 才会自动切换 streamed。字段位置和工作流序列化保持不变，因此旧工作流不会错位。
 
 ## 示例工作流
 
@@ -229,12 +243,13 @@ attention_backend = existing
 节点只对首个同形状 block 输出紧凑信息，例如：
 
 ```text
-[Star7 H3 Chunk] v2.1.1 active | blocks=... | fp16=...
+[Star7 H3 Chunk] v2.2.8 active | blocks=... | fp16=...
 [Star7 H3 Chunk] Attention profile (one block) | ...
-[Star7 H3 Chunk] MLP profile (one block) | chunks=... | weights=resident-quantized
+[Star7 H3 Chunk] MLP active | ... | chunk-expansion=...
+[Star7 H3 Chunk] MLP profile (one block) | chunks=... | weights=resident-snapshot
 ```
 
-`weights=resident-quantized` 表示 INT8/ConvRot 权重仍保持量化并在 chunks 间复用；`streamed-fallback` 表示显存不足后进入流式回退。
+`weights=resident-*` 表示独立权重快照已启用；`weights=streamed` 表示快照失败、OOM 或手动关闭后使用安全流式路径。
 
 ## License
 
