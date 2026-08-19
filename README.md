@@ -57,6 +57,10 @@ git clone https://github.com/star7code/minimax-h3-chunk-star7.git
 MiniMax H3 Activation Chunk (RoPE + MLP) - Star7
 ```
 
+节点界面会跟随 ComfyUI 语言：中文环境自动显示中文标题、参数名、提示和运行状态，
+其他语言环境显示英文。汉化只改变界面文字，不改变工作流保存的参数名或实际值；旧工作流
+以及 `existing`、`comfy_kitchen_int8` 两种注意力选项均保持兼容。
+
 ## 推荐连接顺序
 
 通用链路：

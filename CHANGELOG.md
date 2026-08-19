@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added automatic Chinese UI localization. Chinese ComfyUI environments now
+  show plain-language node titles, parameter labels, tooltips, boolean labels,
+  and runtime chunk status; other locales remain English. Internal input names,
+  attention backend values, and workflow serialization are unchanged.
+- Preserve the last effective RoPE/MLP values and OOM reduction state when the
+  interface language changes, while discarding stale status after the user
+  changes either configured chunk size.
+
 - Added isolated resident MLP snapshots in v2.2.8 and updated tuning guidance:
   keep RoPE at a larger value by default and lower MLP first when VRAM is
   tight. The documented local measurements show substantially more memory

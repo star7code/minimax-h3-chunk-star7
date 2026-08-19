@@ -16,14 +16,113 @@ const REAL_WIDGET_DEFAULTS = {
 };
 const REAL_WIDGET_NAMES = Object.keys(REAL_WIDGET_DEFAULTS);
 
+const TEXT = {
+    en: {
+        title: "MiniMax H3 VRAM Chunk Acceleration - Star7",
+        legacyTitle: "MiniMax H3 VRAM Chunk Acceleration (Legacy Workflow)",
+        labels: {
+            chunk_tokens: "RoPE chunk size",
+            auto_halve_on_oom: "Auto-reduce after VRAM error",
+            verbose: "Show runtime details",
+            mlp_chunk_tokens: "MLP chunk size (main VRAM control)",
+            disable_dynamic_prefetch: "Disable next-block preloading",
+            reuse_mlp_weights: "Reuse MLP weights (faster)",
+            attention_backend: "Attention method",
+        },
+        tooltips: {
+            chunk_tokens: "Usually keep 8192. Lower it only when the log specifically reports a RoPE VRAM error.",
+            auto_halve_on_oom: "Automatically halves the failing RoPE or MLP chunk and retries instead of stopping the task.",
+            verbose: "Shows actual chunk sizes, automatic reductions, and the active MLP weight mode in the console.",
+            mlp_chunk_tokens: "The main VRAM control. Smaller values save more VRAM but may be slower. Lower this before RoPE.",
+            disable_dynamic_prefetch: "On is safer and uses less peak VRAM but may be slower. Off preloads the next block for speed.",
+            reuse_mlp_weights: "Uses isolated MLP weight snapshots to avoid repeated preparation. Falls back safely if snapshots fail or run out of VRAM.",
+            attention_backend: "comfy_kitchen_int8 selects CK INT8 (recommended on many RTX 20-series GPUs). existing keeps an upstream Sage or environment-selected method.",
+        },
+        current: (label, value) => `${label} in use: ${value} (configured)`,
+        limited: (label, value, configured) => `${label} in use: ${value} (set ${configured}, limited by video size)`,
+        reduced: (label, value, configured) => `${label} auto-reduced to: ${value} (set ${configured})`,
+        rope: "RoPE",
+        mlp: "MLP",
+    },
+    zh: {
+        title: "MiniMax H3 显存分块加速 - Star7",
+        legacyTitle: "MiniMax H3 显存分块加速（旧工作流兼容）",
+        labels: {
+            chunk_tokens: "RoPE 分块大小",
+            auto_halve_on_oom: "显存不足时自动降档",
+            verbose: "显示运行详情",
+            mlp_chunk_tokens: "MLP 分块大小（主要显存调节）",
+            disable_dynamic_prefetch: "关闭下一层提前加载",
+            reuse_mlp_weights: "复用 MLP 权重（提速）",
+            attention_backend: "注意力计算方式",
+        },
+        tooltips: {
+            chunk_tokens: "通常保持 8192。它对显存影响相对较小，只有日志明确提示 RoPE 显存不足时才降低。",
+            auto_halve_on_oom: "RoPE 或 MLP 分块显存不足时自动减半重试，避免任务直接停止。",
+            verbose: "在控制台显示实际分块、是否自动降档以及 MLP 权重加速方式。",
+            mlp_chunk_tokens: "主要显存调节项。数值越小越省显存，但可能更慢；显存不足时优先降低它。",
+            disable_dynamic_prefetch: "开启更省显存、更稳定，但可能稍慢；关闭会提前加载下一层，通常更快。",
+            reuse_mlp_weights: "使用独立 MLP 权重快照减少重复准备；快照失败或显存不足时会自动切换安全模式。",
+            attention_backend: "comfy_kitchen_int8 是 CK INT8（20 系等显卡推荐）；existing 会沿用前置 Sage 或当前环境的计算方式。",
+        },
+        current: (label, value) => `${label} 实际使用：${value}（设定值）`,
+        limited: (label, value, configured) => `${label} 实际使用：${value}（设定 ${configured}，视频规模只需要这么多）`,
+        reduced: (label, value, configured) => `${label} 已自动降为：${value}（原设定 ${configured}）`,
+        rope: "RoPE",
+        mlp: "MLP",
+    },
+};
+
+function language() {
+    const locale = app.ui?.settings?.getSettingValue?.("Comfy.Locale")
+        ?? globalThis.navigator?.language
+        ?? "en";
+    return String(locale).toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+function strings() {
+    return TEXT[language()];
+}
+
 function formatValue(label, effective, configured, reason = "active") {
+    const text = strings();
     if (effective === configured) {
-        return `${label} 当前使用：${effective}（设定值）`;
+        return text.current(label, effective);
     }
     if (reason === "sequence_limit") {
-        return `${label} 当前使用：${effective}（设定 ${configured}，受序列长度限制）`;
+        return text.limited(label, effective, configured);
     }
-    return `${label} 已降级为：${effective}（设定 ${configured}）`;
+    return text.reduced(label, effective, configured);
+}
+
+function localizeNode(node) {
+    const text = strings();
+    const legacy = node.comfyClass === "MiniMaxH3RoPEChunkPatch"
+        || node.type === "MiniMaxH3RoPEChunkPatch";
+    const previousTitle = node.__star7LocalizedTitle;
+    const nextTitle = legacy ? text.legacyTitle : text.title;
+    if (!node.title || node.title === previousTitle || Object.values(TEXT).some(
+        (item) => node.title === item.title || node.title === item.legacyTitle,
+    )) {
+        node.title = nextTitle;
+        node.__star7LocalizedTitle = nextTitle;
+    }
+    for (const [name, label] of Object.entries(text.labels)) {
+        const widget = node.widgets?.find((item) => item.name === name);
+        if (!widget) continue;
+        widget.label = label;
+        widget.localized_name = label;
+        widget.options ??= {};
+        widget.options.tooltip = text.tooltips[name];
+    }
+    const modelInput = node.inputs?.find((input) => input.name === "model");
+    if (modelInput) {
+        modelInput.localized_name = language() === "zh" ? "模型" : "model";
+    }
+    const modelOutput = node.outputs?.find((output) => output.name === "model");
+    if (modelOutput) {
+        modelOutput.localized_name = language() === "zh" ? "模型" : "model";
+    }
 }
 
 function removeStatusWidgets(node) {
@@ -151,15 +250,26 @@ function ensureStatusWidgets(node) {
     const configuredMlp = Number(
         node.widgets?.find((item) => item.name === "mlp_chunk_tokens")?.value ?? 4096,
     );
+    localizeNode(node);
+    const text = strings();
+    const runtime = node.__star7RuntimeDetail;
+    const runtimeMatchesInputs = runtime
+        && Number(runtime.configured_rope) === configuredRope
+        && Number(runtime.configured_mlp) === configuredMlp;
+    const effectiveRope = runtimeMatchesInputs
+        ? Number(runtime.effective_rope) : configuredRope;
+    const effectiveMlp = runtimeMatchesInputs
+        ? Number(runtime.effective_mlp) : configuredMlp;
+    const reason = runtimeMatchesInputs ? runtime.reason : "active";
     const rope = makeStatusWidget(
         node,
         "star7_rope_runtime_status",
-        formatValue("RoPE", configuredRope, configuredRope),
+        formatValue(text.rope, effectiveRope, configuredRope, reason),
     );
     const mlp = makeStatusWidget(
         node,
         "star7_mlp_runtime_status",
-        formatValue("MLP", configuredMlp, configuredMlp),
+        formatValue(text.mlp, effectiveMlp, configuredMlp, reason),
     );
     moveAfter(node, rope, "chunk_tokens");
     moveAfter(node, mlp, "mlp_chunk_tokens");
@@ -179,13 +289,8 @@ api.addEventListener("star7-h3-chunk-status", ({ detail }) => {
     ) {
         return;
     }
-    const widgets = ensureStatusWidgets(node);
-    widgets.rope.name = formatValue(
-        "RoPE", detail.effective_rope, detail.configured_rope, detail.reason,
-    );
-    widgets.mlp.name = formatValue(
-        "MLP", detail.effective_mlp, detail.configured_mlp, detail.reason,
-    );
+    node.__star7RuntimeDetail = { ...detail };
+    ensureStatusWidgets(node);
     node.setDirtyCanvas?.(true, true);
 });
 
@@ -204,6 +309,19 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (!NODE_NAMES.has(nodeData.name)) {
             return;
+        }
+        const text = strings();
+        nodeData.display_name = nodeData.name === "MiniMaxH3RoPEChunkPatch"
+            ? text.legacyTitle : text.title;
+        for (const [name, spec] of Object.entries(nodeData.input?.required ?? {})) {
+            if (!text.labels[name] || !Array.isArray(spec)) continue;
+            spec[1] ??= {};
+            spec[1].display_name = text.labels[name];
+            spec[1].tooltip = text.tooltips[name];
+            if (spec[0] === "BOOLEAN") {
+                spec[1].label_on = language() === "zh" ? "开启" : "On";
+                spec[1].label_off = language() === "zh" ? "关闭" : "Off";
+            }
         }
         const original = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
@@ -228,5 +346,15 @@ app.registerExtension({
             originalSerialize?.apply(this, arguments);
             serializeRealWidgets(this, info);
         };
+    },
+    setup() {
+        app.ui?.settings?.addEventListener?.("Comfy.Locale.change", () => {
+            for (const node of app.graph?._nodes ?? []) {
+                if (NODE_NAMES.has(node.comfyClass) || NODE_NAMES.has(node.type)) {
+                    ensureStatusWidgets(node);
+                    node.setDirtyCanvas?.(true, true);
+                }
+            }
+        });
     },
 });

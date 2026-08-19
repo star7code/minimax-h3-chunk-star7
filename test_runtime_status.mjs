@@ -4,6 +4,8 @@ import vm from "node:vm";
 
 let extension;
 let statusHandler;
+let localeChangeHandler;
+let locale = "zh-CN";
 const source = fs.readFileSync(new URL("./web/runtime_status.js", import.meta.url), "utf8")
     .replace(/^import .*?;\r?\n/gm, "");
 
@@ -16,6 +18,18 @@ const context = {
         },
     },
     app: {
+        ui: {
+            settings: {
+                getSettingValue(name) {
+                    assert.equal(name, "Comfy.Locale");
+                    return locale;
+                },
+                addEventListener(name, handler) {
+                    assert.equal(name, "Comfy.Locale.change");
+                    localeChangeHandler = handler;
+                },
+            },
+        },
         registerExtension(value) {
             extension = value;
         },
@@ -27,8 +41,10 @@ vm.runInNewContext(source, context);
 
 class MockNode {
     constructor() {
-        this.type = "MiniMaxH3RoPEChunkPatch";
+        this.type = "MiniMaxH3ActivationChunkStar7";
         this.comfyClass = this.type;
+        this.inputs = [{ name: "model" }];
+        this.outputs = [{ name: "model" }];
         this.widgets = [
             { name: "chunk_tokens", value: 8192 },
             { name: "auto_halve_on_oom", value: true },
@@ -58,7 +74,32 @@ class MockNode {
     }
 }
 
-await extension.beforeRegisterNodeDef(MockNode, { name: "MiniMaxH3RoPEChunkPatch" });
+const nodeData = {
+    name: "MiniMaxH3ActivationChunkStar7",
+    input: {
+        required: Object.fromEntries(Object.entries({
+            chunk_tokens: "INT",
+            auto_halve_on_oom: "BOOLEAN",
+            verbose: "BOOLEAN",
+            mlp_chunk_tokens: "INT",
+            disable_dynamic_prefetch: "BOOLEAN",
+            reuse_mlp_weights: "BOOLEAN",
+            attention_backend: ["existing", "comfy_kitchen_int8"],
+        }).map(([name, type]) => [name, [type, {}]])),
+    },
+};
+await extension.beforeRegisterNodeDef(MockNode, nodeData);
+extension.setup();
+
+assert.equal(nodeData.display_name, "MiniMax H3 显存分块加速 - Star7");
+assert.equal(
+    nodeData.input.required.mlp_chunk_tokens[1].display_name,
+    "MLP 分块大小（主要显存调节）",
+);
+assert.equal(
+    nodeData.input.required.auto_halve_on_oom[1].label_on,
+    "开启",
+);
 const node = new MockNode();
 node.onNodeCreated();
 node.configure({
@@ -76,6 +117,23 @@ node.configure({
 assert.equal(
     node.widgets.find((widget) => widget.name === "attention_backend")?.value,
     "comfy_kitchen_int8",
+);
+assert.equal(node.title, "MiniMax H3 显存分块加速 - Star7");
+assert.equal(
+    node.widgets.find((widget) => widget.name === "mlp_chunk_tokens")?.label,
+    "MLP 分块大小（主要显存调节）",
+);
+assert.deepEqual(
+    node.widgets.filter((widget) => !widget.__star7StatusName).map((widget) => widget.name),
+    [
+        "chunk_tokens",
+        "auto_halve_on_oom",
+        "verbose",
+        "mlp_chunk_tokens",
+        "disable_dynamic_prefetch",
+        "reuse_mlp_weights",
+        "attention_backend",
+    ],
 );
 assert.equal(
     node.widgets.filter((widget) => widget.__star7StatusName).length,
@@ -136,7 +194,15 @@ assert.equal(
 );
 assert.equal(JSON.stringify(serialized.widgets_values_named), JSON.stringify(restored));
 
-context.app.graph = { getNodeById: () => corrupted };
+const customTitleNode = new MockNode();
+customTitleNode.title = "我的自定义标题";
+customTitleNode.onNodeCreated();
+assert.equal(customTitleNode.title, "我的自定义标题");
+
+context.app.graph = {
+    _nodes: [corrupted, customTitleNode],
+    getNodeById: () => corrupted,
+};
 statusHandler({
     detail: {
         node_id: "299",
@@ -150,14 +216,32 @@ assert.match(
     corrupted.widgets.find(
         (widget) => widget.__star7StatusName === "star7_rope_runtime_status",
     ).name,
-    /已降级为：4096（设定 8192）/,
+    /已自动降为：4096（原设定 8192）/,
 );
 assert.match(
     corrupted.widgets.find(
         (widget) => widget.__star7StatusName === "star7_mlp_runtime_status",
     ).name,
-    /已降级为：2048（设定 4096）/,
+    /已自动降为：2048（原设定 4096）/,
 );
+
+locale = "en-US";
+localeChangeHandler();
+assert.equal(corrupted.title, "MiniMax H3 VRAM Chunk Acceleration - Star7");
+assert.equal(customTitleNode.title, "我的自定义标题");
+assert.equal(
+    corrupted.widgets.find((widget) => widget.name === "mlp_chunk_tokens")?.label,
+    "MLP chunk size (main VRAM control)",
+);
+assert.match(
+    corrupted.widgets.find(
+        (widget) => widget.__star7StatusName === "star7_rope_runtime_status",
+    ).name,
+    /auto-reduced to: 4096 \(set 8192\)/,
+);
+
+locale = "zh-CN";
+localeChangeHandler();
 
 statusHandler({
     detail: {
@@ -173,6 +257,10 @@ assert.match(
     corrupted.widgets.find(
         (widget) => widget.__star7StatusName === "star7_rope_runtime_status",
     ).name,
-    /当前使用：2048（设定 8192，受序列长度限制）/,
+    /实际使用：2048（设定 8192，视频规模只需要这么多）/,
 );
-console.log("Runtime status workflow restore test passed");
+assert.equal(
+    corrupted.widgets.find((widget) => widget.name === "attention_backend")?.value,
+    "comfy_kitchen_int8",
+);
+console.log("Runtime status localization and workflow restore tests passed");
