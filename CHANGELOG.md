@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Changed `disable_dynamic_prefetch` to default off for faster next-block
+  preloading, including both packaged example workflows. Workflows that already
+  saved the option as `true` keep that explicit choice; users can enable it if
+  preloading or block switching causes a VRAM error.
+
 - Added automatic Chinese UI localization. Chinese ComfyUI environments now
   show plain-language node titles, parameter labels, tooltips, boolean labels,
   and runtime chunk status; other locales remain English. Internal input names,

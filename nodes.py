@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.2.9"
+NODE_VERSION = "2.2.10"
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -1056,8 +1056,8 @@ class MiniMaxH3ActivationChunkStar7:
                 "disable_dynamic_prefetch": (
                     "BOOLEAN",
                     {
-                        "default": True,
-                        "tooltip": "True is safest. False enables overlap for speed and v2 automatically retries the current H3 forward without prefetch after an OOM.",
+                        "default": False,
+                        "tooltip": "False enables next-block preloading for speed (default). True disables preloading to reduce peak VRAM if block switching OOMs.",
                     },
                 ),
                 "reuse_mlp_weights": (
@@ -1097,7 +1097,7 @@ class MiniMaxH3ActivationChunkStar7:
 
     def patch(
         self, model, chunk_tokens=8192, auto_halve_on_oom=True, verbose=True,
-        mlp_chunk_tokens=4096, disable_dynamic_prefetch=True,
+        mlp_chunk_tokens=4096, disable_dynamic_prefetch=False,
         reuse_mlp_weights=True, attention_backend="comfy_kitchen_int8", unique_id=None,
     ):
         return (install_model_patch(

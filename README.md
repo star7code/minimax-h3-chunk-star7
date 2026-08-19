@@ -90,7 +90,7 @@ Native FP16 Loader 已包含精确防溢出处理，不要再串接旧的后置 
 | `chunk_tokens` | RoPE 的目标 token 分块上限；RoPE 工作集相对较小，优先保持较大值 | `8192` |
 | `mlp_chunk_tokens` | MLP 的目标 token 分块上限；节点下方会显示本次实际生效值 | `4096` |
 | `auto_halve_on_oom` | 当前 chunk OOM 时自动减半重试 | `true` |
-| `disable_dynamic_prefetch` | 禁止下一 block 权重预取，省显存但可能变慢 | `true` |
+| `disable_dynamic_prefetch` | 禁止下一 block 权重预取；默认关闭以获得更高速度，block 切换 OOM 时再开启 | `false` |
 | `reuse_mlp_weights` | 自动策略：将已准备权重复制到独立快照后复用；无法快照或 OOM 时改用 streamed | `true` |
 | `attention_backend` | 保留上游后端或显式采用 CK INT8 | `comfy_kitchen_int8` |
 | `verbose` | 输出首个同形状 block 的紧凑诊断 | `true` |
