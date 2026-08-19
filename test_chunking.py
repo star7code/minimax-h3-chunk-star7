@@ -354,6 +354,7 @@ def test_install_preserves_upstream_block_patch():
         key = f"diffusion_model.blocks.{index}.mlp.forward"
         assert key in patched.object_patches
         assert patched.object_patches[key].__func__.__name__ == "forward"
+    assert next(iter(patched.wrappers.values())) is chunk_nodes._adaptive_h3_dynamic_prefetch_wrapper
 
 
 def test_prefetch_wrapper_forces_off():

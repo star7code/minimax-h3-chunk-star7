@@ -67,7 +67,7 @@ Activation chunking does not reduce theoretical FLOPs. If a workload already fit
 |---|---|
 | eager split-half RoPE | reduce `chunk_tokens` |
 | `fc1`/SwiGLU/`fc2` activation | reduce `mlp_chunk_tokens` |
-| next-block prefetch | set `disable_dynamic_prefetch=true` |
+| next-block prefetch | turn off `Preload next block` (`disable_dynamic_prefetch=false`) |
 | QKV/attention | change or chunk the attention backend |
 | model loading | loader, quantization, or offload policy; chunk values do not apply yet |
 
@@ -98,7 +98,7 @@ The “keep models resident in VRAM” option reduces model swapping. It does no
 chunk_tokens = 8192
 mlp_chunk_tokens = 4096
 auto_halve_on_oom = true
-disable_dynamic_prefetch = false
+disable_dynamic_prefetch = true  # UI: Preload next block
 reuse_mlp_weights = true  # auto-detects resident vs streamed safely
 attention_backend = comfy_kitchen_int8
 ```

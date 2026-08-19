@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.2.11"
+NODE_VERSION = "2.2.12"
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -985,10 +985,12 @@ def install_model_patch(
             MethodType(mlp_forward, block.mlp),
         )
 
+    # Keep the legacy serialized field name for old workflow compatibility.
+    # Its UI semantics are positive from v2.2.12: true enables prefetch.
     prefetch_wrapper = (
-        _disable_h3_dynamic_prefetch_wrapper
+        _adaptive_h3_dynamic_prefetch_wrapper
         if disable_dynamic_prefetch
-        else _adaptive_h3_dynamic_prefetch_wrapper
+        else _disable_h3_dynamic_prefetch_wrapper
     )
     patched.add_wrapper_with_key(
         comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
@@ -1001,7 +1003,7 @@ def install_model_patch(
             "[Star7 H3 Chunk] Model ready v%s | blocks=%d | FP16 Exact=%s | "
             "dynamic prefetch=%s | block=preserved | attention=%s",
             NODE_VERSION, len(diffusion_model.blocks), star7_fp16,
-            not disable_dynamic_prefetch,
+            disable_dynamic_prefetch,
             (
                 "comfy-kitchen-int8" if ck_attention
                 else "sage-qk-int8" if sage_attention
@@ -1056,8 +1058,8 @@ class MiniMaxH3ActivationChunkStar7:
                 "disable_dynamic_prefetch": (
                     "BOOLEAN",
                     {
-                        "default": False,
-                        "tooltip": "False enables next-block preloading for speed (default). True disables preloading to reduce peak VRAM if block switching OOMs.",
+                        "default": True,
+                        "tooltip": "Preload the next H3 block for speed. If preloading or block switching runs out of VRAM, turn this off; an OOM also retries automatically without preloading.",
                     },
                 ),
                 "reuse_mlp_weights": (
@@ -1097,7 +1099,7 @@ class MiniMaxH3ActivationChunkStar7:
 
     def patch(
         self, model, chunk_tokens=8192, auto_halve_on_oom=True, verbose=True,
-        mlp_chunk_tokens=4096, disable_dynamic_prefetch=False,
+        mlp_chunk_tokens=4096, disable_dynamic_prefetch=True,
         reuse_mlp_weights=True, attention_backend="comfy_kitchen_int8", unique_id=None,
     ):
         return (install_model_patch(
