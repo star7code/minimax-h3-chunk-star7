@@ -21,7 +21,7 @@ This document records one local Windows/ComfyUI case. It is evidence for configu
 | Audio VAE | MiniMax H3 audio VAE FP32 |
 | LoRA | MiniMax H3 FL2V Turbo 4-step v1.0 768p, strength 1.0 |
 | Sampling | Euler, simple scheduler, 4 steps, denoise 1.0 |
-| Chunking | RoPE 8192; MLP 4096; prefetch enabled; automatic MLP weight strategy |
+| Chunking | RoPE 8192; MLP 4096; prefetch removed; automatic MLP weight strategy |
 | Attention | Comfy Kitchen INT8 |
 | Output | RTX Video Super Resolution 2× Ultra; NVENC H.264 at 35Mbps |
 
@@ -67,7 +67,7 @@ Activation chunking does not reduce theoretical FLOPs. If a workload already fit
 |---|---|
 | eager split-half RoPE | reduce `chunk_tokens` |
 | `fc1`/SwiGLU/`fc2` activation | reduce `mlp_chunk_tokens` |
-| next-block prefetch | turn off `Preload next block` (`disable_dynamic_prefetch=false`) |
+| next-block prefetch | Removed; runtime always keeps it disabled |
 | QKV/attention | change or chunk the attention backend |
 | model loading | loader, quantization, or offload policy; chunk values do not apply yet |
 
@@ -98,7 +98,7 @@ The “keep models resident in VRAM” option reduces model swapping. It does no
 chunk_tokens = 8192
 mlp_chunk_tokens = 4096
 auto_halve_on_oom = true
-disable_dynamic_prefetch = true  # UI: Preload next block
+disable_dynamic_prefetch = "实验功能已移除"  # Legacy compatibility field; runtime always disabled
 reuse_mlp_weights = true  # auto-detects resident vs streamed safely
 attention_backend = comfy_kitchen_int8
 ```

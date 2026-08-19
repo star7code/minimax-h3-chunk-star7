@@ -940,7 +940,7 @@
         "auto_halve_on_oom": true,
         "verbose": true,
         "mlp_chunk_tokens": 4096,
-        "disable_dynamic_prefetch": true,
+        "disable_dynamic_prefetch": "实验功能已移除",
         "reuse_mlp_weights": true,
         "attention_backend": "comfy_kitchen_int8"
       },

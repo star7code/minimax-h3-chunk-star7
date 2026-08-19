@@ -120,7 +120,7 @@ assert.equal(
 );
 assert.equal(
     node.widgets.find((widget) => widget.name === "disable_dynamic_prefetch")?.value,
-    true,
+    "实验功能已移除",
 );
 assert.equal(node.title, "MiniMax H3 显存分块加速 - Star7");
 assert.equal(
@@ -129,17 +129,17 @@ assert.equal(
 );
 assert.equal(
     node.widgets.find((widget) => widget.name === "disable_dynamic_prefetch")?.label,
-    "提前加载下一层（提速）",
+    "提前加载下一层（实验功能已移除）",
 );
 assert.deepEqual(
     node.widgets.filter((widget) => !widget.__star7StatusName).map((widget) => widget.name),
     [
+        "mlp_chunk_tokens",
         "chunk_tokens",
         "auto_halve_on_oom",
         "verbose",
-        "mlp_chunk_tokens",
-        "disable_dynamic_prefetch",
         "reuse_mlp_weights",
+        "disable_dynamic_prefetch",
         "attention_backend",
     ],
 );
@@ -189,7 +189,7 @@ assert.deepEqual(restored, {
     auto_halve_on_oom: true,
     verbose: true,
     mlp_chunk_tokens: 4096,
-    disable_dynamic_prefetch: true,
+    disable_dynamic_prefetch: "实验功能已移除",
     reuse_mlp_weights: true,
     attention_backend: "comfy_kitchen_int8",
 });
@@ -198,9 +198,11 @@ const serialized = {};
 corrupted.onSerialize(serialized);
 assert.equal(
     JSON.stringify(serialized.widgets_values),
-    JSON.stringify([8192, true, true, 4096, true, true, "comfy_kitchen_int8"]),
+    JSON.stringify([8192, true, true, 4096, "实验功能已移除", true, "comfy_kitchen_int8"]),
 );
-assert.equal(JSON.stringify(serialized.widgets_values_named), JSON.stringify(restored));
+for (const [name, value] of Object.entries(restored)) {
+    assert.equal(serialized.widgets_values_named[name], value);
+}
 
 const customTitleNode = new MockNode();
 customTitleNode.title = "我的自定义标题";

@@ -354,41 +354,7 @@ def test_install_preserves_upstream_block_patch():
         key = f"diffusion_model.blocks.{index}.mlp.forward"
         assert key in patched.object_patches
         assert patched.object_patches[key].__func__.__name__ == "forward"
-    assert next(iter(patched.wrappers.values())) is chunk_nodes._adaptive_h3_dynamic_prefetch_wrapper
-
-
-def test_prefetch_wrapper_forces_off():
-    captured = {}
-
-    def executor(*args, **kwargs):
-        captured.update(kwargs["transformer_options"])
-        return "ok"
-
-    result = chunk_nodes._disable_h3_dynamic_prefetch_wrapper(
-        executor, transformer_options={"prefetch_dynamic_vbars": True, "keep": 1}
-    )
-    assert result == "ok"
-    assert captured == {"prefetch_dynamic_vbars": False, "keep": 1}
-
-
-def test_adaptive_prefetch_retries_without_overlap():
-    calls = []
-
-    def executor(*args, **kwargs):
-        calls.append(kwargs["transformer_options"].copy())
-        if len(calls) == 1:
-            raise RuntimeError("out of memory")
-        return "recovered"
-
-    result = chunk_nodes._adaptive_h3_dynamic_prefetch_wrapper(
-        executor,
-        transformer_options={"prefetch_dynamic_vbars": True, "keep": 1},
-    )
-    assert result == "recovered"
-    assert calls == [
-        {"prefetch_dynamic_vbars": True, "keep": 1},
-        {"prefetch_dynamic_vbars": False, "keep": 1},
-    ]
+    assert patched.wrappers == {}
 
 
 def test_rope_oom_value_is_reused_for_k_and_later_calls():
@@ -551,8 +517,6 @@ if __name__ == "__main__":
         test_fused_residual_matches_materialized_mlp(test_device)
         test_fp16_block_patch_matches_materialized_formula(test_device)
         print(f"MiniMax H3 RoPE/MLP chunk tests passed on {test_device}")
-    test_prefetch_wrapper_forces_off()
-    test_adaptive_prefetch_retries_without_overlap()
     test_rope_oom_value_is_reused_for_k_and_later_calls()
     test_mlp_oom_value_is_reused_for_later_blocks()
     test_manual_settings_reset_learned_runtime_values()
@@ -560,4 +524,4 @@ if __name__ == "__main__":
     test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse()
     test_install_preserves_upstream_block_patch()
     test_comfy_kitchen_int8_attention_forward_cuda()
-    print("MiniMax H3 dynamic prefetch wrapper test passed")
+    print("MiniMax H3 prefetch removal compatibility test passed")

@@ -2,16 +2,17 @@
 
 ## Unreleased
 
+- Removed the H3 dynamic next-block prefetch experiment from execution. The legacy
+  workflow field remains as a non-functional compatibility placeholder so saved
+  workflows keep later widget positions intact.
+
 - Set the `RandomNoise` seed mode to `randomize` in both final example
   workflows. Positional and named widget serialization now agree, including on
   older ComfyUI frontends that restore the seed mode by widget position.
 
-- Reworded the confusing negative prefetch toggle as the positive
-  `Preload next block (faster)` / `提前加载下一层（提速）`. From v2.2.12,
-  `true` enables adaptive preloading and `false` disables it. The legacy
-  serialized field name is retained so old workflows still load, but their
-  saved boolean now follows the new positive meaning. Both examples use
-  `true`, making every recommended switch visibly on.
+- The old prefetch toggle is now shown as a removed experimental feature; its
+  serialized field remains only as a compatibility placeholder and runtime
+  execution always keeps prefetch disabled.
 
 - Removed all `<Picture 1>` references from the built-in prompts in both
   example workflows. The connected multiline prompt and the conditioning

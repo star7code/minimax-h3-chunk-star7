@@ -10,7 +10,7 @@ const REAL_WIDGET_DEFAULTS = {
     auto_halve_on_oom: true,
     verbose: true,
     mlp_chunk_tokens: 4096,
-    disable_dynamic_prefetch: true,
+    disable_dynamic_prefetch: "实验功能已移除",
     reuse_mlp_weights: true,
     attention_backend: "comfy_kitchen_int8",
 };
@@ -25,7 +25,7 @@ const TEXT = {
             auto_halve_on_oom: "Auto-reduce after VRAM error",
             verbose: "Show runtime details",
             mlp_chunk_tokens: "MLP chunk size (main VRAM control)",
-            disable_dynamic_prefetch: "Preload next block (faster)",
+            disable_dynamic_prefetch: "Preload next block (experimental feature removed)",
             reuse_mlp_weights: "Reuse MLP weights (faster)",
             attention_backend: "Attention method",
         },
@@ -34,7 +34,7 @@ const TEXT = {
             auto_halve_on_oom: "Automatically halves the failing RoPE or MLP chunk and retries instead of stopping the task.",
             verbose: "Shows actual chunk sizes, automatic reductions, and the active MLP weight mode in the console.",
             mlp_chunk_tokens: "The main VRAM control. Smaller values save more VRAM but may be slower. Lower this before RoPE.",
-            disable_dynamic_prefetch: "On preloads the next H3 block for speed (default). Turn it off if preloading or block switching runs out of VRAM.",
+            disable_dynamic_prefetch: "Legacy workflow field only. This experimental feature has been removed and is always disabled.",
             reuse_mlp_weights: "Uses isolated MLP weight snapshots to avoid repeated preparation. Falls back safely if snapshots fail or run out of VRAM.",
             attention_backend: "comfy_kitchen_int8 selects CK INT8 (recommended on many RTX 20-series GPUs). existing keeps an upstream Sage or environment-selected method.",
         },
@@ -52,7 +52,7 @@ const TEXT = {
             auto_halve_on_oom: "显存不足时自动降档",
             verbose: "显示运行详情",
             mlp_chunk_tokens: "MLP 分块大小（主要显存调节）",
-            disable_dynamic_prefetch: "提前加载下一层（提速）",
+            disable_dynamic_prefetch: "提前加载下一层（实验功能已移除）",
             reuse_mlp_weights: "复用 MLP 权重（提速）",
             attention_backend: "注意力计算方式",
         },
@@ -61,7 +61,7 @@ const TEXT = {
             auto_halve_on_oom: "RoPE 或 MLP 分块显存不足时自动减半重试，避免任务直接停止。",
             verbose: "在控制台显示实际分块、是否自动降档以及 MLP 权重加速方式。",
             mlp_chunk_tokens: "主要显存调节项。数值越小越省显存，但可能更慢；显存不足时优先降低它。",
-            disable_dynamic_prefetch: "默认开启，提前加载下一层以提高速度；如果提前加载或切换层时显存不足，再关闭此项。",
+            disable_dynamic_prefetch: "仅为兼容旧工作流保留，不再参与计算，功能始终关闭。",
             reuse_mlp_weights: "使用独立 MLP 权重快照减少重复准备；快照失败或显存不足时会自动切换安全模式。",
             attention_backend: "comfy_kitchen_int8 是 CK INT8（20 系等显卡推荐）；existing 会沿用前置 Sage 或当前环境的计算方式。",
         },
@@ -190,6 +190,10 @@ function validSavedValue(name, value) {
     if (name === "attention_backend") {
         return value === "existing" || value === "comfy_kitchen_int8";
     }
+    if (name === "disable_dynamic_prefetch") {
+        // Old files contain a boolean here; it is now a non-functional label.
+        return typeof value === "boolean" || typeof value === "string";
+    }
     return typeof value === "boolean";
 }
 
@@ -200,6 +204,9 @@ function cleanSavedValues(info) {
         ? info.widgets_values
         : [];
     const values = REAL_WIDGET_NAMES.map((name, index) => {
+        if (name === "disable_dynamic_prefetch") {
+            return REAL_WIDGET_DEFAULTS[name];
+        }
         const namedValue = named[name];
         if (validSavedValue(name, namedValue)) {
             return namedValue;
@@ -221,6 +228,9 @@ function cleanSavedValues(info) {
 
 function serializeRealWidgets(node, info) {
     const values = REAL_WIDGET_NAMES.map((name) => {
+        if (name === "disable_dynamic_prefetch") {
+            return REAL_WIDGET_DEFAULTS[name];
+        }
         const value = node.widgets?.find((widget) => widget.name === name)?.value;
         return validSavedValue(name, value) ? value : REAL_WIDGET_DEFAULTS[name];
     });
@@ -228,6 +238,37 @@ function serializeRealWidgets(node, info) {
     info.widgets_values_named = Object.fromEntries(
         REAL_WIDGET_NAMES.map((name, index) => [name, values[index]]),
     );
+}
+
+function reorderDisplayWidgets(node) {
+    const displayOrder = [
+        "mlp_chunk_tokens",
+        "star7_mlp_runtime_status",
+        "chunk_tokens",
+        "star7_rope_runtime_status",
+        "auto_halve_on_oom",
+        "verbose",
+        "reuse_mlp_weights",
+        "disable_dynamic_prefetch",
+        "attention_backend",
+    ];
+    const rank = new Map(displayOrder.map((name, index) => [name, index]));
+    node.widgets?.sort((left, right) => {
+        const leftName = left.__star7StatusName ?? left.name;
+        const rightName = right.__star7StatusName ?? right.name;
+        return (rank.get(leftName) ?? displayOrder.length)
+            - (rank.get(rightName) ?? displayOrder.length);
+    });
+}
+
+function restoreSerializedWidgetOrder(node) {
+    const canonical = new Map(REAL_WIDGET_NAMES.map((name, index) => [name, index]));
+    node.widgets?.sort((left, right) => {
+        const leftName = left.__star7StatusName ?? left.name;
+        const rightName = right.__star7StatusName ?? right.name;
+        return (canonical.get(leftName) ?? REAL_WIDGET_NAMES.length)
+            - (canonical.get(rightName) ?? REAL_WIDGET_NAMES.length);
+    });
 }
 
 function moveAfter(node, widget, anchorName) {
@@ -273,6 +314,7 @@ function ensureStatusWidgets(node) {
     );
     moveAfter(node, rope, "chunk_tokens");
     moveAfter(node, mlp, "mlp_chunk_tokens");
+    reorderDisplayWidgets(node);
     return { rope, mlp };
 }
 
@@ -334,6 +376,7 @@ app.registerExtension({
             // Legacy ComfyUI restores widget values by array position. Keep
             // display-only rows out of that array until real inputs are loaded.
             removeStatusWidgets(this);
+            restoreSerializedWidgetOrder(this);
             const args = [...arguments];
             args[0] = cleanSavedValues(args[0]);
             const result = originalConfigure?.apply(this, args);

@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.2.13"
+NODE_VERSION = "2.2.14"
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -805,54 +805,6 @@ def _make_chunked_h3_block_forward(star7_fp16: bool, h3_model):
     return forward
 
 
-def _disable_h3_dynamic_prefetch_wrapper(executor, *args, **kwargs):
-    """Disable only H3's next-block async prefetch overlap for this MODEL branch."""
-    args = list(args)
-    if len(args) > 3 and isinstance(args[3], dict):
-        options = args[3].copy()
-        options["prefetch_dynamic_vbars"] = False
-        args[3] = options
-    else:
-        options = kwargs.get("transformer_options", {}).copy()
-        options["prefetch_dynamic_vbars"] = False
-        kwargs["transformer_options"] = options
-    return executor(*args, **kwargs)
-
-
-def _adaptive_h3_dynamic_prefetch_wrapper(executor, *args, **kwargs):
-    """Try overlapped block prefetch, then retry this forward without it on OOM."""
-    try:
-        return executor(*args, **kwargs)
-    except Exception as exc:
-        if not _is_cuda_oom(exc):
-            raise
-        exc.__traceback__ = None
-        import comfy.model_prefetch
-
-        comfy.model_prefetch.cleanup_prefetch_queues()
-        device = None
-        for value in args:
-            if torch.is_tensor(value):
-                device = value.device
-                break
-        _clear_cuda_after_oom(device or torch.device("cuda"))
-        _LOG.warning(
-            "[Star7 H3 Chunk] Dynamic prefetch OOM; retrying current H3 forward "
-            "with prefetch disabled"
-        )
-
-        retry_args = list(args)
-        if len(retry_args) > 3 and isinstance(retry_args[3], dict):
-            options = retry_args[3].copy()
-            options["prefetch_dynamic_vbars"] = False
-            retry_args[3] = options
-        else:
-            options = kwargs.get("transformer_options", {}).copy()
-            options["prefetch_dynamic_vbars"] = False
-            kwargs["transformer_options"] = options
-        return executor(*retry_args, **kwargs)
-
-
 def install_patch(
     chunk_tokens: int,
     auto_halve_on_oom: bool,
@@ -918,8 +870,6 @@ def install_model_patch(
     )
 
     from comfy.ldm.minimax import model as h3_model
-    import comfy.patcher_extension
-
     patched = model.clone()
     diffusion_model = patched.get_model_object("diffusion_model")
     if not isinstance(diffusion_model, h3_model.MiniMaxH3Model):
@@ -985,25 +935,17 @@ def install_model_patch(
             MethodType(mlp_forward, block.mlp),
         )
 
-    # Keep the legacy serialized field name for old workflow compatibility.
-    # Its UI semantics are positive from v2.2.12: true enables prefetch.
-    prefetch_wrapper = (
-        _adaptive_h3_dynamic_prefetch_wrapper
-        if disable_dynamic_prefetch
-        else _disable_h3_dynamic_prefetch_wrapper
-    )
-    patched.add_wrapper_with_key(
-        comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
-        "h3_activation_chunk_star7_dynamic_prefetch_policy",
-        prefetch_wrapper,
-    )
+    # Dynamic VBAR prefetch is intentionally disabled for H3.  The upstream
+    # queue synchronizes the transfer before the block runs, so it adds latency
+    # on the supported low-VRAM path without providing useful overlap.  Keep
+    # the legacy function argument above so old workflows remain loadable.
+    transformer_options["prefetch_dynamic_vbars"] = False
 
     if verbose:
         _LOG.info(
             "[Star7 H3 Chunk] Model ready v%s | blocks=%d | FP16 Exact=%s | "
-            "dynamic prefetch=%s | block=preserved | attention=%s",
+            "dynamic prefetch=removed | block=preserved | attention=%s",
             NODE_VERSION, len(diffusion_model.blocks), star7_fp16,
-            disable_dynamic_prefetch,
             (
                 "comfy-kitchen-int8" if ck_attention
                 else "sage-qk-int8" if sage_attention
@@ -1056,10 +998,11 @@ class MiniMaxH3ActivationChunkStar7:
                     },
                 ),
                 "disable_dynamic_prefetch": (
-                    "BOOLEAN",
+                    "STRING",
                     {
-                        "default": True,
-                        "tooltip": "Preload the next H3 block for speed. If preloading or block switching runs out of VRAM, turn this off; an OOM also retries automatically without preloading.",
+                        "default": "实验功能已移除",
+                        "multiline": False,
+                        "tooltip": "提前加载下一层（实验功能已移除）。该字段仅用于兼容旧工作流，不再参与计算。",
                     },
                 ),
                 "reuse_mlp_weights": (

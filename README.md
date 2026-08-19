@@ -90,13 +90,14 @@ Native FP16 Loader 已包含精确防溢出处理，不要再串接旧的后置 
 | `chunk_tokens` | RoPE 的目标 token 分块上限；RoPE 工作集相对较小，优先保持较大值 | `8192` |
 | `mlp_chunk_tokens` | MLP 的目标 token 分块上限；节点下方会显示本次实际生效值 | `4096` |
 | `auto_halve_on_oom` | 当前 chunk OOM 时自动减半重试 | `true` |
-| `提前加载下一层（提速）` | 开启时提前加载下一 block 以提速；预取或切换 block OOM 时关闭 | `true` |
+| `提前加载下一层（实验功能已移除）` | 仅为兼容旧工作流保留，不再参与计算，始终关闭 | 兼容字段 |
 | `reuse_mlp_weights` | 自动策略：将已准备权重复制到独立快照后复用；无法快照或 OOM 时改用 streamed | `true` |
 | `attention_backend` | 保留上游后端或显式采用 CK INT8 | `comfy_kitchen_int8` |
 | `verbose` | 输出首个同形状 block 的紧凑诊断 | `true` |
 
-为兼容旧工作流，该开关保存时仍沿用内部字段名 `disable_dynamic_prefetch`；从 v2.2.12
-开始其布尔值采用界面上的正向含义：`true` 就是提前加载，`false` 就是不提前加载。
+为兼容旧工作流，节点保留内部字段名 `disable_dynamic_prefetch`，但该字段现在仅作为显示占位，
+不再安装动态预取 wrapper，实际运行始终关闭预取。这样旧工作流不会因字段位置变化而错位，
+同时避免预取在慢速显存/PCIe 路径上增加等待或引发 CUDA 同步问题。
 
 参数越大不等于必然更快。较大的 chunk 减少 kernel 启动次数，但会增加瞬时激活和权重预取竞争。比较参数时必须固定模型、seed、分辨率、帧数、步数和注意力后端。
 
@@ -128,7 +129,7 @@ block 反复以失败的大块重试。用户手动修改任一分块输入并�
 |---|---|---|
 | `fc1` / SwiGLU / `fc2` MLP 激活 OOM | `mlp_chunk_tokens` | `4096 -> 2048 -> 1024 -> 512` |
 | `rms_rope_split_half_` / `apply_rope_split_half1` | `chunk_tokens` | 只有明确 RoPE OOM 时才 `8192 -> 4096 -> 2048` |
-| 下一 block 预取或 block 切换时 OOM | `提前加载下一层` | 改为 `false`，关闭预取以换取显存余量 |
+| 旧工作流含下一 block 预取字段 | `提前加载下一层（实验功能已移除）` | 无需处理，字段仅作兼容占位，运行时始终关闭 |
 | QKV 或 attention kernel OOM | 注意力后端 | 改用 CK INT8，或保留上游 Low VRAM/Sage；两个 chunk 值不是主要控制项 |
 | 模型加载阶段已经 OOM | 加载器/量化/卸载策略 | 分块节点尚未执行，调 chunk 无效 |
 

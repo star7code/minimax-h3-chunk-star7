@@ -1,6 +1,6 @@
 [project]
 name = "minimax-h3-chunk-star7"
-version = "2.2.13"
+version = "2.2.14"
 description = "RoPE and MLP activation chunking for ComfyUI MiniMax H3, with an optional Comfy Kitchen INT8 attention path."
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
