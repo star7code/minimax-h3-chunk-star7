@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Removed all `<Picture 1>` references from the built-in prompts in both
+  example workflows. The connected multiline prompt and the conditioning
+  node's positional/named fallback values now use the same no-reference prompt,
+  so bypassing or disconnecting the reference-image branch does not leave an
+  invalid image reference in the prompt.
+
 - Changed `disable_dynamic_prefetch` to default off for faster next-block
   preloading, including both packaged example workflows. Workflows that already
   saved the option as `true` keep that explicit choice; users can enable it if
