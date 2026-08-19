@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Set the `RandomNoise` seed mode to `randomize` in both final example
+  workflows. Positional and named widget serialization now agree, including on
+  older ComfyUI frontends that restore the seed mode by widget position.
+
 - Reworded the confusing negative prefetch toggle as the positive
   `Preload next block (faster)` / `提前加载下一层（提速）`. From v2.2.12,
   `true` enables adaptive preloading and `false` disables it. The legacy
