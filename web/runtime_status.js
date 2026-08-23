@@ -36,7 +36,7 @@ const TEXT = {
             mlp_chunk_tokens: "The main VRAM control. Smaller values save more VRAM but may be slower. Lower this before RoPE.",
             disable_dynamic_prefetch: "Legacy workflow field only. This experimental feature has been removed and is always disabled.",
             reuse_mlp_weights: "Uses isolated MLP weight snapshots to avoid repeated preparation. Falls back safely if snapshots fail or run out of VRAM.",
-            attention_backend: "comfy_kitchen_int8 selects CK INT8 (recommended on many RTX 20-series GPUs). existing keeps an upstream Sage or environment-selected method.",
+            attention_backend: "Strict SLA never falls back. The SM75 All-INT8 option is experimental and may reduce quality; the FP16-PV option remains recommended.",
         },
         current: (label, value) => `${label} in use: ${value} (configured)`,
         limited: (label, value, configured) => `${label} in use: ${value} (set ${configured}, limited by video size)`,
@@ -63,7 +63,7 @@ const TEXT = {
             mlp_chunk_tokens: "主要显存调节项。数值越小越省显存，但可能更慢；显存不足时优先降低它。",
             disable_dynamic_prefetch: "仅为兼容旧工作流保留，不再参与计算，功能始终关闭。",
             reuse_mlp_weights: "使用独立 MLP 权重快照减少重复准备；快照失败或显存不足时会自动切换安全模式。",
-            attention_backend: "comfy_kitchen_int8 是 CK INT8（20 系等显卡推荐）；existing 会沿用前置 Sage 或当前环境的计算方式。",
+            attention_backend: "严格 SLA 绝不回退。SM75 All-INT8 是可能降低质量的实验模式，仍推荐使用 FP16-PV 模式。",
         },
         current: (label, value) => `${label} 实际使用：${value}（设定值）`,
         limited: (label, value, configured) => `${label} 实际使用：${value}（设定 ${configured}，视频规模只需要这么多）`,
@@ -188,7 +188,11 @@ function validSavedValue(name, value) {
         return Number.isInteger(Number(value)) && Number(value) >= 256;
     }
     if (name === "attention_backend") {
-        return value === "existing" || value === "comfy_kitchen_int8";
+        return value === "existing"
+            || value === "comfy_kitchen_int8"
+            || value === "sla_sm75_qk_int8_pv_fp16"
+            || value === "sla_sm75_all_int8_experimental"
+            || value === "sla_sm80+_qk_int8_pv_fp16";
     }
     if (name === "disable_dynamic_prefetch") {
         // Old files contain a boolean here; it is now a non-functional label.

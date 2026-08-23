@@ -13,3 +13,7 @@ Thumbs.db
 .DS_Store
 docs/assets/end-to-end-task-times.png
 create_workflow.py
+.research/
+.triton-cache/
+bench/validation_frames/
+bench/workflow-sm75-fp16pv-validation.json

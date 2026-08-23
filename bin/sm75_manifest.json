@@ -1,0 +1,25 @@
+{
+  "abi_version": 7,
+  "backend": "cuda-sm75-sparse-fp16-pv-and-experimental-all-int8",
+  "compute_capability": "7.5",
+  "cuda_toolkit": "13.0.88",
+  "windows_x64": {
+    "file": "win_amd64/star7_sla_sm75_v7.dll",
+    "sha256": "e740dd476a349661ebf5bbbf09b4f3467e28bb23b928de6e32feaccdd5a58dd4",
+    "size": 833024
+  },
+  "kernel": {
+    "head_dim": 128,
+    "query_block": 128,
+    "key_block": 64,
+    "shared_bytes": 41088,
+    "registers_per_thread": {
+      "fp16_pv": 130,
+      "all_int8": 191
+    },
+    "qk": "per-16-row Q / per-64-row K signed INT8 Tensor Core IMMA with INT32 accumulation",
+    "pv": "Recommended FP16 probability x FP16 V, or experimental U8 probability x INT8 V; both use FP32 accumulation",
+    "softmax": "FP32 online softmax",
+    "source": "Star7 sparse routing over Apache-2.0 SageAttention SM75 and Comfy Kitchen primitives"
+  }
+}

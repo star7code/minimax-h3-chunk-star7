@@ -504,6 +504,96 @@ def test_comfy_kitchen_int8_attention_forward_cuda():
     assert torch.isfinite(output).all()
 
 
+def test_sla_backend_is_strict_and_architecture_checked():
+    backend = chunk_nodes._load_sla_backend()
+    assert backend.SM75_BACKEND_NAME == "sla_sm75_qk_int8_pv_fp16"
+    assert backend.SM75_ALL_INT8_BACKEND_NAME == "sla_sm75_all_int8_experimental"
+    assert backend.SM80PLUS_BACKEND_NAME == "sla_sm80+_qk_int8_pv_fp16"
+    assert backend.BLOCK_Q == 128
+    assert backend.BLOCK_K == 64
+    assert backend.DEFAULT_SPARSITY == 0.85
+    choices = chunk_nodes.MiniMaxH3ActivationChunkStar7.INPUT_TYPES()["required"][
+        "attention_backend"
+    ][0]
+    assert backend.SM75_BACKEND_NAME in choices
+    assert backend.SM75_ALL_INT8_BACKEND_NAME in choices
+    assert backend.SM80PLUS_BACKEND_NAME in choices
+
+    if backend.triton is None:
+        return
+    original_available = backend.torch.cuda.is_available
+    original_capability = backend.torch.cuda.get_device_capability
+    try:
+        backend.torch.cuda.is_available = lambda: True
+        backend.torch.cuda.get_device_capability = lambda _device=None: (7, 0)
+        try:
+            backend.check_runtime_support(
+                requested_backend=backend.SM75_BACKEND_NAME
+            )
+        except backend.SLAUnavailableError as exc:
+            message = str(exc)
+            assert "SM75" in message
+            assert "No fallback" in message
+        else:
+            raise AssertionError("strict SLA incorrectly accepted SM70")
+        backend.torch.cuda.get_device_capability = lambda _device=None: (7, 5)
+        try:
+            backend.check_runtime_support(
+                requested_backend=backend.SM80PLUS_BACKEND_NAME
+            )
+        except backend.SLAUnavailableError as exc:
+            assert "requires SM80" in str(exc)
+        else:
+            raise AssertionError("SM80+ SLA name incorrectly accepted SM75")
+    finally:
+        backend.torch.cuda.is_available = original_available
+        backend.torch.cuda.get_device_capability = original_capability
+
+
+def test_sla_sm75_native_cuda_self_test():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
+        return
+    backend = chunk_nodes._load_sla_backend()
+    native = backend._load_sm75_backend()
+    available, reason = native.availability()
+    assert available, reason
+    backend.ensure_self_test(torch.device("cuda"))
+    backend.ensure_self_test(torch.device("cuda"), all_int8=True)
+
+
+def test_sla_attention_forward_cuda():
+    if not torch.cuda.is_available():
+        return
+    capability = torch.cuda.get_device_capability()
+    if capability < (8, 0) and capability != (7, 5):
+        return
+    backend = chunk_nodes._load_sla_backend()
+    try:
+        backend.check_runtime_support()
+    except backend.SLAUnavailableError:
+        return
+
+    from comfy.ldm.minimax import model as h3_model
+
+    attention = h3_model.Attention(
+        hidden=128,
+        heads=1,
+        head_dim=128,
+        eps=1e-6,
+        operations=torch.nn,
+    ).to(device="cuda", dtype=torch.float16)
+    x = torch.randn(1025, 128, device="cuda", dtype=torch.float16) * 0.1
+    consumable = [x]
+    output = chunk_nodes._minimax_sla_forward(
+        attention, consumable, rope_freqs=None, transformer_options={}
+    )
+    torch.cuda.synchronize()
+    assert consumable == []
+    assert output.shape == x.shape
+    assert output.dtype == torch.float16
+    assert torch.isfinite(output).all()
+
+
 if __name__ == "__main__":
     devices = [torch.device("cpu")]
     if torch.cuda.is_available():
@@ -524,4 +614,7 @@ if __name__ == "__main__":
     test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse()
     test_install_preserves_upstream_block_patch()
     test_comfy_kitchen_int8_attention_forward_cuda()
+    test_sla_backend_is_strict_and_architecture_checked()
+    test_sla_sm75_native_cuda_self_test()
+    test_sla_attention_forward_cuda()
     print("MiniMax H3 prefetch removal compatibility test passed")

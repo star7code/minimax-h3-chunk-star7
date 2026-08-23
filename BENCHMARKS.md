@@ -32,8 +32,45 @@ This document records one local Windows/ComfyUI case. It is evidence for configu
 | KJNodes custom SM75 SageAttention 2 path | approximately 170 seconds/step |
 | KJNodes Low VRAM Attention, `head_chunks=4` | approximately 177 seconds/step |
 | Comfy Kitchen INT8 | approximately 120 seconds/step |
+| Star7 SLA SM75 QK INT8 / PV FP16 + audio guard | **96.68 seconds/step** |
+| Star7 SLA SM75 All-INT8 experimental + audio guard | **60.83 seconds/step** |
 
 Compared with the observed [KJNodes](https://github.com/kijai/ComfyUI-KJNodes) custom SM75 SageAttention 2 path, CK INT8 reduced step time by approximately `50s`, or `29.4%`, and raised step throughput by approximately `1.42×`. Compared with Low VRAM Attention it reduced step time by approximately `57s`, or `32.2%`, for approximately `1.48×` throughput. This is a Turing/SM75 result for the recorded local software stack, not a claim that CK is faster than Sage on every GPU architecture.
+
+The current bundled SM75 kernel was validated in the attached 1.0MP, 10-second,
+four-step workflow. Its real packed sequence was 75,872 tokens with 56 heads.
+Video queries used 85.08% dynamic block sparsity; eight target-audio query blocks
+used full attention in the same native kernel, giving 83.93% overall effective
+sparsity. The four steps took 97.23, 96.98, 95.88, and 96.88 seconds (96.68
+seconds/step average), and the complete prompt finished in 471.12 seconds. Against
+the separately recorded approximately 118-second CK run, sampling throughput was
+approximately 1.22×. No CK or Sage failure fallback was used.
+
+The earlier 59.18-second result belonged to the first pure-INT8 PV kernel and was
+removed because it had accumulated visual/audio error. ABI v7 reintroduces a
+separate All-INT8 experiment while retaining per-16-row Q scaling, corrected
+mapping, and the native dense audio-query guard. It completed the same workflow
+at 60.83 seconds/step and 325.51 seconds total. The 8.5–10.1 second tail measured
+-72.49/-72.57 dB RMS across the two channels, without the old right-channel burst.
+It remains experimental because one successful seed cannot establish general
+quality equivalence to FP16-PV.
+
+### SM75 attention microbenchmark
+
+The development benchmark includes SLA routing, Q/K/V quantization, the sparse
+attention core, and output allocation. Medians on the same RTX 2080 Ti were:
+
+| Sequence length | FP16-PV | All-INT8 experimental | CK INT8 |
+|---:|---:|---:|---:|
+| 4,096 | 4.735 ms | 2.627 ms | 7.407 ms |
+| 16,384 | 56.303 ms | 17.158 ms | 80.859 ms |
+| 75,872 | 944.200 ms | 289.938 ms | 1,535.828 ms |
+
+Both modes use INT8 Q/K and FP32 online-softmax state/accumulation. FP16-PV keeps
+probability/value multiplication in FP16; All-INT8 quantizes V per channel and
+softmax probabilities for U8×S8 tensor-core PV. The table includes routing and
+Q/K/V quantization but no audio guard; the full-workflow results above are
+authoritative for the protected H3 path.
 
 The four denoising steps of the 1.0MP/10-second case account for approximately 480 seconds. The currently confirmed end-to-end results are:
 
@@ -100,7 +137,7 @@ mlp_chunk_tokens = 4096
 auto_halve_on_oom = true
 disable_dynamic_prefetch = "实验功能已移除"  # Legacy compatibility field; runtime always disabled
 reuse_mlp_weights = true  # auto-detects resident vs streamed safely
-attention_backend = comfy_kitchen_int8
+attention_backend = sla_sm75_qk_int8_pv_fp16  # strict SM75 SLA
 ```
 
 ## Fixed-token-budget duration estimate

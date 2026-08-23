@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.2.14"
+NODE_VERSION = "2.6.0"
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -17,6 +17,7 @@ _LOGGED_ROPE_SHAPES = set()
 _LOGGED_MLP_SHAPES = set()
 _PROFILED_MLP_SHAPES = set()
 _PROFILED_ATTENTION_SHAPES = set()
+_LOGGED_SLA_SHAPES = set()
 _CONFIG = {
     "chunk_tokens": 8192,
     "mlp_chunk_tokens": 4096,
@@ -719,6 +720,144 @@ def _minimax_ck_int8_attention_forward(self, x, rope_freqs=None, transformer_opt
 _minimax_ck_int8_attention_forward._star7_consumes_input = True
 
 
+def _load_sla_backend():
+    try:
+        from . import sla_backend
+    except ImportError:
+        # Direct-file loading is used by the standalone test suite.
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        path = Path(__file__).with_name("sla_backend.py")
+        module_name = "star7_sla_backend"
+        if module_name in sys.modules:
+            return sys.modules[module_name]
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Unable to load Star7 SLA backend from {path}")
+        sla_backend = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = sla_backend
+        spec.loader.exec_module(sla_backend)
+    return sla_backend
+
+
+def _minimax_sla_forward(
+    self, x, rope_freqs=None, transformer_options={},
+    star7_sla_mod_segments=(),
+):
+    """Run strict LightX2V-style sparse attention without any fallback."""
+    if isinstance(x, list):
+        x = x.pop()
+
+    import comfy.model_management as mm
+    import comfy.quant_ops
+
+    sla_backend = _load_sla_backend()
+    sequence = x.shape[0]
+    qkv = self.qkv_proj(x)
+    del x
+    q, k, v = qkv.split(self.heads * self.head_dim, dim=-1)
+    v = v.view(sequence, self.heads, self.head_dim)
+
+    if rope_freqs is not None:
+        q = q.view(1, sequence, self.heads, self.head_dim)
+        k = k.view(1, sequence, self.heads, self.head_dim)
+        qw = mm.cast_to(self.q_norm.weight, device=q.device)
+        kw = mm.cast_to(self.k_norm.weight, device=k.device)
+        rot = rope_freqs.shape[-3] * 2
+        if mm.in_training:
+            q, k = comfy.quant_ops.ck.rms_rope_split_half(
+                q, k, rope_freqs, qw, kw,
+                epsilon=self.q_norm.eps, rot_dim=rot,
+            )
+        else:
+            comfy.quant_ops.ck.rms_rope_split_half_(
+                q, k, rope_freqs, qw, kw,
+                epsilon=self.q_norm.eps, rot_dim=rot,
+            )
+        q = q[0]
+        k = k[0]
+    else:
+        q = self.q_norm(q.view(sequence, self.heads, self.head_dim))
+        k = self.k_norm(k.view(sequence, self.heads, self.head_dim))
+
+    # SLA kernels take strict FP16 inputs. Both architecture paths quantize Q/K
+    # for tensor-core QK while keeping V and the PV multiplication in FP16.
+    q = q.transpose(0, 1).unsqueeze(0).to(torch.float16).contiguous()
+    k = k.transpose(0, 1).unsqueeze(0).to(torch.float16).contiguous()
+    v = v.transpose(0, 1).unsqueeze(0).to(torch.float16).contiguous()
+    del qkv
+
+    sla_segments = star7_sla_mod_segments or getattr(
+        self, "_star7_sla_mod_segments", ()
+    )
+    priority_ranges = []
+    for start, end, mod_row in sla_segments:
+        if isinstance(mod_row, int):
+            modality_tag = mod_row % 3
+        elif torch.is_tensor(mod_row) and mod_row.numel() == 1:
+            modality_tag = int(mod_row.item()) % 3
+        else:
+            modality_tag = -1
+        if modality_tag == 2:
+            priority_ranges.append((int(start), int(end)))
+    # MiniMax H3 guarantees that the target audio and video streams are the
+    # final two packed segments. Use that contract even when a masked segment
+    # carries a per-row tensor instead of a scalar modality tag.
+    if len(sla_segments) >= 2:
+        audio_segment = sla_segments[-2]
+        priority_ranges.append((int(audio_segment[0]), int(audio_segment[1])))
+    priority_ranges = sorted(set(priority_ranges))
+    result = sla_backend.sparse_attention(
+        q, k, v, query_priority_ranges=priority_ranges,
+        all_int8=(
+            _CONFIG.get("attention_backend")
+            == "sla_sm75_all_int8_experimental"
+        ),
+    )
+    shape_key = (sequence, self.heads, self.head_dim, q.device.index)
+    if _CONFIG["verbose"] and shape_key not in _LOGGED_SLA_SHAPES:
+        _LOGGED_SLA_SHAPES.add(shape_key)
+        _LOG.info(
+            "[Star7 H3 Chunk] SLA verified | Q-blocks=%d | K-blocks=%d | "
+            "selected=%d | audio-guard-blocks=%d | effective-sparsity=%.2f%% | "
+            "segments=%d | audio-ranges=%s | backend=%s | implementation=%s",
+            result.query_blocks, result.key_blocks, result.selected_key_blocks,
+            result.protected_query_blocks,
+            result.effective_sparsity * 100.0,
+            len(sla_segments), priority_ranges,
+            _CONFIG.get("attention_backend"),
+            result.implementation,
+        )
+    out = result.output.transpose(1, 2).reshape(
+        1, sequence, self.heads * self.head_dim
+    )
+    return self.out_proj(out.squeeze(0))
+
+
+_minimax_sla_forward._star7_consumes_input = True
+
+
+def _sla_segment_passthrough(original_forward):
+    """Expose H3 packed segments to SLA while preserving the upstream block."""
+    def forward(self, x, t_emb, mod_segments, rope_freqs, transformer_options={}):
+        old_segments = getattr(self.attn, "_star7_sla_mod_segments", None)
+        self.attn._star7_sla_mod_segments = mod_segments
+        try:
+            return original_forward(
+                x, t_emb, mod_segments, rope_freqs,
+                transformer_options=transformer_options,
+            )
+        finally:
+            if old_segments is None:
+                delattr(self.attn, "_star7_sla_mod_segments")
+            else:
+                self.attn._star7_sla_mod_segments = old_segments
+
+    return forward
+
+
 def _make_chunked_h3_block_forward(star7_fp16: bool, h3_model):
     """Fuse the chunked MLP result into H3's residual stream chunk by chunk."""
     def forward(self, x, t_emb, mod_segments, rope_freqs, transformer_options={}):
@@ -751,11 +890,23 @@ def _make_chunked_h3_block_forward(star7_fp16: bool, h3_model):
             attn_start.record()
 
         attention_input = [h] if consumes_list else h
-        attention = self.attn(
-            attention_input,
-            rope_freqs=rope_freqs,
-            transformer_options=transformer_options,
-        )
+        attention_kwargs = {
+            "rope_freqs": rope_freqs,
+            "transformer_options": transformer_options,
+        }
+        if _CONFIG.get("attention_backend", "existing").startswith("sla_"):
+            attention_kwargs["star7_sla_mod_segments"] = mod_segments
+        old_attn_segments = getattr(self.attn, "_star7_sla_mod_segments", None)
+        if _CONFIG.get("attention_backend", "existing").startswith("sla_"):
+            self.attn._star7_sla_mod_segments = mod_segments
+        try:
+            attention = self.attn(attention_input, **attention_kwargs)
+        finally:
+            if _CONFIG.get("attention_backend", "existing").startswith("sla_"):
+                if old_attn_segments is None:
+                    delattr(self.attn, "_star7_sla_mod_segments")
+                else:
+                    self.attn._star7_sla_mod_segments = old_attn_segments
         if consumes_list:
             h = None
         if profile_attention:
@@ -868,6 +1019,7 @@ def install_model_patch(
         chunk_tokens, auto_halve_on_oom, verbose,
         mlp_chunk_tokens, reuse_mlp_weights, node_id,
     )
+    _CONFIG["attention_backend"] = attention_backend
 
     from comfy.ldm.minimax import model as h3_model
     patched = model.clone()
@@ -891,7 +1043,49 @@ def install_model_patch(
         )
 
     ck_attention = False
-    if attention_backend == "comfy_kitchen_int8":
+    sla_attention = False
+    strict_sla_backends = {
+        "sla_sm75_qk_int8_pv_fp16",
+        "sla_sm75_all_int8_experimental",
+        "sla_sm80+_qk_int8_pv_fp16",
+    }
+    if attention_backend in strict_sla_backends:
+        sla_backend = _load_sla_backend()
+        # Strict preflight: selecting SLA must never leave an earlier Sage/CK
+        # patch active while the UI claims SLA was selected.
+        capability = sla_backend.check_runtime_support(
+            requested_backend=attention_backend
+        )
+        for index, block in enumerate(diffusion_model.blocks):
+            patched.add_object_patch(
+                f"diffusion_model.blocks.{index}.attn.forward",
+                MethodType(_minimax_sla_forward, block.attn),
+            )
+            block_path = f"diffusion_model.blocks.{index}.forward"
+            upstream_block_forward = patched.object_patches.get(
+                block_path, block.forward
+            )
+            patched.add_object_patch(
+                block_path,
+                MethodType(
+                    _sla_segment_passthrough(upstream_block_forward), block
+                ),
+            )
+        attention_patch_name = attention_backend
+        sage_attention = False
+        sla_attention = True
+        if verbose:
+            arithmetic = (
+                "All-INT8 (experimental)"
+                if attention_backend == "sla_sm75_all_int8_experimental"
+                else "QK INT8 / PV FP16"
+            )
+            _LOG.info(
+                "[Star7 H3 Chunk] Strict SLA selected (%s, 85%% target video "
+                "sparsity with native audio guard); no Sage/CK failure fallback "
+                "is enabled", arithmetic
+            )
+    elif attention_backend == "comfy_kitchen_int8":
         try:
             import comfy_kitchen
             ck_available = comfy_kitchen.int8_attention_is_available()
@@ -922,6 +1116,8 @@ def install_model_patch(
                 "[Star7 H3 Chunk] Comfy Kitchen INT8 attention was requested "
                 "but is unavailable; keeping the existing attention backend"
             )
+    elif attention_backend != "existing":
+        raise ValueError(f"unknown attention backend: {attention_backend}")
 
     # Patch only the MLP.  The block itself is deliberately left untouched so
     # an upstream FP16 exact, Sage, low-VRAM, or third-party model patch keeps
@@ -947,7 +1143,8 @@ def install_model_patch(
             "dynamic prefetch=removed | block=preserved | attention=%s",
             NODE_VERSION, len(diffusion_model.blocks), star7_fp16,
             (
-                "comfy-kitchen-int8" if ck_attention
+                attention_patch_name if sla_attention
+                else "comfy-kitchen-int8" if ck_attention
                 else "sage-qk-int8" if sage_attention
                 else attention_patch_name
             ),
@@ -1013,13 +1210,25 @@ class MiniMaxH3ActivationChunkStar7:
                     },
                 ),
                 "attention_backend": (
-                    ["existing", "comfy_kitchen_int8"],
+                    [
+                        "existing",
+                        "comfy_kitchen_int8",
+                        "sla_sm75_qk_int8_pv_fp16",
+                        "sla_sm75_all_int8_experimental",
+                        "sla_sm80+_qk_int8_pv_fp16",
+                    ],
                     {
                         "default": "comfy_kitchen_int8",
                         "tooltip": (
                             "existing keeps the incoming attention patch (for example KJ Sage). "
                             "comfy_kitchen_int8 selects ComfyUI's native INT8 attention and "
-                            "overrides an earlier MiniMax Sage patch. Both INT8 paths are approximate."
+                            "overrides an earlier MiniMax Sage patch. Strict SLA targets 85% "
+                            "dynamic video-block sparsity, protects target-audio queries, and "
+                            "never falls back after failure. Choose "
+                            "sla_sm75_qk_int8_pv_fp16 for the recommended SM75 path, "
+                            "sla_sm75_all_int8_experimental for the faster but lower-precision "
+                            "SM75 experiment, or "
+                            "sla_sm80+_qk_int8_pv_fp16 for SM80+."
                         ),
                     },
                 ),
@@ -1037,7 +1246,9 @@ class MiniMaxH3ActivationChunkStar7:
         "DiT block path for FP16/BF16, Sage, LoRA, and third-party compatibility. "
         "Can safely retry without AIMDO prefetch. "
         "Compatible with FP16 Exact Fix - Star7. The default Comfy Kitchen INT8 "
-        "attention mode is approximate; select existing to preserve upstream attention math."
+        "attention mode is approximate; select existing to preserve upstream attention math. "
+        "Strict SLA is dependency-free from Sage, includes a native target-audio guard, "
+        "and errors instead of silently falling back."
     )
 
     def patch(

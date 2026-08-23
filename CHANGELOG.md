@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+- Split strict SLA selection into architecture-explicit names:
+  `sla_sm75_qk_int8_pv_fp16`, `sla_sm75_all_int8_experimental`, and
+  `sla_sm80+_qk_int8_pv_fp16`. The unreleased
+  generic SLA value was removed rather than retained as a compatibility alias.
+
+- Added ABI v7 with a separate SM75 All-INT8 experimental entry point. It uses
+  per-channel INT8 V and U8 softmax probabilities for PV while retaining FP32
+  softmax state/accumulation, corrected routing, per-16-row Q scaling, and the
+  native target-audio full-attention guard. It never silently substitutes the
+  recommended FP16-PV kernel or CK.
+- Full H3 validation completed at 60.83 seconds/step and 325.51 seconds total.
+  Tail audio remained balanced at -72.49/-72.57 dB RMS; random numerical error
+  against FP32 reference measured 0.000155 mean and 0.000830 maximum. The mode
+  remains explicitly experimental rather than becoming the default.
+
+- Kept the recommended FP16-PV implementation in the ABI v7 SM75 library:
+  Q/K are INT8, PV is FP16, and online softmax/PV accumulation remain FP32.
+  Fixed the Turing `m16n8k8` output-row mapping and changed Q quantization to
+  per-16-row scaling to reduce accumulated long-sequence error.
+- Added an in-kernel full-attention guard for the target-audio query blocks while
+  keeping video queries dynamically sparse. On the validated H3 sequence, video
+  sparsity is 85.08% and overall effective sparsity is 83.93%. This is deliberate
+  SLA quality protection, not a CK/Sage failure fallback.
+- RTX 2080 Ti validation at sequence length 75,872 and 56 heads completed four
+  steps at 96.68 seconds/step, versus the recorded approximately 118 seconds/step
+  CK baseline. The earlier 59.18-second pure-INT8 result was retired because of
+  unacceptable late-video visual/audio error.
+- Added a persistent writable Triton cache location for common SLA routing and
+  quantization kernels. Cold-start compilation remains separate from steady-state
+  sampling time. SLA errors still stop the task; no silent fallback was added.
+
+- Added strict architecture-specific MiniMax H3 SLA attention backends. They follow
+  LightX2V dynamic block routing (Q128/K64, 85% target video sparsity); both SM75
+  and SM80+ use INT8 QK/FP16 PV with FP32 online softmax and accumulation.
+  It never silently falls back to CK or Sage.
+- Added strict SLA preflight and one-time numerical self-test diagnostics.
+  SM75/RTX 20-series now uses a precompiled native CUDA core;
+  SM80+ continues to use Triton. Missing binaries and self-test failures stop
+  explicitly without changing attention backends.
+- The Windows x64 SM75 core has an ABI-stable raw-pointer/stream interface with
+  no PyTorch C++ or SageAttention runtime dependency. Its SASS contains native
+  Turing IMMA instructions for QK and native FP16 tensor-core instructions for PV.
+- Added the SLA choice without changing the node input count or the serialized
+  positions of existing workflow fields.
+
 - Removed the H3 dynamic next-block prefetch experiment from execution. The legacy
   workflow field remains as a non-functional compatibility placeholder so saved
   workflows keep later widget positions intact.
