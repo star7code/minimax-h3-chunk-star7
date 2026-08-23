@@ -4,7 +4,7 @@
 
 Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with limited VRAM: this ComfyUI node chunks the two largest RoPE and MLP activation peaks so those operations fit in dedicated VRAM instead of spilling into much slower shared system memory. For workloads that would otherwise OOM or page through shared memory, this can greatly improve the practical video size and runtime; when a workload already fits entirely in VRAM, chunking alone is not a speedup. The default path uses Comfy Kitchen INT8 attention and does not change the sampler, latent, VAE, video duration, or spatial resolution; choose `existing` to preserve an upstream Sage or environment-selected attention backend.
 
-**New in v2.6.0:** architecture-specific SLA sparse attention is now included. For best results, use it with the [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA). On the local RTX 2080 Ti 1.0MP/10-second test, SM75 All-INT8 experimental completed in approximately **325 seconds**, while SM75 QK-INT8/PV-FP16 completed in approximately **470 seconds**. The SM75 Windows x64 CUDA core is shipped precompiled—users do not compile it locally—while SM80+ uses Triton first-run compilation and caching. See the compatibility notes below before distribution.
+**New in v2.6.0:** architecture-specific SLA sparse attention is included. For best results, use it with the [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA). SM75 uses a bundled precompiled CUDA kernel; SM80+ uses Triton.
 
 > This is an independent community project. MiniMax, ComfyUI, Comfy Kitchen, KJNodes, and NVIDIA are trademarks or projects of their respective owners.
 
@@ -14,9 +14,7 @@ Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with li
 
 **v2.6.0 已加入按显卡架构区分的 SLA 稀疏注意力加速。** 建议配合
 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA)
-获得最佳效果。本机 RTX 2080 Ti 的 1.0MP/10 秒测试中，SM75 All-INT8 实验模式完整任务约
-**325 秒**，SM75 QK-INT8/PV-FP16 模式约 **470 秒**。SM75 Windows x64 CUDA 核心已随
-节点预编译分发，用户无需本地编译；SM80+ 使用 Triton，在首次运行时编译并缓存。
+使用。SM75 使用随节点分发的预编译 CUDA 内核，SM80+ 使用 Triton。
 
 节点针对 MiniMax H3 长序列推理的两个显存峰值：
 
@@ -25,45 +23,25 @@ Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with li
 
 RoPE 沿 sequence/token 维分块并原位写回 Q/K。MLP 按 token 分块计算，避免同时保留完整的扩展激活；MLP 输出仍交给上游 block 处理，以保留 FP16 Exact、Sage、低显存 attention 和第三方模型补丁的兼容性。对于 `int8_tensorwise + ConvRot` 权重，节点保持 `QuantizedTensor` 路径，并允许各 token chunk 复用已经准备好的权重。
 
-默认 `attention_backend = comfy_kitchen_int8` 时，本项目会使用 Comfy Kitchen INT8 注意力；它是近似注意力路径。若要完全保留前置节点或当前环境的注意力算法，请选择 `existing`。这些模式都不会改变采样器、sigma、seed、VAE、latent、帧数或画面分辨率。
+### 注意力模式
 
-选择 `sla_sm75_qk_int8_pv_fp16`（SM75）或 `sla_sm80+_qk_int8_pv_fp16`（SM80+）会启用
-严格的 MiniMax H3 动态块稀疏注意力：按 LightX2V
-契约使用 `Q=128`、`K=64` 的路由块，视频查询保留约 15% 的 K 块。SM75 与 SM80+ 都采用
-QK INT8、PV FP16，在线 softmax 与 PV 累积保持 FP32；SM75 使用随节点分发的 Turing CUDA
-Tensor Core 内核，SM80+ 使用 Triton 实现。SM75 会让占比很小的目标音频查询块执行完整注意力，
-避免长视频末段的声道爆音；这属于 SLA 内核内的显式质量保护，而不是失败回退。该实现不导入
-SageAttention，也不会在失败时改走 CK、Sage 或其他注意力；环境检查、首次内核自检或正式计算失败都会中止任务，用户需
-手动改选 `comfy_kitchen_int8` 后重新运行。因此日志只有在真实 SLA 内核及自检通过后才会显示
-`SLA verified`。SM75 另提供 `sla_sm75_all_int8_experimental` 实验选项：Q/K/V 与
-softmax 概率的 Tensor Core 乘法均采用 INT8，但 softmax 状态及最终累积仍为 FP32。它沿用
-新版 per-16-row Q 缩放、路由与目标音频完整注意力保护；速度更快，但量化误差更大，因此不会
-取代默认的 FP16-PV 路径，也不提供给 SM80+。
+| `attention_backend` | 架构 | 计算路径 |
+|---|---|---|
+| `existing` | 通用 | 保留上游 Sage、原生或第三方注意力 |
+| `comfy_kitchen_int8` | 由 CK 决定 | Comfy Kitchen INT8 |
+| `sla_sm75_qk_int8_pv_fp16` | SM75 | QK INT8、PV FP16；推荐模式 |
+| `sla_sm75_all_int8_experimental` | SM75 | QK INT8、PV INT8；实验模式 |
+| `sla_sm80+_qk_int8_pv_fp16` | SM80+ | QK INT8、PV FP16；Triton |
 
-SM75/RTX 20 系使用随节点分发的原生 CUDA 核心，SM80+（RTX 30 系或更新架构）使用
-纯 Triton 核心。SM75 DLL 只接收显存地址、形状与当前 CUDA stream，不链接 PyTorch C++ ABI；
-QK 通过 Turing `IMMA` 执行；推荐模式的 PV 使用 FP16 MMA，实验模式的 PV 使用 INT8 IMMA。项目不会把 QK
-转回 FP16 冒充 INT8，也无需安装或编译 SageAttention。当前仓库内预编译包为 Windows x64
-SM75；其他平台缺少对应二进制时会明确报错且不会回退。
-当前 Windows DLL 使用 CUDA 13.0.88 构建并静态包含 CUDA runtime，只依赖系统 NVIDIA
-驱动接口；因此需要支持 CUDA 13 的 580 系或更新驱动。正式扩大发布时可以再用较低 CUDA
-基线构建兼容包，而无需改变节点或 PyTorch 接口。
+SLA 按 LightX2V 契约使用 `Q=128`、`K=64` 动态块路由，视频查询约保留 15% 的 K 块；
+softmax 状态和最终累积保持 FP32。目标音频查询使用完整注意力保护。
 
-本机 RTX 2080 Ti 已完成尾块、多头与长度边界数值测试；当前内核相对 FP32 稀疏参考的
-平均绝对误差约 `0.0000302`、最大约 `0.000183`。真实 H3 工作流在 `S=75,872`、56 heads 下，
-视频路由稀疏率为 `85.08%`；计入 8 个目标音频完整注意力查询块后，整体实际稀疏率为 `83.93%`。
-4 个采样步平均 `96.68 秒/步`，同一用户案例记录的 CK 基线约 `118 秒/步`，完整任务为
-`471.12 秒`。这是单机单次结果，不代替不同显卡与环境的复测。
+注意事项：
 
-同一工作流使用新版 SM75 All-INT8 实验模式时，4 步平均 `60.83 秒/步`，完整任务
-`325.51 秒`。8.5～10.1 秒尾部音频左右声道 RMS 为 `-72.49/-72.57 dB`，未复现旧版
-单声道爆音；随机数值测试相对 FP32 参考的平均绝对误差约 `0.000155`、最大约 `0.000830`。
-单次通过不等同于所有提示词都无质量损失，因此界面仍明确标记为实验模式。
-
-首次选择 SLA 时，SM80+ Triton 路由/量化内核以及部分公共前处理会即时编译并建立磁盘缓存，
-因此冷启动可能明显慢于第二次。SM75 注意力 DLL 本身已经预编译，不会现场编译，但仍会受上述
-公共 Triton 内核、模型/LoRA 首次装载和 CUDA 缓存影响。判断稳定速度时应比较同一进程内后续运行
-或第 2～4 个采样步，不应把首次编译与模型加载计入每步性能。
+- SM75 Windows x64 内核已预编译，用户无需安装或编译 SageAttention；要求 SM75 GPU 和支持 CUDA 13 的 580+ NVIDIA 驱动。
+- SM80+ 使用 Triton，首次运行会编译并缓存内核。
+- SLA 不会静默回退；环境、自检或计算失败会直接中止，需手动改选 CK 或 `existing`。
+- All-INT8 量化误差高于 FP16-PV，因此保留为实验选项。
 
 ## 安装
 
@@ -214,26 +192,28 @@ block 反复以失败的大块重试。用户手动修改任一分块输入并�
 | 注意力 | `comfy_kitchen_int8` |
 | 后处理 | RTX Video Super Resolution 2× Ultra，NVENC H.264 |
 
-本机观察值：
+本机观察值（1.0MP / 10秒 / 4-step LoRA）：
 
-| 路径 | 采样耗时 | 相对 CK INT8 |
-|---|---:|---:|
-| KJNodes 自定义 SM75 SageAttention 2 路径 | 约170秒/步 | CK 单步缩短约29.4%，吞吐约1.42× |
-| KJNodes Low VRAM Attention (`head_chunks=4`) | 约177秒/步 | CK 单步缩短约32.2%，吞吐约1.48× |
-| Comfy Kitchen INT8 | 约120秒/步 | 基准 |
+| 注意力路径 | 采样耗时 | 完整任务 | 相对 CK 单步吞吐 |
+|---|---:|---:|---:|
+| KJNodes 自定义 SM75 SageAttention 2 | 约170秒/步 | — | 约0.71× |
+| KJNodes Low VRAM Attention (`head_chunks=4`) | 约177秒/步 | — | 约0.68× |
+| Comfy Kitchen INT8 | 约120秒/步 | 约620秒 | 基准 |
+| SLA SM75 QK-INT8/PV-FP16 | **96.68秒/步** | **约470秒** | **约1.24×** |
+| SLA SM75 All-INT8 实验模式 | **60.83秒/步** | **约325秒** | **约1.97×** |
 
-本机 RTX 20 系/SM75 结果表明，CK INT8 比 [KJNodes](https://github.com/kijai/ComfyUI-KJNodes) 的 MiniMax H3 自定义 SM75 SageAttention 2 路径更快。这个结论限定于当前2080 Ti、模型和软件版本，不代表 CK 在30/40系上必然优于 Sage。
+建议 SLA 配合 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA) 使用。
+完整任务包含模型调度、VAE 解码、超分、音频和视频封装；结果仅代表本机配置。
 
-| 案例 | 空间/时长 | 完整任务实测 |
-|---|---|---:|
-| A | 1.0MP / 10秒 / 4-step LoRA | **620秒** |
-| B | 0.6MP / 15秒 / 4-step LoRA | **530秒** |
-| C | 0.4MP / 10秒 / 4-step LoRA | **180秒** |
-| D | 0.4MP / 5秒 / 4-step LoRA | **85秒** |
+其他 CK INT8 完整任务：
 
-A 的四步采样约480秒。以上完整时间还包含当前工作流的模型调度、VAE解码、超分、音频和视频封装；后处理仍在继续调优，因此只作为同机案例，不把120秒/步误写成完整视频耗时。
+| 空间/时长 | 完整任务实测 |
+|---|---:|
+| 0.6MP / 15秒 / 4-step LoRA | 约530秒 |
+| 0.4MP / 10秒 / 4-step LoRA | 约180秒 |
+| 0.4MP / 5秒 / 4-step LoRA | 约85秒 |
 
-### 为什么分辨率和时长增加后不是线性耗时
+### 耗时与显存原理
 
 令 `S` 为 H3 实际 packed sequence token 数。固定模型结构下，可以粗略写成：
 
@@ -242,21 +222,10 @@ S ≈ S_condition + k × spatial_tokens × temporal_tokens
 T ≈ T_fixed + aS + bS² + T_post
 ```
 
-- RoPE、RMSNorm、QKV投影和MLP的主要工作量近似随 `S` 线性增长；
-- 全局 self-attention 的 QK/AV 计算近似含 `S²` 项；memory-efficient 或分块实现主要降低中间张量驻留，并不会消除全部注意力算术；
-- VAE、超分和编码又大致随“像素数 × 帧数”增长，并带有固定启动和封装开销。
-
-因此总耗时是固定项、线性项、二次注意力项和后处理项的混合。分辨率与时长同时增加时，token 预算近似相乘，attention 占比上升后会表现为超线性增长。实测 A/C 的空间×时长预算约为 `2.5×`，完整耗时却为 `3.44×`；C/D 的预算约为 `2×`，耗时约为 `2.12×`，符合“并非固定线性倍数”的现象。
-
-RoPE/MLP 分块本身不减少理论 FLOPs。显存没有 OOM、没有触发系统内存换入换出、且原 kernel 已能高效运行时，单纯启用或缩小 chunk 通常不会提速，甚至可能因更多小 GEMM 和 kernel 启动而变慢。本机从约170秒/步降到约120秒/步的主要加速来源是 **CK INT8 替换 SM75 Sage2 注意力路径**，不是激活分块凭空减少了计算量。
-
-显存观察：
-
-- 单参考图案例截图：专用显存约 `16.7 / 22.0GB`；
-- 无参考文生视频案例：专用显存约 `15.6GB`；
-- 采样截图时 GPU 约95%，Copy引擎接近0%。
-
-本次 Aki 启动器中开启了“尽量将模型保留在显存”，关闭“稳定计算”和 Channels-Last，并选择“CUDA 内置异步分配器”。模型常驻选项用于减少模型在显存与系统内存之间的换入换出，不等于禁用 Windows WDDM 共享 GPU 内存。任务管理器仍显示约13GB共享 GPU 内存映射，因此本项目不宣称“零共享内存”。实测未观察到持续 Copy/PCIe 搬运造成的明显采样降速，但单张任务管理器截图不能证明整个运行过程从未访问系统内存。
+- RoPE、RMSNorm、投影和 MLP 主要随 `S` 线性增长；全局注意力含近似 `S²` 项。
+- RoPE/MLP 分块降低激活峰值，不减少理论 FLOPs；无需分块时可能增加少量 kernel 启动开销。
+- SLA 通过减少参与 QK/PV 的 K 块降低注意力计算量。
+- 完整任务还包含 VAE、超分、音频和编码，因此不会与采样步耗时线性对应。
 
 完整记录和截图见 [BENCHMARKS.md](BENCHMARKS.md)。以上是本机观察案例，不是跨平台性能保证。
 
@@ -280,9 +249,7 @@ attention_backend = existing
 
 ## 小显存补充说明
 
-`reuse_mlp_weights` 是自动策略请求，而不是强制命令。节点会先按 ComfyUI 当前路径准备并应用 LoRA/权重补丁，再把每层结果复制到独立 resident 快照，避免 AIMDO/VBAR 共享 staging buffer 被后续层覆盖。快照不支持、复制失败或显存不足时才改用 streamed-safe 路径。旧工作流里的 `true` 仍会按这个规则自动判断。小显存卡能否完成目标还取决于模型权重、LoRA 是否触发反量化、注意力工作集、ComfyUI 卸载策略和操作系统。分块降低的是扩展激活峰值，不会让全部模型权重凭空消失。
-
-该字段保留在节点界面，方便高级用户手动关闭 resident 策略进行排查或兼容性验证。开启时会使用独立权重快照，失败或 OOM 才会自动切换 streamed。字段位置和工作流序列化保持不变，因此旧工作流不会错位。
+`reuse_mlp_weights=true` 会在权重静态且显存允许时使用独立 resident 快照；不满足条件时自动切换 streamed-safe 路径。分块只降低 RoPE/MLP 激活峰值，模型权重、LoRA、注意力工作集和 VAE 仍需占用显存。
 
 ## 示例工作流
 
