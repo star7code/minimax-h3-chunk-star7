@@ -12,7 +12,7 @@ An optional reference-video loader can limit conditioning resolution before H3 V
 
 核心功能是 MiniMax H3 的 QKV/RoPE/MLP 激活分块与严格 SLA 注意力加速：SM75 使用随节点分发的 CUDA SLA 内核，SM80+ 使用 Triton。默认注意力为 Comfy Kitchen INT8，选择 `existing` 可保留上游 Sage 或其他注意力补丁；采样器、latent、VAE、时长和输出分辨率均不改变。
 
-SLA 建议配合 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA) 使用；另附参考视频载入/优化节点，可在 H3 Video VAE 编码前限制参考分辨率。
+SLA 建议配合 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA) 使用；另附参考视频载入节点，可在 H3 Video VAE 编码前限制参考分辨率。
 
 节点控制 MiniMax H3 长序列推理的三个临时显存峰值：
 
@@ -124,17 +124,6 @@ Reference Video Load - Star7 (audio) -> H3 Conditioning ref_audio
 帧网格。`最长边限制` 保持参考视频的横竖方向；`允许小视频放大` 默认关闭，
 避免为插值画面增加参考 token。音频保留源文件最多 15 秒，不随 `17n+5`
 画面裁齐而截断尾字；节点不依赖 VHS。
-
-旧的通用连接仍受支持：
-
-```text
-Load Video (frames) -> Reference Video Optimize - Star7 -> H3 Conditioning ref_video
-Resolution Selector width/height -------------------------> optimizer target width/height
-Load Video (audio) ---------------------------------------> H3 Conditioning ref_video_audio
-```
-
-`match_output_area` 仅在参考视频像素面积高于目标画布时缩小，保持纵横比且
-不放大低分辨率素材。
 
 RTX 20 系及其他不适合原生 BF16 计算的显卡：
 

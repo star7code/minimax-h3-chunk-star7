@@ -903,34 +903,10 @@ def test_sm75_qkv_resident_reuse_includes_explicit_4096_and_smaller():
         chunk_nodes._CONFIG.update(original_config)
 
 
-def test_reference_video_optimizer_is_registered():
+def test_reference_video_loader_is_registered():
     assert chunk_nodes.NODE_CLASS_MAPPINGS["MiniMaxH3ReferenceVideoLoadStar7"] is (
         chunk_nodes.MiniMaxH3ReferenceVideoLoadStar7
     )
-    assert chunk_nodes.NODE_CLASS_MAPPINGS["MiniMaxH3ReferenceVideoOptimizeStar7"] is (
-        chunk_nodes.MiniMaxH3ReferenceVideoOptimizeStar7
-    )
-
-
-def test_reference_video_match_area_downscales_without_upscaling():
-    assert chunk_nodes._matched_reference_size(720, 1280, 608, 1056) == (608, 1056)
-    assert chunk_nodes._matched_reference_size(512, 512, 608, 1056) == (512, 512)
-
-
-def test_reference_video_match_area_preserves_area_and_aspect_closely():
-    width, height = chunk_nodes._matched_reference_size(1920, 1080, 1024, 576)
-    assert width * height <= 1024 * 576
-    assert width % 32 == 0 and height % 32 == 0
-    assert abs(width / height - 1920 / 1080) < 0.06
-
-
-def test_reference_video_optimizer_keep_original_is_zero_copy():
-    node = chunk_nodes.MiniMaxH3ReferenceVideoOptimizeStar7()
-    frames = torch.zeros((5, 64, 96, 3), dtype=torch.float32)
-    output, report = node.optimize(frames, 32, 32, "keep_original")
-    assert output is frames
-    assert "96x64 -> 96x64" in report
-    assert "audio=unchanged" in report
 
 
 def test_reference_video_long_edge_limit_preserves_orientation():
@@ -1203,10 +1179,7 @@ if __name__ == "__main__":
     test_new_activation_chunk_defaults_are_architecture_safe()
     test_sm75_qkv_quality_cap_is_architecture_isolated()
     test_sm75_qkv_resident_reuse_includes_explicit_4096_and_smaller()
-    test_reference_video_optimizer_is_registered()
-    test_reference_video_match_area_downscales_without_upscaling()
-    test_reference_video_match_area_preserves_area_and_aspect_closely()
-    test_reference_video_optimizer_keep_original_is_zero_copy()
+    test_reference_video_loader_is_registered()
     test_reference_video_long_edge_limit_preserves_orientation()
     test_reference_video_long_edge_upscale_is_explicit()
     test_reference_video_frame_count_is_h3_aligned()

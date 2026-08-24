@@ -40,10 +40,6 @@
 - Kept small-reference upscaling disabled by default because interpolation
   adds no source detail while increasing H3 reference tokens. The explicit
   switch remains available for structure/motion A/B tests.
-- Added the architecture-independent `Reference Video Optimize - Star7` node.
-  It caps reference-video area to the requested output canvas before H3 Video
-  VAE encoding, while preserving frame count, aspect ratio, and audio. This
-  reduces both reference encoding work and the later packed attention sequence.
 - RTX 2080 Ti 22GB validation on the supplied 0.6MP/9s reference workflow cut
   one-step diagnostic runtime from 311.60s to 232.50s (-25.4%), sequence length
   from 103,546 to 87,101, and sampler time from 98.14s to 83.02s.

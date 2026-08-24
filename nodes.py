@@ -1,7 +1,6 @@
 import gc
 import contextlib
 import logging
-import math
 import os
 import shutil
 import subprocess
@@ -24,7 +23,6 @@ _PROFILED_MLP_SHAPES = set()
 _PROFILED_ATTENTION_SHAPES = set()
 _LOGGED_SLA_SHAPES = set()
 _PROFILED_QKV_STAGES = set()
-_LOGGED_REFERENCE_VIDEO_SHAPES = set()
 _CONFIG = {
     "chunk_tokens": 8192,
     "mlp_chunk_tokens": 8192,
@@ -1713,36 +1711,6 @@ class MiniMaxH3ActivationChunkStar7:
         ),)
 
 
-def _matched_reference_size(
-    source_width: int,
-    source_height: int,
-    target_width: int,
-    target_height: int,
-    multiple: int = 32,
-) -> tuple[int, int]:
-    """Cap reference-video area to the output area without changing its aspect."""
-    values = (source_width, source_height, target_width, target_height)
-    if any(int(value) <= 0 for value in values):
-        raise ValueError("Reference and target dimensions must be positive")
-    multiple = max(1, int(multiple))
-    source_area = int(source_width) * int(source_height)
-    target_area = int(target_width) * int(target_height)
-    if source_area <= target_area:
-        return int(source_width), int(source_height)
-
-    scale = math.sqrt(target_area / source_area)
-    width = max(multiple, round(source_width * scale / multiple) * multiple)
-    height = max(multiple, round(source_height * scale / multiple) * multiple)
-    while width * height > target_area and (width > multiple or height > multiple):
-        width_loss = abs((width - multiple) / max(height, 1) - source_width / source_height)
-        height_loss = abs(width / max(height - multiple, 1) - source_width / source_height)
-        if width > multiple and (height <= multiple or width_loss <= height_loss):
-            width -= multiple
-        else:
-            height -= multiple
-    return width, height
-
-
 def _long_edge_reference_size(
     source_width: int,
     source_height: int,
@@ -1981,95 +1949,6 @@ class MiniMaxH3ReferenceVideoLoadStar7:
         return frames, audio, aligned_count, report
 
 
-class MiniMaxH3ReferenceVideoOptimizeStar7:
-    """Resize reference frames before the H3 VAE so they do not exceed the output area."""
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "reference_video": ("IMAGE",),
-                "target_width": (
-                    "INT",
-                    {"default": 1344, "min": 32, "max": 16384, "step": 32},
-                ),
-                "target_height": (
-                    "INT",
-                    {"default": 768, "min": 32, "max": 16384, "step": 32},
-                ),
-                "resize_policy": (
-                    ["match_output_area", "match_output_size", "keep_original"],
-                    {
-                        "default": "match_output_area",
-                        "tooltip": (
-                            "match_output_area preserves the reference aspect ratio and only "
-                            "downscales when its pixel area exceeds the output canvas."
-                        ),
-                    },
-                ),
-            }
-        }
-
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("reference_video", "report")
-    FUNCTION = "optimize"
-    CATEGORY = "Star7/MiniMax H3"
-    DESCRIPTION = (
-        "Pre-resizes MiniMax H3 reference-video frames before Video VAE encoding. "
-        "This reduces both conditioning time and reference tokens while preserving every "
-        "frame and leaving audio untouched. Pure PyTorch; compatible with RTX 20-50 series."
-    )
-
-    def optimize(
-        self, reference_video, target_width=1344, target_height=768,
-        resize_policy="match_output_area",
-    ):
-        if not isinstance(reference_video, torch.Tensor) or reference_video.ndim != 4:
-            raise ValueError("reference_video must be IMAGE [frames, height, width, channels]")
-        frames, source_height, source_width = map(int, reference_video.shape[:3])
-        if frames < 1:
-            raise ValueError("reference_video contains no frames")
-
-        policy = str(resize_policy)
-        if policy == "keep_original":
-            width, height = source_width, source_height
-        elif policy == "match_output_size":
-            width = max(32, round(int(target_width) / 32) * 32)
-            height = max(32, round(int(target_height) / 32) * 32)
-        elif policy == "match_output_area":
-            width, height = _matched_reference_size(
-                source_width, source_height, int(target_width), int(target_height), 32,
-            )
-        else:
-            raise ValueError(f"Unknown reference resize policy: {resize_policy}")
-
-        if (width, height) == (source_width, source_height):
-            output = reference_video
-        else:
-            import comfy.utils
-
-            samples = reference_video[..., :3].movedim(-1, 1)
-            output = comfy.utils.common_upscale(
-                samples, width, height, "lanczos", "disabled",
-            ).movedim(1, -1)
-
-        source_area = source_width * source_height
-        output_area = width * height
-        reduction = max(0.0, 100.0 * (1.0 - output_area / source_area))
-        signature = (frames, source_width, source_height, width, height, policy)
-        if signature not in _LOGGED_REFERENCE_VIDEO_SHAPES:
-            _LOGGED_REFERENCE_VIDEO_SHAPES.add(signature)
-            _LOG.info(
-                "[Star7 H3 Ref] %d frames | %dx%d -> %dx%d | pixels -%.1f%% | policy=%s",
-                frames, source_width, source_height, width, height, reduction, policy,
-            )
-        report = (
-            f"frames={frames} | {source_width}x{source_height} -> {width}x{height} | "
-            f"pixels -{reduction:.1f}% | policy={policy} | audio=unchanged"
-        )
-        return output, report
-
-
 class MiniMaxH3RoPEChunkPatch(MiniMaxH3ActivationChunkStar7):
     """Legacy class ID retained only so existing workflows keep loading."""
 
@@ -2079,7 +1958,6 @@ class MiniMaxH3RoPEChunkPatch(MiniMaxH3ActivationChunkStar7):
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3ActivationChunkStar7": MiniMaxH3ActivationChunkStar7,
     "MiniMaxH3ReferenceVideoLoadStar7": MiniMaxH3ReferenceVideoLoadStar7,
-    "MiniMaxH3ReferenceVideoOptimizeStar7": MiniMaxH3ReferenceVideoOptimizeStar7,
     # Compatibility alias for workflows saved before the package was renamed.
     "MiniMaxH3RoPEChunkPatch": MiniMaxH3RoPEChunkPatch,
 }
@@ -2087,6 +1965,5 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3ActivationChunkStar7": "MiniMax H3 QKV Chunk & SLA - Star7",
     "MiniMaxH3ReferenceVideoLoadStar7": "MiniMax H3 Reference Video Load - Star7",
-    "MiniMaxH3ReferenceVideoOptimizeStar7": "MiniMax H3 Reference Video Optimize - Star7",
     "MiniMaxH3RoPEChunkPatch": "MiniMax H3 RoPE Chunk Patch (Legacy) - Star7",
 }
