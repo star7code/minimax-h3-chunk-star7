@@ -344,6 +344,48 @@ def test_fp16_block_patch_matches_materialized_formula(device=torch.device("cpu"
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
+def test_h3_output_guard_identifies_audio_before_vae():
+    def original_forward(*_args, **_kwargs):
+        return [torch.zeros(1), torch.tensor([float("nan")])]
+
+    guarded = chunk_nodes._h3_output_finite_passthrough(original_forward)
+    try:
+        guarded(object())
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "audio model output" in message
+        assert "before VAE decode" in message
+    else:
+        raise AssertionError("invalid H3 audio reached VAE decode")
+
+
+def test_sm75_fp16_fix_isolated_from_sm80_through_sm120():
+    sm75_backends = (
+        "comfy_kitchen_int8",
+        "sla_sm75_qk_int8_pv_fp16",
+        "sla_sm75_all_int8_experimental",
+    )
+    for backend in sm75_backends:
+        assert chunk_nodes._should_enable_sm75_auto_fp16_exact(
+            (7, 5), False, backend
+        )
+        assert not chunk_nodes._should_enable_sm75_auto_fp16_exact(
+            (7, 5), True, backend
+        )
+    assert not chunk_nodes._should_enable_sm75_auto_fp16_exact(
+        (7, 5), False, "existing"
+    )
+    for capability in ((8, 0), (8, 6), (8, 9), (12, 0)):
+        for backend in (
+            *sm75_backends,
+            "sla_sm80+_qk_int8_pv_fp16",
+            "existing",
+        ):
+            assert not chunk_nodes._should_enable_sm75_auto_fp16_exact(
+                capability, False, backend
+            )
+
+
 def test_install_preserves_upstream_block_patch():
     from comfy.ldm.minimax import model as h3_model
 
@@ -468,11 +510,87 @@ def test_sm75_sla_auto_installs_fp16_exact_without_external_node():
     )
     assert patched.compute_dtype == torch.float16
     assert patched.model_options["transformer_options"][
-        "star7_h3_sla_auto_fp16_exact"
+        "star7_h3_sm75_auto_fp16_exact"
+    ] == chunk_nodes.NODE_VERSION
+    assert patched.model_options["transformer_options"][
+        "star7_h3_output_finite_guard"
     ] == chunk_nodes.NODE_VERSION
     assert "diffusion_model.condition_proj.forward" in patched.object_patches
+    assert "diffusion_model.forward" in patched.object_patches
     assert "diffusion_model.blocks.0.forward" in patched.object_patches
-    assert diffusion_model.blocks[0].attn._star7_sla_auto_fp16_exact is True
+    assert diffusion_model.blocks[0].attn._star7_auto_fp16_exact is True
+
+
+def test_sm75_ck_auto_fp16_exact_coexists_with_block_loop_cache():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
+        return
+    import comfy_kitchen
+    from comfy.ldm.minimax import model as h3_model
+
+    if not comfy_kitchen.int8_attention_is_available():
+        return
+    diffusion_model = h3_model.MiniMaxH3Model(
+        hidden_size=16,
+        num_layers=1,
+        token_refiner_num_layers=1,
+        num_attention_heads=2,
+        attention_head_dim=8,
+        ffn_hidden_size=24,
+        latents_dim=4,
+        audio_latents_dim=4,
+        text_dim=16,
+        timestep_input_dim=8,
+        time_embed_hidden_size=16,
+        time_embed_dim=8,
+        rope_inv_freq_len=2,
+        dtype=torch.float16,
+        device="cpu",
+        operations=torch.nn,
+    )
+    block_cache = object()
+
+    class FakeModelPatcher:
+        def __init__(self):
+            self.model_options = {
+                "transformer_options": {
+                    "patches_replace": {"dit": {("block_loop", 0): block_cache}}
+                }
+            }
+            self.object_patches = {}
+            self.compute_dtype = None
+            self.force_cast_weights = True
+
+        def clone(self):
+            return self
+
+        def get_model_object(self, name):
+            assert name == "diffusion_model"
+            return diffusion_model
+
+        def add_object_patch(self, name, value):
+            self.object_patches[name] = value
+
+        def set_model_compute_dtype(self, dtype):
+            self.compute_dtype = dtype
+
+    patched = chunk_nodes.install_model_patch(
+        FakeModelPatcher(),
+        chunk_tokens=8192,
+        auto_halve_on_oom=True,
+        verbose=False,
+        mlp_chunk_tokens=4096,
+        disable_dynamic_prefetch=True,
+        reuse_mlp_weights=True,
+        attention_backend="comfy_kitchen_int8",
+    )
+    assert patched.compute_dtype == torch.float16
+    assert patched.model_options["transformer_options"]["patches_replace"][
+        "dit"
+    ][("block_loop", 0)] is block_cache
+    assert "diffusion_model.forward" in patched.object_patches
+    assert "diffusion_model.blocks.0.forward" in patched.object_patches
+    assert "diffusion_model.blocks.0.attn.forward" in patched.object_patches
+    assert diffusion_model.blocks[0].attn._star7_auto_fp16_exact is True
 
 
 def test_rope_oom_value_is_reused_for_k_and_later_calls():
@@ -705,6 +823,18 @@ def test_sla_backend_is_strict_and_architecture_checked():
             assert "requires Triton" in str(exc)
         else:
             raise AssertionError("SM80+ SLA incorrectly accepted missing Triton")
+
+        backend.triton = object()
+        for capability in ((8, 0), (8, 6), (8, 9), (12, 0)):
+            backend.torch.cuda.get_device_capability = (
+                lambda _device=None, cap=capability: cap
+            )
+            assert backend.check_runtime_support(
+                requested_backend=backend.SM80PLUS_BACKEND_NAME
+            ) == capability
+            assert backend.backend_name_for_capability(capability) == (
+                backend.SM80PLUS_BACKEND_NAME
+            )
     finally:
         backend.torch.cuda.is_available = original_available
         backend.torch.cuda.get_device_capability = original_capability
@@ -839,6 +969,8 @@ if __name__ == "__main__":
         test_fused_residual_matches_materialized_mlp(test_device)
         test_fp16_block_patch_matches_materialized_formula(test_device)
         print(f"MiniMax H3 RoPE/MLP chunk tests passed on {test_device}")
+    test_h3_output_guard_identifies_audio_before_vae()
+    test_sm75_fp16_fix_isolated_from_sm80_through_sm120()
     test_rope_oom_value_is_reused_for_k_and_later_calls()
     test_mlp_oom_value_is_reused_for_later_blocks()
     test_manual_settings_reset_learned_runtime_values()
@@ -847,6 +979,7 @@ if __name__ == "__main__":
     test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse()
     test_install_preserves_upstream_block_patch()
     test_sm75_sla_auto_installs_fp16_exact_without_external_node()
+    test_sm75_ck_auto_fp16_exact_coexists_with_block_loop_cache()
     test_comfy_kitchen_int8_attention_forward_cuda()
     test_sla_backend_is_strict_and_architecture_checked()
     test_sm75_binary_manifest_payloads()

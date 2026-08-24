@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Extended the self-contained SM75 FP16 Exact overflow formula from strict SLA
+  to Comfy Kitchen INT8. This also applies inside full and cached-prefix block
+  passes when an external H3 block-loop cache such as TE-Speed precedes Star7.
+- Added a joint H3 video/audio model-output finite guard for every attention
+  selection. It identifies the corrupt stream during sampling, before Audio VAE
+  decode or FFmpeg muxing, and never disguises invalid generated content by
+  silently replacing NaN/Inf samples with zero.
+- Clarified that finite guards are the last line of defense after automatic
+  SM75 FP16 Exact prevention, and include the first failing transformer-block
+  index in strict-SLA diagnostics.
+- Kept the SM75 precision rewrite strictly isolated to compute capability 7.5;
+  architecture regression tests now cover SM75, SM80, SM86, SM89, and SM120.
+- Consolidated startup and first-block diagnostics into compact configuration,
+  QKV, attention, and MLP summaries. Expected dense/quantized QKV differences
+  are reported as profiles instead of a misleading warning.
+
 - SM75 strict SLA now installs its validated FP16 Exact formula automatically
   when the standalone Star7 loader is absent: FP32 residual/SwiGLU, FP16
   branches, and power-of-two protected attention `out_proj`/MLP `fc2`. This is
