@@ -5,6 +5,7 @@ const NODE_NAMES = new Set([
     "MiniMaxH3ActivationChunkStar7",
     "MiniMaxH3RoPEChunkPatch",
 ]);
+const REFERENCE_NODE_NAME = "MiniMaxH3ReferenceVideoOptimizeStar7";
 const REAL_WIDGET_DEFAULTS = {
     chunk_tokens: 8192,
     auto_halve_on_oom: true,
@@ -78,6 +79,27 @@ const TEXT = {
     },
 };
 
+const REFERENCE_TEXT = {
+    en: {
+        title: "MiniMax H3 Reference Video Optimize - Star7",
+        labels: {
+            reference_video: "Reference video frames",
+            target_width: "Target width",
+            target_height: "Target height",
+            resize_policy: "Resize policy",
+        },
+    },
+    zh: {
+        title: "MiniMax H3 参考视频优化 - Star7",
+        labels: {
+            reference_video: "参考视频画面",
+            target_width: "目标宽度",
+            target_height: "目标高度",
+            resize_policy: "缩放策略",
+        },
+    },
+};
+
 function language() {
     const locale = app.ui?.settings?.getSettingValue?.("Comfy.Locale")
         ?? globalThis.navigator?.language
@@ -87,6 +109,22 @@ function language() {
 
 function strings() {
     return TEXT[language()];
+}
+
+function localizeReferenceNode(node) {
+    const text = REFERENCE_TEXT[language()];
+    node.title = text.title;
+    for (const [name, label] of Object.entries(text.labels)) {
+        const widget = node.widgets?.find((item) => item.name === name);
+        if (widget) {
+            widget.label = label;
+            widget.localized_name = label;
+        }
+        const input = node.inputs?.find((item) => item.name === name);
+        if (input) input.localized_name = label;
+    }
+    const output = node.outputs?.find((item) => item.name === "reference_video");
+    if (output) output.localized_name = language() === "zh" ? "优化后的参考视频" : "optimized reference video";
 }
 
 function formatValue(label, effective, configured, reason = "active") {
@@ -374,16 +412,39 @@ api.addEventListener("star7-h3-chunk-status", ({ detail }) => {
 app.registerExtension({
     name: "Star7.MiniMaxH3Chunk.RuntimeStatus",
     nodeCreated(node) {
+        if (node.comfyClass === REFERENCE_NODE_NAME || node.type === REFERENCE_NODE_NAME) {
+            localizeReferenceNode(node);
+            return;
+        }
         if (NODE_NAMES.has(node.comfyClass) || NODE_NAMES.has(node.type)) {
             ensureStatusWidgets(node);
         }
     },
     loadedGraphNode(node) {
+        if (node.comfyClass === REFERENCE_NODE_NAME || node.type === REFERENCE_NODE_NAME) {
+            localizeReferenceNode(node);
+            return;
+        }
         if (NODE_NAMES.has(node.comfyClass) || NODE_NAMES.has(node.type)) {
             ensureStatusWidgets(node);
         }
     },
     async beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name === REFERENCE_NODE_NAME) {
+            const text = REFERENCE_TEXT[language()];
+            nodeData.display_name = text.title;
+            for (const [name, spec] of Object.entries(nodeData.input?.required ?? {})) {
+                if (!text.labels[name] || !Array.isArray(spec)) continue;
+                spec[1] ??= {};
+                spec[1].display_name = text.labels[name];
+            }
+            const original = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                original?.apply(this, arguments);
+                localizeReferenceNode(this);
+            };
+            return;
+        }
         if (!NODE_NAMES.has(nodeData.name)) {
             return;
         }
@@ -428,6 +489,11 @@ app.registerExtension({
     setup() {
         app.ui?.settings?.addEventListener?.("Comfy.Locale.change", () => {
             for (const node of app.graph?._nodes ?? []) {
+                if (node.comfyClass === REFERENCE_NODE_NAME || node.type === REFERENCE_NODE_NAME) {
+                    localizeReferenceNode(node);
+                    node.setDirtyCanvas?.(true, true);
+                    continue;
+                }
                 if (NODE_NAMES.has(node.comfyClass) || NODE_NAMES.has(node.type)) {
                     ensureStatusWidgets(node);
                     node.setDirtyCanvas?.(true, true);

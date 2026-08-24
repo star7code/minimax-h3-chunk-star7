@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Added the architecture-independent `Reference Video Optimize - Star7` node.
+  It caps reference-video area to the requested output canvas before H3 Video
+  VAE encoding, while preserving frame count, aspect ratio, and audio. This
+  reduces both reference encoding work and the later packed attention sequence.
+- RTX 2080 Ti 22GB validation on the supplied 0.6MP/9s reference workflow cut
+  one-step diagnostic runtime from 311.60s to 232.50s (-25.4%), sequence length
+  from 103,546 to 87,101, and sampler time from 98.14s to 83.02s.
+- Documented that MLP/QKV chunk sizes control temporary activations, not model
+  weight residency. On the resized reference case, 59,904 caused allocator
+  failures and an automatic MLP reduction, while 8,192 completed faster.
+
 - Extended the self-contained SM75 FP16 Exact overflow formula from strict SLA
   to Comfy Kitchen INT8. This also applies inside full and cached-prefix block
   passes when an external H3 block-loop cache such as TE-Speed precedes Star7.

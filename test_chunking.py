@@ -736,6 +736,33 @@ def test_legacy_node_alias_is_deprecated():
     assert chunk_nodes.MiniMaxH3RoPEChunkPatch.DEPRECATED is True
 
 
+def test_reference_video_optimizer_is_registered():
+    assert chunk_nodes.NODE_CLASS_MAPPINGS["MiniMaxH3ReferenceVideoOptimizeStar7"] is (
+        chunk_nodes.MiniMaxH3ReferenceVideoOptimizeStar7
+    )
+
+
+def test_reference_video_match_area_downscales_without_upscaling():
+    assert chunk_nodes._matched_reference_size(720, 1280, 608, 1056) == (608, 1056)
+    assert chunk_nodes._matched_reference_size(512, 512, 608, 1056) == (512, 512)
+
+
+def test_reference_video_match_area_preserves_area_and_aspect_closely():
+    width, height = chunk_nodes._matched_reference_size(1920, 1080, 1024, 576)
+    assert width * height <= 1024 * 576
+    assert width % 32 == 0 and height % 32 == 0
+    assert abs(width / height - 1920 / 1080) < 0.06
+
+
+def test_reference_video_optimizer_keep_original_is_zero_copy():
+    node = chunk_nodes.MiniMaxH3ReferenceVideoOptimizeStar7()
+    frames = torch.zeros((5, 64, 96, 3), dtype=torch.float32)
+    output, report = node.optimize(frames, 32, 32, "keep_original")
+    assert output is frames
+    assert "96x64 -> 96x64" in report
+    assert "audio=unchanged" in report
+
+
 def test_comfy_kitchen_int8_attention_forward_cuda():
     if not torch.cuda.is_available():
         return
@@ -976,6 +1003,10 @@ if __name__ == "__main__":
     test_manual_settings_reset_learned_runtime_values()
     test_qkv_oom_status_uses_qkv_sequence_length()
     test_legacy_node_alias_is_deprecated()
+    test_reference_video_optimizer_is_registered()
+    test_reference_video_match_area_downscales_without_upscaling()
+    test_reference_video_match_area_preserves_area_and_aspect_closely()
+    test_reference_video_optimizer_keep_original_is_zero_copy()
     test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse()
     test_install_preserves_upstream_block_patch()
     test_sm75_sla_auto_installs_fp16_exact_without_external_node()

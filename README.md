@@ -4,7 +4,7 @@
 
 Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with limited VRAM: this ComfyUI node chunks the two largest RoPE and MLP activation peaks so those operations fit in dedicated VRAM instead of spilling into much slower shared system memory. For workloads that would otherwise OOM or page through shared memory, this can greatly improve the practical video size and runtime; when a workload already fits entirely in VRAM, chunking alone is not a speedup. The default path uses Comfy Kitchen INT8 attention and does not change the sampler, latent, VAE, video duration, or spatial resolution; choose `existing` to preserve an upstream Sage or environment-selected attention backend.
 
-**New in v2.7.2:** SM75 CK now receives the same automatic FP16 Exact overflow protection as SM75 SLA, including when an external H3 block cache such as TE-Speed is connected before this node. A joint video/audio model-output guard reports the failing stream during sampling instead of leaving FFmpeg to fail after VAE decode. Invalid samples are never silently replaced with zero. For best SLA results, use the [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA).
+**New in v2.8.0:** the optional `Reference Video Optimize - Star7` node caps reference-video pixel area to the requested output canvas before H3 Video VAE encoding. It preserves every frame, the reference aspect ratio, and audio, while reducing both conditioning time and the reference tokens later processed by attention. On the local RTX 2080 Ti 22GB 0.6MP/9s reference case, total one-step diagnostics fell from 311.60s to 232.50s and H3 sequence length from 103,546 to 87,101. The implementation is pure PyTorch and is not restricted to SM75.
 
 > This is an independent community project. MiniMax, ComfyUI, Comfy Kitchen, KJNodes, and NVIDIA are trademarks or projects of their respective owners.
 
@@ -12,7 +12,9 @@ Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with li
 
 让高画质、长时长 MiniMax H3 视频在有限显存的显卡上高效运行：本节点把最容易爆显存的 RoPE 与 MLP 激活按 token 分块，使这两段关键计算适配专用显存，避免溢出到速度远低于显存的共享系统内存。对于原本会 OOM 或发生共享显存换页的任务，这能显著提升可运行规模与实际生成效率；如果任务本来就能完整装入显存，分块本身不会凭空加速。
 
-**v2.7.2 已把 SM75 的自动 FP16 Exact 防溢出扩展到 CK，并兼容接在本节点之前的 TE-Speed 等 H3 block cache。** 模型的视频/音频输出会在采样阶段统一检查；若仍有 NaN/Inf，会明确报告损坏的是哪一路，不会等 VAE 解码和 FFmpeg 合成后才报错，也不会把无效样本静默替换为 0。SM75 SLA 与 CK 均不再要求外接 FP16 修复节点。SLA 建议配合
+**v2.8.0 新增可选的“MiniMax H3 参考视频优化 - Star7”前置节点。** 它会在 H3 Video VAE 编码前，把参考视频像素面积限制到目标输出画布；不删帧、不改音频，并保持参考画面比例。这样既缩短参考编码，也减少后续注意力需要处理的参考 token。RTX 2080 Ti 22GB 的本机 0.6MP/9 秒参考案例中，一步诊断总耗时由 311.60 秒降至 232.50 秒，H3 序列由 103,546 降至 87,101。该节点只使用通用 PyTorch 图像缩放，适用于 RTX 20–50 系，不会向新架构注入 SM75 专用计算。
+
+模型的视频/音频输出会在采样阶段统一检查；若仍有 NaN/Inf，会明确报告损坏的是哪一路，不会等 VAE 解码和 FFmpeg 合成后才报错，也不会把无效样本静默替换为 0。SM75 SLA 与 CK 均不再要求外接 FP16 修复节点。SLA 建议配合
 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA)
 使用。SM75 使用随节点分发的预编译 CUDA 内核，SM80+ 使用 Triton。
 
@@ -106,6 +108,16 @@ UNET Loader -> LoRA -> Attention patch (optional) -> Activation Chunk - Star7
             -> Guider / Scheduler / Sampler
 ```
 
+带参考视频时，增加一条前置媒体链路：
+
+```text
+Load Video (frames) -> Reference Video Optimize - Star7 -> H3 Conditioning ref_video
+Resolution Selector width/height -------------------------> optimizer target width/height
+Load Video (audio) ---------------------------------------> H3 Conditioning ref_audio
+```
+
+`match_output_area` 是推荐默认值：仅在参考视频像素面积高于目标画布时缩小，保持纵横比且不放大低分辨率素材。音频仍从视频加载节点直接连接到 Conditioning，本节点不修改音频。
+
 RTX 20 系及其他不适合原生 BF16 计算的显卡：
 
 ```text
@@ -150,7 +162,7 @@ Native FP16 Loader 已包含精确防溢出处理，不要再串接旧的后置 
 `当前使用 N（设定 M，受序列长度限制）`。这是本次 forward 的真实 token 上限，不是 OOM
 降级，也不会把较短序列的值记忆到后续较长序列。
 
-`auto_halve_on_oom=true` 时，RoPE 或 MLP 当前分块 OOM 会按当前值整数减半，最低到 `256`。
+`auto_halve_on_oom=true` 时，RoPE、MLP 或 QKV 当前分块 OOM 会按当前值整数减半，最低到 `256`。
 找到可用值后，后续 H3 block 和同一次模型会话中的后续 forward 会直接沿用该值，避免每个
 block 反复以失败的大块重试。用户手动修改任一分块输入并重新执行节点后，记忆值会用新的
 设定值重置；例如旧值曾自动降到 `2048`，手动改成 `3072` 后不会继续沿用 `2048`。
@@ -174,14 +186,16 @@ block 反复以失败的大块重试。用户手动修改任一分块输入并�
 | attention kernel OOM | 注意力后端 | 改用 CK INT8，或保留上游 Low VRAM/Sage；激活分块不能降低注意力核心工作集 |
 | 模型加载阶段已经 OOM | 加载器/量化/卸载策略 | 分块节点尚未执行，调 chunk 无效 |
 
-显存档位只能作为起点，因为同容量显卡还会受到模型格式、LoRA反量化、驱动和常驻策略影响：
+显存档位只能作为起点，因为同容量显卡还会受到模型格式、LoRA 反量化、驱动和常驻策略影响：
 
-| 专用显存 | `chunk_tokens` 起点 | `mlp_chunk_tokens` 起点 | 预取建议 |
-|---:|---:|---:|---|
-| 20–24GB | `8192` | `4096` | `true`；稳定后可测试 `false` |
-| 16–20GB | `8192` | `2048–4096` | `true`；优先降低 MLP |
-| 12–16GB | `8192` | `1024–2048` | `true`；RoPE OOM 再降 RoPE |
-| 12GB以下 | `4096–8192` | `512–1024` | `true`；长视频成功率取决于模型卸载 |
+| 专用显存 | RoPE 起点 | MLP 起点 | QKV 起点 |
+|---:|---:|---:|---:|
+| 20–24GB | `8192` | `4096–8192` | `4096–8192` |
+| 16–20GB | `8192` | `2048–4096` | `2048–4096` |
+| 12–16GB | `8192` | `1024–2048` | `1024–2048` |
+| 12GB 以下 | `4096–8192` | `512–1024` | `512–1024` |
+
+22GB 卡处理参考视频长序列时，MLP/QKV 建议从 `8192` 开始。它们只调节临时激活，不决定模型权重驻留；设为 `0` 是整段计算，不是“自动值”。本机 `S=87,101` 热态测试中，`8192` 为 77.46 秒/步；`59904` 因显存申请失败自动降档，反而为 86.92 秒/步。
 
 保持 `auto_halve_on_oom=true` 可以让 RoPE chunk 自动降档，但 MLP、attention 或模型加载 OOM 仍需根据 traceback 手动选择正确参数。
 
