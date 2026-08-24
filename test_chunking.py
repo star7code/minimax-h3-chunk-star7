@@ -134,6 +134,38 @@ def test_qkv_chunk_writes_backend_dtype_without_full_cast(device=torch.device("c
         chunk_nodes._CONFIG.update(original_config)
 
 
+def test_sm75_convrot_qkv_projection_is_bitwise_chunk_invariant():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
+        return
+
+    import comfy_kitchen as ck
+
+    torch.manual_seed(0x75A0)
+    hidden, projected, sequence = 256, 768, 1024
+    weight = torch.randn(
+        projected, hidden, device="cuda", dtype=torch.float16
+    )
+    qweight, scales = ck.quantize_convrot_w4a4_weight(
+        weight, convrot_groupsize=256, stochastic_rounding=0
+    )
+    value = torch.randn(
+        sequence, hidden, device="cuda", dtype=torch.float16
+    )
+    expected = ck.convrot_w4a4_linear(
+        value, qweight, scales,
+        convrot_groupsize=256, linear_dtype="int8",
+    )
+    actual = torch.cat([
+        ck.convrot_w4a4_linear(
+            value[start:start + 256], qweight, scales,
+            convrot_groupsize=256, linear_dtype="int8",
+        )
+        for start in range(0, sequence, 256)
+    ])
+
+    assert torch.equal(actual, expected)
+
+
 def test_star7_resident_weight_path_matches_formula(device=torch.device("cpu")):
     import comfy.ops
 
@@ -726,6 +758,54 @@ def test_qkv_oom_status_uses_qkv_sequence_length():
         chunk_nodes._CONFIG.update(original_config)
 
 
+def test_qkv_zero_prefers_full_then_learns_oom_chunk():
+    attempts = []
+    original_config = chunk_nodes._CONFIG.copy()
+
+    class LimitedQKV:
+        weight = torch.empty(24, 8)
+
+        def __call__(self, tensor):
+            attempts.append(int(tensor.shape[0]))
+            if tensor.shape[0] > 512:
+                raise RuntimeError("out of memory")
+            return torch.zeros(tensor.shape[0], 24, dtype=tensor.dtype)
+
+    attention = SimpleNamespace(
+        heads=2,
+        head_dim=4,
+        qkv_proj=LimitedQKV(),
+        q_norm=lambda value: value,
+        k_norm=lambda value: value,
+    )
+    x = torch.zeros(1024, 8)
+
+    try:
+        chunk_nodes._CONFIG.update(
+            qkv_chunk_tokens=0,
+            effective_qkv_chunk_tokens=0,
+            status_effective_qkv_chunk_tokens=0,
+            auto_halve_on_oom=True,
+            verbose=False,
+            node_id=None,
+        )
+        q, k, v = chunk_nodes._prepare_h3_qkv_chunked(
+            attention,
+            x,
+            None,
+            SimpleNamespace(),
+            SimpleNamespace(ck=SimpleNamespace(rms_rope_split_half_=None)),
+        )
+
+        assert attempts == [1024, 512, 512]
+        assert q.shape == k.shape == v.shape == (1, 2, 1024, 4)
+        assert chunk_nodes._CONFIG["effective_qkv_chunk_tokens"] == 512
+        assert chunk_nodes._CONFIG["status_effective_qkv_chunk_tokens"] == 512
+    finally:
+        chunk_nodes._CONFIG.clear()
+        chunk_nodes._CONFIG.update(original_config)
+
+
 def test_legacy_node_alias_is_deprecated():
     assert chunk_nodes.NODE_CLASS_MAPPINGS["MiniMaxH3ActivationChunkStar7"] is (
         chunk_nodes.MiniMaxH3ActivationChunkStar7
@@ -1028,6 +1108,7 @@ if __name__ == "__main__":
     test_mlp_oom_value_is_reused_for_later_blocks()
     test_manual_settings_reset_learned_runtime_values()
     test_qkv_oom_status_uses_qkv_sequence_length()
+    test_qkv_zero_prefers_full_then_learns_oom_chunk()
     test_legacy_node_alias_is_deprecated()
     test_new_activation_chunk_defaults_are_all_8192()
     test_reference_video_optimizer_is_registered()
@@ -1041,6 +1122,7 @@ if __name__ == "__main__":
     test_install_preserves_upstream_block_patch()
     test_sm75_sla_auto_installs_fp16_exact_without_external_node()
     test_sm75_ck_auto_fp16_exact_coexists_with_block_loop_cache()
+    test_sm75_convrot_qkv_projection_is_bitwise_chunk_invariant()
     test_comfy_kitchen_int8_attention_forward_cuda()
     test_sla_backend_is_strict_and_architecture_checked()
     test_sm75_binary_manifest_payloads()

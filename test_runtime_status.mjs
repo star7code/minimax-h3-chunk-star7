@@ -242,6 +242,46 @@ assert.match(
     /已自动降为：2048（原设定 4096）/,
 );
 
+corrupted.widgets.find((widget) => widget.name === "chunk_tokens").value = 0;
+corrupted.widgets.find((widget) => widget.name === "qkv_chunk_tokens").value = 0;
+statusHandler({
+    detail: {
+        node_id: "299",
+        configured_rope: 0,
+        effective_rope: 103546,
+        configured_mlp: 4096,
+        effective_mlp: 4096,
+        configured_qkv: 0,
+        effective_qkv: 51773,
+        reason: "qkv_oom",
+    },
+});
+assert.match(
+    corrupted.widgets.find(
+        (widget) => widget.__star7StatusName === "star7_rope_runtime_status",
+    ).name,
+    /RoPE：整段计算（未固定分块）/,
+);
+assert.match(
+    corrupted.widgets.find(
+        (widget) => widget.__star7StatusName === "star7_qkv_runtime_status",
+    ).name,
+    /QKV 已从整段自动降为：51773/,
+);
+corrupted.widgets.find((widget) => widget.name === "chunk_tokens").value = 8192;
+corrupted.widgets.find((widget) => widget.name === "qkv_chunk_tokens").value = 4096;
+statusHandler({
+    detail: {
+        node_id: "299",
+        configured_rope: 8192,
+        effective_rope: 4096,
+        configured_mlp: 4096,
+        effective_mlp: 2048,
+        configured_qkv: 4096,
+        effective_qkv: 4096,
+    },
+});
+
 locale = "en-US";
 localeChangeHandler();
 assert.equal(corrupted.title, "MiniMax H3 VRAM Chunk Acceleration - Star7");

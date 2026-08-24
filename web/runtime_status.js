@@ -36,11 +36,11 @@ const TEXT = {
             attention_backend: "Attention method",
         },
         tooltips: {
-            chunk_tokens: "0 bypasses the Star7 RoPE patch. Otherwise usually keep 8192; lower it only when the log reports a RoPE VRAM error.",
-            auto_halve_on_oom: "Automatically halves the failing RoPE or MLP chunk and retries instead of stopping the task.",
+            chunk_tokens: "0 tries full-sequence RoPE first. With automatic reduction enabled, only a RoPE VRAM error makes it retry with a smaller chunk. Usually keep 8192.",
+            auto_halve_on_oom: "Retries only the failing RoPE, MLP, or QKV stage with a smaller chunk. It cannot reduce model weights, attention buffers, or other fixed allocations.",
             verbose: "Shows actual chunk sizes, automatic reductions, and the active MLP weight mode in the console.",
-            mlp_chunk_tokens: "0 bypasses the Star7 MLP patch. Otherwise this is the main VRAM control; smaller values save more VRAM but may be slower.",
-            qkv_chunk_tokens: "0 disables projection chunking only and keeps the selected attention backend. Smaller values reduce only temporary projection memory; full attention inputs still remain. SLA stores Q/K/V directly in FP16.",
+            mlp_chunk_tokens: "0 tries full-sequence MLP first. With automatic reduction enabled, an MLP VRAM error is retried with a smaller chunk. Otherwise this is the main VRAM control.",
+            qkv_chunk_tokens: "0 tries full-sequence projection first. With automatic reduction enabled, a QKV projection VRAM error is retried with a smaller chunk. This does not reduce the attention backend's fixed buffers.",
             disable_dynamic_prefetch: "Legacy workflow field only. This experimental feature has been removed and is always disabled.",
             reuse_mlp_weights: "Uses isolated MLP weight snapshots to avoid repeated preparation. Falls back safely if snapshots fail or run out of VRAM.",
             attention_backend: "Strict SLA never falls back. The SM75 All-INT8 option is experimental and may reduce quality; the FP16-PV option remains recommended.",
@@ -48,6 +48,8 @@ const TEXT = {
         current: (label, value) => `${label} in use: ${value} (configured)`,
         limited: (label, value, configured) => `${label} in use: ${value} (set ${configured}, limited by video size)`,
         reduced: (label, value, configured) => `${label} auto-reduced to: ${value} (set ${configured})`,
+        full: (label) => `${label}: full sequence (no fixed chunk)`,
+        reducedFromFull: (label, value) => `${label} auto-reduced from full sequence to: ${value}`,
         rope: "RoPE",
         mlp: "MLP",
     },
@@ -65,11 +67,11 @@ const TEXT = {
             attention_backend: "注意力计算方式",
         },
         tooltips: {
-            chunk_tokens: "设为 0 完全绕过 Star7 RoPE 补丁；否则通常保持 8192，只有日志明确提示 RoPE 显存不足时才降低。",
-            auto_halve_on_oom: "RoPE 或 MLP 分块显存不足时自动减半重试，避免任务直接停止。",
+            chunk_tokens: "设为 0 会先尝试整段 RoPE；开启自动降档后，只有 RoPE 显存不足才缩小重试。通常保持 8192。",
+            auto_halve_on_oom: "只缩小发生显存不足的 RoPE、MLP 或 QKV 阶段并重试；模型权重、注意力固定缓冲等显存不会被误降。",
             verbose: "在控制台显示实际分块、是否自动降档以及 MLP 权重加速方式。",
-            mlp_chunk_tokens: "设为 0 完全绕过 Star7 MLP 补丁；否则它是主要显存调节项，数值越小越省显存但可能更慢。",
-            qkv_chunk_tokens: "设为 0 只关闭投影分块，不改变所选注意力。较小数值只减少投影临时显存，注意力仍需保留完整输入；SLA 会直接保存 FP16 Q/K/V。",
+            mlp_chunk_tokens: "设为 0 会先尝试整段 MLP；开启自动降档后，只有 MLP 显存不足才缩小重试。它仍是主要显存调节项。",
+            qkv_chunk_tokens: "设为 0 会先尝试整段 QKV 投影；开启自动降档后，只有 QKV 投影显存不足才缩小重试，不会改变注意力后端的固定缓冲。",
             disable_dynamic_prefetch: "仅为兼容旧工作流保留，不再参与计算，功能始终关闭。",
             reuse_mlp_weights: "使用独立 MLP 权重快照减少重复准备；快照失败或显存不足时会自动切换安全模式。",
             attention_backend: "严格 SLA 绝不回退。SM75 All-INT8 是可能降低质量的实验模式，仍推荐使用 FP16-PV 模式。",
@@ -77,6 +79,8 @@ const TEXT = {
         current: (label, value) => `${label} 实际使用：${value}（设定值）`,
         limited: (label, value, configured) => `${label} 实际使用：${value}（设定 ${configured}，视频规模只需要这么多）`,
         reduced: (label, value, configured) => `${label} 已自动降为：${value}（原设定 ${configured}）`,
+        full: (label) => `${label}：整段计算（未固定分块）`,
+        reducedFromFull: (label, value) => `${label} 已从整段自动降为：${value}`,
         rope: "RoPE",
         mlp: "MLP",
     },
@@ -171,12 +175,11 @@ function localizeReferenceLoadNode(node) {
 function formatValue(label, effective, configured, reason = "active") {
     const text = strings();
     if (configured === 0) {
-        if (label === "QKV") {
-            return language() === "zh"
-                ? "QKV：整段投影（未分块）"
-                : "QKV: full projection (not chunked)";
+        const stage = label.toLowerCase();
+        if (reason === `${stage}_oom` && effective > 0) {
+            return text.reducedFromFull(label, effective);
         }
-        return language() === "zh" ? `${label}：已绕过（0）` : `${label}: bypassed (0)`;
+        return text.full(label);
     }
     if (effective === configured) {
         return text.current(label, effective);

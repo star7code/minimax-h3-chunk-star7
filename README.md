@@ -115,6 +115,15 @@ Reference Video Load - Star7 (video) -> H3 Conditioning ref_video
 Reference Video Load - Star7 (audio) -> H3 Conditioning ref_video_audio
 ```
 
+需要把原音轨作为同一视频的 soundtrack 时，画面和音轨应接到同一编号，
+例如 `ref_video_0` 与 `ref_video_audio_0`。`ref_audio_0` 也是合法用法，
+但它会被打包成独立的 `<Audio 1>` 参考；此时提示词应明确引用 `<Audio 1>`，
+而不是假设它自动属于 `<Video 1>`。
+
+`audio_mode=native` 会让 H3 根据参考重新生成声音，并不保证逐字复制原音轨；
+要求最终视频保留原声时，应把载入节点的音频接到 `drive_audio`，选择
+`audio_mode=lock_source`，最终合成使用 T8 的 `mux_audio`。
+
 精简加载节点内部固定输出 H3 所需的 24fps，最长读取 15 秒并裁齐到 `17n+5`
 帧网格。`最长边限制` 保持参考视频的横竖方向；`允许小视频放大` 默认关闭，
 避免为插值画面增加参考 token。节点同时提取并裁齐配套音频，不依赖 VHS。
@@ -152,7 +161,7 @@ Native FP16 Loader 已包含精确防溢出处理，不要再串接旧的后置 
 |---|---|---:|
 | `chunk_tokens` | RoPE 的目标 token 分块上限；RoPE 工作集相对较小，优先保持较大值 | `8192` |
 | `mlp_chunk_tokens` | MLP 的目标 token 分块上限；节点下方会显示本次实际生效值 | `8192` |
-| `qkv_chunk_tokens` | QKV 投影临时工作集；SLA 直接写入 FP16 后端布局，`0` 表示整段投影但不改变注意力后端 | `8192` |
+| `qkv_chunk_tokens` | QKV 投影临时工作集；SLA 直接写入 FP16 后端布局，`0` 优先整段投影但允许 OOM 自动降档 | `8192` |
 | `auto_halve_on_oom` | 当前 chunk OOM 时自动减半重试 | `true` |
 | `提前加载下一层（实验功能已移除）` | 仅为兼容旧工作流保留，不再参与计算，始终关闭 | 兼容字段 |
 | `reuse_mlp_weights` | 自动策略：将已准备权重复制到独立快照后复用；无法快照或 OOM 时改用 streamed | `true` |
@@ -207,9 +216,9 @@ block 反复以失败的大块重试。用户手动修改任一分块输入并�
 | 12–16GB | `8192` | `1024–2048` | `1024–2048` |
 | 12GB 以下 | `4096–8192` | `512–1024` | `512–1024` |
 
-22GB 卡处理参考视频长序列时，MLP/QKV 建议从 `8192` 开始。它们只调节临时激活，不决定模型权重驻留；设为 `0` 是整段计算，不是“自动值”。本机 `S=87,101` 热态测试中，`8192` 为 77.46 秒/步；`59904` 因显存申请失败自动降档，反而为 86.92 秒/步。
+22GB 卡处理参考视频长序列时，MLP/QKV 建议从 `8192` 开始。它们只调节临时激活，不决定模型权重驻留；设为 `0` 会优先整段计算，若 `auto_halve_on_oom=true` 且该临时工作集 OOM，再从整段大小减半寻找可用值。本机 `S=87,101` 热态测试中，`8192` 为 77.46 秒/步；`59904` 因显存申请失败自动降档，反而为 86.92 秒/步。
 
-保持 `auto_halve_on_oom=true` 可以让 RoPE chunk 自动降档，但 MLP、attention 或模型加载 OOM 仍需根据 traceback 手动选择正确参数。
+保持 `auto_halve_on_oom=true` 会按实际失败位置只降低 RoPE、MLP 或 QKV 中的一项。完整 Q/K/V 缓冲、attention kernel 或模型加载本身的 OOM 不属于可缩小的局部分块，日志会明确指出，需减少参考 token/画布或更换注意力与加载策略。
 
 ## RTX 2080 Ti 22GB 实测案例
 

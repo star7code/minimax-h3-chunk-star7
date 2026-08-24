@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Fixed automatic VRAM fallback for zero-valued RoPE/MLP/QKV controls. Zero
+  now means "try one full-sequence operation first"; if that reducible stage
+  OOMs, only the failing stage is halved and the working value is reused by
+  later H3 blocks. Previously QKV zero bypassed fallback entirely.
+- Full Q/K/V buffer allocation now retries once after allocator-cache cleanup
+  and reports a distinct non-chunkable OOM instead of suggesting unrelated
+  MLP/RoPE reductions.
+- RTX 2080 Ti validation at `S=103,546` reproduced a 4.15 GiB full-QKV
+  projection OOM, automatically reduced QKV from 103,546 to 51,773, and
+  completed. Its decoded video frames and PCM audio were hash-identical to a
+  fixed QKV=8,192 run with the same seed.
+- Documented the reference-audio distinction: same-numbered
+  `ref_video_audio_N` binds a soundtrack to its video, while `ref_audio_N` is a
+  valid standalone `<Audio N>` reference that must be named explicitly in the
+  prompt.
 - New Activation Chunk nodes now open with RoPE/MLP/QKV all set to 8,192,
   matching the validated 22GB reference-video configuration. Saved workflows
   retain their existing values unchanged.

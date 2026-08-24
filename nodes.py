@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.9.0"
+NODE_VERSION = "2.9.1"
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -118,7 +118,12 @@ def _remember_effective_chunk(kind: str, failed: int, effective: int) -> None:
 
     configured = int(_CONFIG[configured_key])
     previous = int(_CONFIG[effective_key])
-    effective = min(previous, max(256, int(effective)))
+    effective = max(256, int(effective))
+    # Zero means "prefer one full-sequence call", not "disable the OOM
+    # handler". Once that full call has failed, remember the smaller working
+    # value for every later block in the same model run.
+    if previous > 0:
+        effective = min(previous, effective)
     _CONFIG[effective_key] = effective
     status_key = (
         "status_effective_chunk_tokens" if kind == "RoPE"
@@ -198,7 +203,8 @@ def _set_sequence_status(kind: str, sequence_length: int) -> None:
     else:
         raise ValueError(f"unknown chunk kind: {kind}")
 
-    actual = min(int(_CONFIG[learned_key]), sequence_length)
+    learned = int(_CONFIG[learned_key])
+    actual = sequence_length if learned == 0 else min(learned, sequence_length)
     changed = (
         _CONFIG.get(status_key) != actual
         or _CONFIG.get(sequence_key) != sequence_length
@@ -206,7 +212,9 @@ def _set_sequence_status(kind: str, sequence_length: int) -> None:
     _CONFIG[status_key] = actual
     _CONFIG[sequence_key] = sequence_length
     if changed:
-        _send_runtime_status("sequence_limit" if actual < int(_CONFIG[learned_key]) else "active")
+        _send_runtime_status(
+            "sequence_limit" if learned > 0 and actual < learned else "active"
+        )
 
 
 def _slice_freqs_for_tokens(freqs_cis: torch.Tensor, start: int, end: int, seq_len: int) -> torch.Tensor:
@@ -303,7 +311,8 @@ def _chunked_rms_rope_split_half_inplace(
 
     seq_len = q.shape[1]
     _set_sequence_status("RoPE", seq_len)
-    preferred = max(256, int(_CONFIG["effective_chunk_tokens"]))
+    configured = int(_CONFIG["effective_chunk_tokens"])
+    preferred = seq_len if configured == 0 else max(256, configured)
     chunk = min(preferred, seq_len)
     auto_halve = bool(_CONFIG["auto_halve_on_oom"])
 
@@ -965,11 +974,44 @@ def _prepare_h3_qkv_chunked(
     first_projection_ms = None
     first_rope_ms = None
     _set_sequence_status("QKV", sequence)
-    q_out = torch.empty(
-        (1, heads, sequence, head_dim), dtype=output_dtype, device=x.device
-    )
-    k_out = torch.empty_like(q_out)
-    v_out = torch.empty_like(q_out)
+    # These complete Q/K/V tensors are required by CK and SLA regardless of
+    # projection chunk size. Retry their allocation once after releasing only
+    # unused allocator cache, but do not pretend that lowering a local chunk can
+    # solve a full-buffer OOM.
+    qkv_buffers = []
+    for allocation_attempt in range(2):
+        try:
+            qkv_buffers = [
+                torch.empty(
+                    (1, heads, sequence, head_dim),
+                    dtype=output_dtype,
+                    device=x.device,
+                )
+            ]
+            qkv_buffers.append(torch.empty_like(qkv_buffers[0]))
+            qkv_buffers.append(torch.empty_like(qkv_buffers[0]))
+            break
+        except Exception as exc:
+            qkv_buffers.clear()
+            if not _is_cuda_oom(exc) or allocation_attempt:
+                if _is_cuda_oom(exc):
+                    required_gib = (
+                        3 * heads * sequence * head_dim
+                        * torch.empty((), dtype=output_dtype).element_size()
+                        / 1024**3
+                    )
+                    _LOG.error(
+                        "[Star7 H3 Chunk] Full Q/K/V buffer OOM | required=%.2fGiB "
+                        "| S=%d | dtype=%s. QKV/MLP/RoPE chunk reduction cannot "
+                        "lower this fixed attention input; reduce reference tokens "
+                        "or canvas size.",
+                        required_gib, sequence, output_dtype,
+                    )
+                raise
+            exc.__traceback__ = None
+            _clear_cuda_after_oom(x.device)
+    q_out, k_out, v_out = qkv_buffers
+    del qkv_buffers
     rope_fn = _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE or quant_ops.ck.rms_rope_split_half_
     start = 0
     while start < sequence:
@@ -1014,8 +1056,7 @@ def _prepare_h3_qkv_chunked(
             del qkv_chunk, q, k, v
         except Exception as exc:
             if not (
-                configured_chunk != 0
-                and _is_cuda_oom(exc)
+                _is_cuda_oom(exc)
                 and _CONFIG["auto_halve_on_oom"]
                 and chunk > 256
             ):
@@ -1028,7 +1069,14 @@ def _prepare_h3_qkv_chunked(
     if profile_total:
         if x.device.type == "cuda":
             torch.cuda.synchronize(x.device)
-        _PROFILED_QKV_STAGES.add(("summary", total_profile_key))
+        # A first-call OOM may have reduced ``chunk`` after the profile key was
+        # created. Record the value that actually completed so block 2 does not
+        # print the same summary again.
+        completed_profile_key = (
+            sequence, chunk, str(x.dtype), str(output_dtype),
+            x.device.type, x.device.index, qkv_quantized,
+        )
+        _PROFILED_QKV_STAGES.add(("summary", completed_profile_key))
         allocated = reserved = 0.0
         if x.device.type == "cuda":
             allocated = torch.cuda.memory_allocated(x.device) / 1024**3
@@ -1183,7 +1231,7 @@ def install_patch(
     # Otherwise replace only the public in-place function used by H3.
     ck.rms_rope_split_half_ = (
         _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE
-        if int(chunk_tokens) == 0
+        if int(chunk_tokens) == 0 and not auto_halve_on_oom
         else _chunked_rms_rope_split_half_inplace
     )
 
@@ -1436,7 +1484,7 @@ class MiniMaxH3ActivationChunkStar7:
                     "BOOLEAN",
                     {
                         "default": True,
-                        "tooltip": "If a RoPE chunk OOMs before write-back, halve that chunk and retry down to 256 tokens.",
+                        "tooltip": "If a reducible RoPE, MLP, or QKV temporary chunk OOMs, halve only that stage and retry down to 256 tokens. Zero still tries one full sequence first, then may auto-reduce.",
                     },
                 ),
                 "verbose": (
@@ -1471,7 +1519,7 @@ class MiniMaxH3ActivationChunkStar7:
                         "min": 0,
                         "max": 65536,
                         "step": 256,
-                        "tooltip": "H3 QKV 投影临时显存分块。设为 0 仅关闭投影分块，不改变所选注意力；数值越小只会缩小投影临时张量，不会消除注意力所需的完整 Q/K/V。SLA 会直接保存 FP16 Q/K/V。默认 8192。",
+                        "tooltip": "H3 QKV 投影临时显存分块。设为 0 会优先整段投影；若自动降档开启且整段 OOM，只降低 QKV 后重试。数值越小只会缩小投影临时张量，不会消除注意力所需的完整 Q/K/V。SLA 会直接保存 FP16 Q/K/V。默认 8192。",
                     },
                 ),
                 "reuse_mlp_weights": (
