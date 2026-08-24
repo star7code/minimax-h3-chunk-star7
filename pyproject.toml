@@ -1,6 +1,6 @@
 [project]
 name = "minimax-h3-chunk-star7"
-version = "2.8.0"
+version = "2.9.0"
 description = "RoPE/MLP activation chunking for ComfyUI MiniMax H3 with CK INT8 and architecture-specific SLA attention paths."
 license = { file = "LICENSE" }
 requires-python = ">=3.10"

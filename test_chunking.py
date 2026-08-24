@@ -736,7 +736,17 @@ def test_legacy_node_alias_is_deprecated():
     assert chunk_nodes.MiniMaxH3RoPEChunkPatch.DEPRECATED is True
 
 
+def test_new_activation_chunk_defaults_are_all_8192():
+    required = chunk_nodes.MiniMaxH3ActivationChunkStar7.INPUT_TYPES()["required"]
+    assert required["chunk_tokens"][1]["default"] == 8192
+    assert required["mlp_chunk_tokens"][1]["default"] == 8192
+    assert required["qkv_chunk_tokens"][1]["default"] == 8192
+
+
 def test_reference_video_optimizer_is_registered():
+    assert chunk_nodes.NODE_CLASS_MAPPINGS["MiniMaxH3ReferenceVideoLoadStar7"] is (
+        chunk_nodes.MiniMaxH3ReferenceVideoLoadStar7
+    )
     assert chunk_nodes.NODE_CLASS_MAPPINGS["MiniMaxH3ReferenceVideoOptimizeStar7"] is (
         chunk_nodes.MiniMaxH3ReferenceVideoOptimizeStar7
     )
@@ -761,6 +771,22 @@ def test_reference_video_optimizer_keep_original_is_zero_copy():
     assert output is frames
     assert "96x64 -> 96x64" in report
     assert "audio=unchanged" in report
+
+
+def test_reference_video_long_edge_limit_preserves_orientation():
+    assert chunk_nodes._long_edge_reference_size(720, 1280, 1056) == (608, 1056)
+    assert chunk_nodes._long_edge_reference_size(1920, 1080, 1056) == (1056, 608)
+
+
+def test_reference_video_long_edge_upscale_is_explicit():
+    assert chunk_nodes._long_edge_reference_size(360, 640, 1056, False) == (352, 640)
+    assert chunk_nodes._long_edge_reference_size(360, 640, 1056, True) == (608, 1056)
+
+
+def test_reference_video_frame_count_is_h3_aligned():
+    assert chunk_nodes._align_h3_reference_frame_count(360) == 345
+    assert chunk_nodes._align_h3_reference_frame_count(205) == 192
+    assert chunk_nodes._align_h3_reference_frame_count(5) == 5
 
 
 def test_comfy_kitchen_int8_attention_forward_cuda():
@@ -1003,10 +1029,14 @@ if __name__ == "__main__":
     test_manual_settings_reset_learned_runtime_values()
     test_qkv_oom_status_uses_qkv_sequence_length()
     test_legacy_node_alias_is_deprecated()
+    test_new_activation_chunk_defaults_are_all_8192()
     test_reference_video_optimizer_is_registered()
     test_reference_video_match_area_downscales_without_upscaling()
     test_reference_video_match_area_preserves_area_and_aspect_closely()
     test_reference_video_optimizer_keep_original_is_zero_copy()
+    test_reference_video_long_edge_limit_preserves_orientation()
+    test_reference_video_long_edge_upscale_is_explicit()
+    test_reference_video_frame_count_is_h3_aligned()
     test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse()
     test_install_preserves_upstream_block_patch()
     test_sm75_sla_auto_installs_fp16_exact_without_external_node()

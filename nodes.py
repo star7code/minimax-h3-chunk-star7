@@ -2,6 +2,9 @@ import gc
 import contextlib
 import logging
 import math
+import os
+import shutil
+import subprocess
 import time
 from types import MethodType
 from typing import Optional
@@ -10,7 +13,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.8.0"
+NODE_VERSION = "2.9.0"
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -23,14 +26,14 @@ _PROFILED_QKV_STAGES = set()
 _LOGGED_REFERENCE_VIDEO_SHAPES = set()
 _CONFIG = {
     "chunk_tokens": 8192,
-    "mlp_chunk_tokens": 4096,
-    "qkv_chunk_tokens": 4096,
+    "mlp_chunk_tokens": 8192,
+    "qkv_chunk_tokens": 8192,
     "effective_chunk_tokens": 8192,
-    "effective_mlp_chunk_tokens": 4096,
-    "effective_qkv_chunk_tokens": 4096,
+    "effective_mlp_chunk_tokens": 8192,
+    "effective_qkv_chunk_tokens": 8192,
     "status_effective_chunk_tokens": 8192,
-    "status_effective_mlp_chunk_tokens": 4096,
-    "status_effective_qkv_chunk_tokens": 4096,
+    "status_effective_mlp_chunk_tokens": 8192,
+    "status_effective_qkv_chunk_tokens": 8192,
     "status_sequence_rope": None,
     "status_sequence_mlp": None,
     "status_sequence_qkv": None,
@@ -145,7 +148,7 @@ def _configure_runtime(
     verbose: bool,
     reuse_mlp_weights: bool,
     node_id=None,
-    qkv_chunk_tokens: int = 4096,
+    qkv_chunk_tokens: int = 8192,
 ) -> None:
     """Start a fresh runtime budget whenever the node inputs are re-executed."""
     configured_rope = int(chunk_tokens)
@@ -1153,8 +1156,8 @@ def install_patch(
     chunk_tokens: int,
     auto_halve_on_oom: bool,
     verbose: bool,
-    mlp_chunk_tokens: int = 4096,
-    qkv_chunk_tokens: int = 4096,
+    mlp_chunk_tokens: int = 8192,
+    qkv_chunk_tokens: int = 8192,
     reuse_mlp_weights: bool = True,
     node_id=None,
 ):
@@ -1194,7 +1197,7 @@ def install_model_patch(
     reuse_mlp_weights: bool,
     attention_backend: str,
     node_id=None,
-    qkv_chunk_tokens: int = 4096,
+    qkv_chunk_tokens: int = 8192,
 ):
     install_patch(
         chunk_tokens=chunk_tokens,
@@ -1446,11 +1449,11 @@ class MiniMaxH3ActivationChunkStar7:
                 "mlp_chunk_tokens": (
                     "INT",
                     {
-                        "default": 4096,
+                        "default": 8192,
                         "min": 0,
                         "max": 65536,
                         "step": 256,
-                        "tooltip": "H3 MLP tokens per chunk. Keeps the upstream block path while streaming the large expansion activation. Start at 4096.",
+                        "tooltip": "H3 MLP tokens per chunk. Keeps the upstream block path while streaming the large expansion activation. The default 8192 is validated on the 22GB reference workflow.",
                     },
                 ),
                 "disable_dynamic_prefetch": (
@@ -1464,11 +1467,11 @@ class MiniMaxH3ActivationChunkStar7:
                 "qkv_chunk_tokens": (
                     "INT",
                     {
-                        "default": 4096,
+                        "default": 8192,
                         "min": 0,
                         "max": 65536,
                         "step": 256,
-                        "tooltip": "H3 QKV 投影临时显存分块。设为 0 仅关闭投影分块，不改变所选注意力；数值越小只会缩小投影临时张量，不会消除注意力所需的完整 Q/K/V。SLA 会直接保存 FP16 Q/K/V。建议 4096。",
+                        "tooltip": "H3 QKV 投影临时显存分块。设为 0 仅关闭投影分块，不改变所选注意力；数值越小只会缩小投影临时张量，不会消除注意力所需的完整 Q/K/V。SLA 会直接保存 FP16 Q/K/V。默认 8192。",
                     },
                 ),
                 "reuse_mlp_weights": (
@@ -1522,8 +1525,8 @@ class MiniMaxH3ActivationChunkStar7:
 
     def patch(
         self, model, chunk_tokens=8192, auto_halve_on_oom=True, verbose=True,
-        mlp_chunk_tokens=4096, disable_dynamic_prefetch=True,
-        qkv_chunk_tokens=4096,
+        mlp_chunk_tokens=8192, disable_dynamic_prefetch=True,
+        qkv_chunk_tokens=8192,
         reuse_mlp_weights=True, attention_backend="comfy_kitchen_int8", unique_id=None,
     ):
         return (install_model_patch(
@@ -1561,6 +1564,236 @@ def _matched_reference_size(
         else:
             height -= multiple
     return width, height
+
+
+def _long_edge_reference_size(
+    source_width: int,
+    source_height: int,
+    max_long_edge: int,
+    allow_upscale: bool = False,
+    multiple: int = 32,
+) -> tuple[int, int]:
+    """Fit a reference video to a long-edge limit and return an H3-ready canvas."""
+    values = (source_width, source_height, max_long_edge)
+    if any(int(value) <= 0 for value in values):
+        raise ValueError("Reference dimensions and max_long_edge must be positive")
+    multiple = max(1, int(multiple))
+    limit = max(multiple, int(max_long_edge) // multiple * multiple)
+    source_width = int(source_width)
+    source_height = int(source_height)
+    source_long_edge = max(source_width, source_height)
+    should_resize = source_long_edge > limit or (
+        bool(allow_upscale) and source_long_edge < limit
+    )
+    scale = limit / source_long_edge if should_resize else 1.0
+    raw_width = source_width * scale
+    raw_height = source_height * scale
+    width = max(multiple, round(raw_width / multiple) * multiple)
+    height = max(multiple, round(raw_height / multiple) * multiple)
+
+    if not allow_upscale:
+        # Keep the checkbox strict relative to the decoded source. T8 would
+        # otherwise round an odd input dimension upward on its own.
+        source_floor_width = max(multiple, source_width // multiple * multiple)
+        source_floor_height = max(multiple, source_height // multiple * multiple)
+        width = min(width, source_floor_width)
+        height = min(height, source_floor_height)
+    if width >= height and width > limit:
+        width = limit
+    elif height > width and height > limit:
+        height = limit
+    return width, height
+
+
+def _align_h3_reference_frame_count(frame_count: int) -> int:
+    """Trim a decoded 24fps reference to MiniMax H3's 17n+5 grid."""
+    frame_count = min(360, int(frame_count))
+    if frame_count < 5:
+        return frame_count
+    return frame_count - ((frame_count - 5) % 17)
+
+
+def _star7_ffmpeg_path() -> str:
+    """Find FFmpeg without depending on VideoHelperSuite internals."""
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe
+
+        candidate = get_ffmpeg_exe()
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    except Exception:
+        pass
+    candidate = shutil.which("ffmpeg")
+    if candidate:
+        return candidate
+    raise RuntimeError(
+        "FFmpeg was not found. Install imageio-ffmpeg or make ffmpeg available on PATH."
+    )
+
+
+def _hidden_subprocess_kwargs() -> dict:
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
+def _video_stream_info(video_path: str) -> tuple[int, int, bool]:
+    """Read the displayed frame dimensions and whether an audio stream exists."""
+    import av
+
+    with av.open(video_path, mode="r") as container:
+        if not container.streams.video:
+            raise ValueError(f"No video stream found in {video_path}")
+        stream = container.streams.video[0]
+        source_width, source_height = int(stream.width), int(stream.height)
+        try:
+            first_frame = next(container.decode(stream))
+            rotation = int(round(float(getattr(first_frame, "rotation", 0)))) % 360
+            if rotation in {90, 270}:
+                source_width, source_height = source_height, source_width
+        except StopIteration:
+            raise ValueError(f"No video frames found in {video_path}")
+        return source_width, source_height, bool(container.streams.audio)
+
+
+class MiniMaxH3ReferenceVideoLoadStar7:
+    """Minimal 24fps H3 reference loader with a target-aware long-edge limit."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        import folder_paths
+
+        input_dir = folder_paths.get_input_directory()
+        os.makedirs(input_dir, exist_ok=True)
+        files = folder_paths.filter_files_content_types(os.listdir(input_dir), ["video"])
+        return {
+            "required": {
+                "video": (sorted(files), {"video_upload": True}),
+                "max_long_edge": (
+                    "INT",
+                    {
+                        "default": 1344,
+                        "min": 32,
+                        "max": 8192,
+                        "step": 32,
+                        "tooltip": "The reference video keeps its aspect ratio and is fitted to this H3-aligned long edge.",
+                    },
+                ),
+                "allow_upscale": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Disabled avoids spending H3 reference tokens on interpolated detail. Enable only for structure/motion A/B tests.",
+                    },
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "AUDIO", "INT", "STRING")
+    RETURN_NAMES = ("reference_video", "reference_audio", "frame_count", "report")
+    FUNCTION = "load"
+    CATEGORY = "Star7/MiniMax H3"
+    DESCRIPTION = (
+        "Loads a MiniMax H3 reference video at the mandatory 24fps, limits it to 15 seconds, "
+        "fits its long edge without changing orientation, aligns frames to 17n+5, and extracts "
+        "the matching soundtrack. FFmpeg is resolved independently from VideoHelperSuite."
+    )
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, video, **_kwargs):
+        import folder_paths
+
+        if not folder_paths.exists_annotated_filepath(video):
+            return f"Invalid video file: {video}"
+        return True
+
+    @classmethod
+    def IS_CHANGED(cls, video, **_kwargs):
+        import folder_paths
+
+        path = folder_paths.get_annotated_filepath(video)
+        return os.path.getmtime(path)
+
+    def load(self, video, max_long_edge=1344, allow_upscale=False):
+        import folder_paths
+
+        video_path = folder_paths.get_annotated_filepath(video)
+        source_width, source_height, has_audio = _video_stream_info(video_path)
+        width, height = _long_edge_reference_size(
+            source_width, source_height, int(max_long_edge), bool(allow_upscale), 32,
+        )
+        ffmpeg = _star7_ffmpeg_path()
+        command = [
+            ffmpeg,
+            "-v", "error",
+            "-i", video_path,
+            "-t", "15",
+            "-an",
+            "-vf", f"fps=24,scale={width}:{height}:flags=lanczos",
+            "-frames:v", "360",
+            "-pix_fmt", "rgb24",
+            "-f", "rawvideo",
+            "pipe:1",
+        ]
+        result = subprocess.run(
+            command, capture_output=True, check=False, **_hidden_subprocess_kwargs(),
+        )
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", "replace").strip()
+            raise RuntimeError(f"FFmpeg reference-video decode failed: {detail}")
+        frame_bytes = width * height * 3
+        decoded_count = len(result.stdout) // frame_bytes
+        aligned_count = _align_h3_reference_frame_count(decoded_count)
+        if aligned_count < 5:
+            raise ValueError("MiniMax H3 reference video must contain at least 5 frames at 24fps")
+        usable_bytes = aligned_count * frame_bytes
+        raw = torch.frombuffer(bytearray(result.stdout[:usable_bytes]), dtype=torch.uint8)
+        frames = raw.reshape(aligned_count, height, width, 3).to(torch.float32).div_(255.0)
+
+        audio = None
+        audio_status = "none"
+        if has_audio:
+            audio_rate = 44100
+            duration = aligned_count / 24.0
+            audio_command = [
+                ffmpeg,
+                "-v", "error",
+                "-i", video_path,
+                "-t", f"{duration:.9f}",
+                "-vn",
+                "-ac", "2",
+                "-ar", str(audio_rate),
+                "-f", "f32le",
+                "-acodec", "pcm_f32le",
+                "pipe:1",
+            ]
+            audio_result = subprocess.run(
+                audio_command, capture_output=True, check=False, **_hidden_subprocess_kwargs(),
+            )
+            if audio_result.returncode != 0:
+                detail = audio_result.stderr.decode("utf-8", "replace").strip()
+                raise RuntimeError(f"FFmpeg reference-audio decode failed: {detail}")
+            sample_values = torch.frombuffer(
+                bytearray(audio_result.stdout), dtype=torch.float32,
+            )
+            complete_values = sample_values.numel() // 2 * 2
+            if complete_values:
+                waveform = sample_values[:complete_values].reshape(-1, 2).transpose(0, 1)
+                audio = {"waveform": waveform.unsqueeze(0), "sample_rate": audio_rate}
+                audio_status = "stereo-44100Hz"
+
+        scale_direction = "same"
+        if width * height < source_width * source_height:
+            scale_direction = "down"
+        elif width * height > source_width * source_height:
+            scale_direction = "up"
+        report = (
+            f"24fps | frames={aligned_count} | {source_width}x{source_height} -> {width}x{height} "
+            f"({scale_direction}) | max_long_edge={int(max_long_edge)} | "
+            f"allow_upscale={bool(allow_upscale)} | audio={audio_status}"
+        )
+        _LOG.info("[Star7 H3 Ref Load] %s", report)
+        return frames, audio, aligned_count, report
 
 
 class MiniMaxH3ReferenceVideoOptimizeStar7:
@@ -1660,6 +1893,7 @@ class MiniMaxH3RoPEChunkPatch(MiniMaxH3ActivationChunkStar7):
 
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3ActivationChunkStar7": MiniMaxH3ActivationChunkStar7,
+    "MiniMaxH3ReferenceVideoLoadStar7": MiniMaxH3ReferenceVideoLoadStar7,
     "MiniMaxH3ReferenceVideoOptimizeStar7": MiniMaxH3ReferenceVideoOptimizeStar7,
     # Compatibility alias for workflows saved before the package was renamed.
     "MiniMaxH3RoPEChunkPatch": MiniMaxH3RoPEChunkPatch,
@@ -1667,6 +1901,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3ActivationChunkStar7": "MiniMax H3 Activation Chunk (RoPE + MLP) - Star7",
+    "MiniMaxH3ReferenceVideoLoadStar7": "MiniMax H3 Reference Video Load - Star7",
     "MiniMaxH3ReferenceVideoOptimizeStar7": "MiniMax H3 Reference Video Optimize - Star7",
     "MiniMaxH3RoPEChunkPatch": "MiniMax H3 RoPE Chunk Patch (Legacy) - Star7",
 }

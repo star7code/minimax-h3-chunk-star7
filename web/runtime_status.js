@@ -6,10 +6,13 @@ const NODE_NAMES = new Set([
     "MiniMaxH3RoPEChunkPatch",
 ]);
 const REFERENCE_NODE_NAME = "MiniMaxH3ReferenceVideoOptimizeStar7";
+const REFERENCE_LOAD_NODE_NAME = "MiniMaxH3ReferenceVideoLoadStar7";
 const REAL_WIDGET_DEFAULTS = {
     chunk_tokens: 8192,
     auto_halve_on_oom: true,
     verbose: true,
+    // Migration values only: old saved workflows that predate these fields
+    // keep their historical behavior. Fresh node defaults come from Python.
     mlp_chunk_tokens: 4096,
     qkv_chunk_tokens: 4096,
     disable_dynamic_prefetch: "实验功能已移除",
@@ -100,6 +103,27 @@ const REFERENCE_TEXT = {
     },
 };
 
+const REFERENCE_LOAD_TEXT = {
+    en: {
+        title: "MiniMax H3 Reference Video Load - Star7",
+        labels: {
+            video: "Reference video",
+            max_long_edge: "Maximum long edge",
+            allow_upscale: "Allow small video upscale",
+        },
+        outputs: ["reference video", "reference audio", "frame count", "report"],
+    },
+    zh: {
+        title: "MiniMax H3 参考视频载入 - Star7",
+        labels: {
+            video: "参考视频",
+            max_long_edge: "最长边限制",
+            allow_upscale: "允许小视频放大",
+        },
+        outputs: ["参考视频画面", "参考视频音频", "帧数", "报告"],
+    },
+};
+
 function language() {
     const locale = app.ui?.settings?.getSettingValue?.("Comfy.Locale")
         ?? globalThis.navigator?.language
@@ -125,6 +149,23 @@ function localizeReferenceNode(node) {
     }
     const output = node.outputs?.find((item) => item.name === "reference_video");
     if (output) output.localized_name = language() === "zh" ? "优化后的参考视频" : "optimized reference video";
+}
+
+function localizeReferenceLoadNode(node) {
+    const text = REFERENCE_LOAD_TEXT[language()];
+    node.title = text.title;
+    for (const [name, label] of Object.entries(text.labels)) {
+        const widget = node.widgets?.find((item) => item.name === name);
+        if (widget) {
+            widget.label = label;
+            widget.localized_name = label;
+        }
+        const input = node.inputs?.find((item) => item.name === name);
+        if (input) input.localized_name = label;
+    }
+    node.outputs?.forEach((output, index) => {
+        if (text.outputs[index]) output.localized_name = text.outputs[index];
+    });
 }
 
 function formatValue(label, effective, configured, reason = "active") {
@@ -224,8 +265,8 @@ function makeStatusWidget(node, name, value) {
 function normalizeConfiguredInputs(node) {
     for (const [name, fallback] of [
         ["chunk_tokens", 8192],
-        ["mlp_chunk_tokens", 4096],
-        ["qkv_chunk_tokens", 4096],
+        ["mlp_chunk_tokens", 8192],
+        ["qkv_chunk_tokens", 8192],
     ]) {
         const widget = node.widgets?.find((item) => item.name === name);
         const numeric = Number(widget?.value);
@@ -350,10 +391,10 @@ function ensureStatusWidgets(node) {
         node.widgets?.find((item) => item.name === "chunk_tokens")?.value ?? 8192,
     );
     const configuredMlp = Number(
-        node.widgets?.find((item) => item.name === "mlp_chunk_tokens")?.value ?? 4096,
+        node.widgets?.find((item) => item.name === "mlp_chunk_tokens")?.value ?? 8192,
     );
     const configuredQkv = Number(
-        node.widgets?.find((item) => item.name === "qkv_chunk_tokens")?.value ?? 4096,
+        node.widgets?.find((item) => item.name === "qkv_chunk_tokens")?.value ?? 8192,
     );
     localizeNode(node);
     const text = strings();
@@ -412,6 +453,10 @@ api.addEventListener("star7-h3-chunk-status", ({ detail }) => {
 app.registerExtension({
     name: "Star7.MiniMaxH3Chunk.RuntimeStatus",
     nodeCreated(node) {
+        if (node.comfyClass === REFERENCE_LOAD_NODE_NAME || node.type === REFERENCE_LOAD_NODE_NAME) {
+            localizeReferenceLoadNode(node);
+            return;
+        }
         if (node.comfyClass === REFERENCE_NODE_NAME || node.type === REFERENCE_NODE_NAME) {
             localizeReferenceNode(node);
             return;
@@ -421,6 +466,10 @@ app.registerExtension({
         }
     },
     loadedGraphNode(node) {
+        if (node.comfyClass === REFERENCE_LOAD_NODE_NAME || node.type === REFERENCE_LOAD_NODE_NAME) {
+            localizeReferenceLoadNode(node);
+            return;
+        }
         if (node.comfyClass === REFERENCE_NODE_NAME || node.type === REFERENCE_NODE_NAME) {
             localizeReferenceNode(node);
             return;
@@ -430,6 +479,25 @@ app.registerExtension({
         }
     },
     async beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name === REFERENCE_LOAD_NODE_NAME) {
+            const text = REFERENCE_LOAD_TEXT[language()];
+            nodeData.display_name = text.title;
+            for (const [name, spec] of Object.entries(nodeData.input?.required ?? {})) {
+                if (!text.labels[name] || !Array.isArray(spec)) continue;
+                spec[1] ??= {};
+                spec[1].display_name = text.labels[name];
+                if (spec[0] === "BOOLEAN") {
+                    spec[1].label_on = language() === "zh" ? "允许" : "Allow";
+                    spec[1].label_off = language() === "zh" ? "禁止" : "Disallow";
+                }
+            }
+            const original = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                original?.apply(this, arguments);
+                localizeReferenceLoadNode(this);
+            };
+            return;
+        }
         if (nodeData.name === REFERENCE_NODE_NAME) {
             const text = REFERENCE_TEXT[language()];
             nodeData.display_name = text.title;
@@ -489,6 +557,11 @@ app.registerExtension({
     setup() {
         app.ui?.settings?.addEventListener?.("Comfy.Locale.change", () => {
             for (const node of app.graph?._nodes ?? []) {
+                if (node.comfyClass === REFERENCE_LOAD_NODE_NAME || node.type === REFERENCE_LOAD_NODE_NAME) {
+                    localizeReferenceLoadNode(node);
+                    node.setDirtyCanvas?.(true, true);
+                    continue;
+                }
                 if (node.comfyClass === REFERENCE_NODE_NAME || node.type === REFERENCE_NODE_NAME) {
                     localizeReferenceNode(node);
                     node.setDirtyCanvas?.(true, true);

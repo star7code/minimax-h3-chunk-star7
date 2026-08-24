@@ -111,12 +111,24 @@ UNET Loader -> LoRA -> Attention patch (optional) -> Activation Chunk - Star7
 带参考视频时，增加一条前置媒体链路：
 
 ```text
-Load Video (frames) -> Reference Video Optimize - Star7 -> H3 Conditioning ref_video
-Resolution Selector width/height -------------------------> optimizer target width/height
-Load Video (audio) ---------------------------------------> H3 Conditioning ref_audio
+Reference Video Load - Star7 (video) -> H3 Conditioning ref_video
+Reference Video Load - Star7 (audio) -> H3 Conditioning ref_video_audio
 ```
 
-`match_output_area` 是推荐默认值：仅在参考视频像素面积高于目标画布时缩小，保持纵横比且不放大低分辨率素材。音频仍从视频加载节点直接连接到 Conditioning，本节点不修改音频。
+精简加载节点内部固定输出 H3 所需的 24fps，最长读取 15 秒并裁齐到 `17n+5`
+帧网格。`最长边限制` 保持参考视频的横竖方向；`允许小视频放大` 默认关闭，
+避免为插值画面增加参考 token。节点同时提取并裁齐配套音频，不依赖 VHS。
+
+旧的通用连接仍受支持：
+
+```text
+Load Video (frames) -> Reference Video Optimize - Star7 -> H3 Conditioning ref_video
+Resolution Selector width/height -------------------------> optimizer target width/height
+Load Video (audio) ---------------------------------------> H3 Conditioning ref_video_audio
+```
+
+`match_output_area` 仅在参考视频像素面积高于目标画布时缩小，保持纵横比且
+不放大低分辨率素材。
 
 RTX 20 系及其他不适合原生 BF16 计算的显卡：
 
@@ -139,8 +151,8 @@ Native FP16 Loader 已包含精确防溢出处理，不要再串接旧的后置 
 | 参数 | 作用 | RTX 2080 Ti 22GB 实测值 |
 |---|---|---:|
 | `chunk_tokens` | RoPE 的目标 token 分块上限；RoPE 工作集相对较小，优先保持较大值 | `8192` |
-| `mlp_chunk_tokens` | MLP 的目标 token 分块上限；节点下方会显示本次实际生效值 | `4096` |
-| `qkv_chunk_tokens` | QKV 投影临时工作集；SLA 直接写入 FP16 后端布局，`0` 表示整段投影但不改变注意力后端 | `4096` |
+| `mlp_chunk_tokens` | MLP 的目标 token 分块上限；节点下方会显示本次实际生效值 | `8192` |
+| `qkv_chunk_tokens` | QKV 投影临时工作集；SLA 直接写入 FP16 后端布局，`0` 表示整段投影但不改变注意力后端 | `8192` |
 | `auto_halve_on_oom` | 当前 chunk OOM 时自动减半重试 | `true` |
 | `提前加载下一层（实验功能已移除）` | 仅为兼容旧工作流保留，不再参与计算，始终关闭 | 兼容字段 |
 | `reuse_mlp_weights` | 自动策略：将已准备权重复制到独立快照后复用；无法快照或 OOM 时改用 streamed | `true` |

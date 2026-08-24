@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- New Activation Chunk nodes now open with RoPE/MLP/QKV all set to 8,192,
+  matching the validated 22GB reference-video configuration. Saved workflows
+  retain their existing values unchanged.
+- Added the standalone `Reference Video Load - Star7` node with only a video
+  selector, H3 long-edge limit, and explicit small-video upscale switch. It
+  decodes directly to the selected 32-pixel-aligned canvas, fixes output to
+  24fps, caps references at 15 seconds, trims to the H3 `17n+5` frame grid,
+  and extracts a duration-matched stereo soundtrack without depending on VHS.
+- Kept small-reference upscaling disabled by default because interpolation
+  adds no source detail while increasing H3 reference tokens. The explicit
+  switch remains available for structure/motion A/B tests.
 - Added the architecture-independent `Reference Video Optimize - Star7` node.
   It caps reference-video area to the requested output canvas before H3 Video
   VAE encoding, while preserving frame count, aspect ratio, and audio. This
