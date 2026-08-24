@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.9.2"
+NODE_VERSION = "2.9.3"
 SM75_QKV_QUALITY_CHUNK = 4096
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
@@ -1955,9 +1955,96 @@ class MiniMaxH3RoPEChunkPatch(MiniMaxH3ActivationChunkStar7):
     DEPRECATED = True
 
 
+class MiniMaxH3LoadImageScaleStar7:
+    """Core image upload plus proportional scaling in one node."""
+
+    UPSCALE_METHODS = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        import folder_paths
+
+        input_dir = folder_paths.get_input_directory()
+        files = [
+            name for name in os.listdir(input_dir)
+            if os.path.isfile(os.path.join(input_dir, name))
+        ]
+        files = folder_paths.filter_files_content_types(files, ["image"])
+        return {
+            "required": {
+                "image": (sorted(files), {"image_upload": True}),
+                "upscale_method": (cls.UPSCALE_METHODS, {"default": "nearest-exact"}),
+                "scale_by": (
+                    "FLOAT",
+                    {"default": 1.0, "min": 0.01, "max": 8.0, "step": 0.01},
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_NAMES = ("image", "mask")
+    FUNCTION = "load_and_scale"
+    CATEGORY = "Star7/image"
+
+    def load_and_scale(self, image, upscale_method="nearest-exact", scale_by=1.0):
+        import comfy.utils
+        import folder_paths
+        import numpy as np
+        from PIL import Image, ImageOps
+
+        image_path = folder_paths.get_annotated_filepath(image)
+        with Image.open(image_path) as source:
+            source = ImageOps.exif_transpose(source)
+            rgb = np.asarray(source.convert("RGB"), dtype=np.float32) / 255.0
+            loaded = torch.from_numpy(rgb).unsqueeze(0)
+            if "A" in source.getbands():
+                alpha = np.asarray(source.getchannel("A"), dtype=np.float32) / 255.0
+                mask = 1.0 - torch.from_numpy(alpha).unsqueeze(0)
+            else:
+                mask = torch.zeros((1, rgb.shape[0], rgb.shape[1]), dtype=loaded.dtype)
+        source_height, source_width = map(int, loaded.shape[1:3])
+        width = max(1, round(source_width * float(scale_by)))
+        height = max(1, round(source_height * float(scale_by)))
+        if (width, height) == (source_width, source_height):
+            return loaded, mask
+
+        scaled = comfy.utils.common_upscale(
+            loaded.movedim(-1, 1), width, height, upscale_method, "disabled",
+        ).movedim(1, -1)
+        if tuple(mask.shape[-2:]) == (source_height, source_width):
+            mask = F.interpolate(
+                mask.unsqueeze(1), size=(height, width), mode="nearest-exact",
+            ).squeeze(1)
+        else:
+            mask = torch.zeros(
+                (scaled.shape[0], height, width), dtype=scaled.dtype, device=scaled.device,
+            )
+        return scaled, mask
+
+    @classmethod
+    def IS_CHANGED(cls, image, upscale_method="nearest-exact", scale_by=1.0):
+        import folder_paths
+        import hashlib
+
+        image_path = folder_paths.get_annotated_filepath(image)
+        digest = hashlib.sha256()
+        with open(image_path, "rb") as handle:
+            digest.update(handle.read())
+        return digest.hexdigest()
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, image, upscale_method="nearest-exact", scale_by=1.0):
+        import folder_paths
+
+        if not folder_paths.exists_annotated_filepath(image):
+            return f"Invalid image file: {image}"
+        return True
+
+
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3ActivationChunkStar7": MiniMaxH3ActivationChunkStar7,
     "MiniMaxH3ReferenceVideoLoadStar7": MiniMaxH3ReferenceVideoLoadStar7,
+    "MiniMaxH3LoadImageScaleStar7": MiniMaxH3LoadImageScaleStar7,
     # Compatibility alias for workflows saved before the package was renamed.
     "MiniMaxH3RoPEChunkPatch": MiniMaxH3RoPEChunkPatch,
 }
@@ -1965,5 +2052,6 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3ActivationChunkStar7": "MiniMax H3 Activation Chunk - Star7",
     "MiniMaxH3ReferenceVideoLoadStar7": "MiniMax H3 Reference Video Load - Star7",
+    "MiniMaxH3LoadImageScaleStar7": "Load & Scale Image - Star7",
     "MiniMaxH3RoPEChunkPatch": "MiniMax H3 RoPE Chunk Patch (Legacy) - Star7",
 }

@@ -6,6 +6,7 @@ const NODE_NAMES = new Set([
     "MiniMaxH3RoPEChunkPatch",
 ]);
 const REFERENCE_LOAD_NODE_NAME = "MiniMaxH3ReferenceVideoLoadStar7";
+const IMAGE_LOAD_SCALE_NODE_NAME = "MiniMaxH3LoadImageScaleStar7";
 const REAL_WIDGET_DEFAULTS = {
     chunk_tokens: 8192,
     auto_halve_on_oom: true,
@@ -108,6 +109,19 @@ const REFERENCE_LOAD_TEXT = {
     },
 };
 
+const IMAGE_LOAD_SCALE_TEXT = {
+    en: {
+        title: "Load & Scale Image - Star7",
+        labels: { image: "Image", upscale_method: "Scale method", scale_by: "Scale factor" },
+        outputs: ["image", "mask"],
+    },
+    zh: {
+        title: "加载并缩放图片 - Star7",
+        labels: { image: "图片", upscale_method: "缩放算法", scale_by: "缩放系数" },
+        outputs: ["图片", "遮罩"],
+    },
+};
+
 function language() {
     const locale = app.ui?.settings?.getSettingValue?.("Comfy.Locale")
         ?? globalThis.navigator?.language
@@ -130,6 +144,21 @@ function localizeReferenceLoadNode(node) {
         }
         const input = node.inputs?.find((item) => item.name === name);
         if (input) input.localized_name = label;
+    }
+    node.outputs?.forEach((output, index) => {
+        if (text.outputs[index]) output.localized_name = text.outputs[index];
+    });
+}
+
+function localizeImageLoadScaleNode(node) {
+    const text = IMAGE_LOAD_SCALE_TEXT[language()];
+    node.title = text.title;
+    for (const [name, label] of Object.entries(text.labels)) {
+        const widget = node.widgets?.find((item) => item.name === name);
+        if (widget) {
+            widget.label = label;
+            widget.localized_name = label;
+        }
     }
     node.outputs?.forEach((output, index) => {
         if (text.outputs[index]) output.localized_name = text.outputs[index];
@@ -423,6 +452,10 @@ api.addEventListener("star7-h3-chunk-status", ({ detail }) => {
 app.registerExtension({
     name: "Star7.MiniMaxH3Chunk.RuntimeStatus",
     nodeCreated(node) {
+        if (node.comfyClass === IMAGE_LOAD_SCALE_NODE_NAME || node.type === IMAGE_LOAD_SCALE_NODE_NAME) {
+            localizeImageLoadScaleNode(node);
+            return;
+        }
         if (node.comfyClass === REFERENCE_LOAD_NODE_NAME || node.type === REFERENCE_LOAD_NODE_NAME) {
             localizeReferenceLoadNode(node);
             return;
@@ -432,6 +465,10 @@ app.registerExtension({
         }
     },
     loadedGraphNode(node) {
+        if (node.comfyClass === IMAGE_LOAD_SCALE_NODE_NAME || node.type === IMAGE_LOAD_SCALE_NODE_NAME) {
+            localizeImageLoadScaleNode(node);
+            return;
+        }
         if (node.comfyClass === REFERENCE_LOAD_NODE_NAME || node.type === REFERENCE_LOAD_NODE_NAME) {
             localizeReferenceLoadNode(node);
             return;
@@ -441,6 +478,21 @@ app.registerExtension({
         }
     },
     async beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name === IMAGE_LOAD_SCALE_NODE_NAME) {
+            const text = IMAGE_LOAD_SCALE_TEXT[language()];
+            nodeData.display_name = text.title;
+            for (const [name, spec] of Object.entries(nodeData.input?.required ?? {})) {
+                if (!text.labels[name] || !Array.isArray(spec)) continue;
+                spec[1] ??= {};
+                spec[1].display_name = text.labels[name];
+            }
+            const original = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                original?.apply(this, arguments);
+                localizeImageLoadScaleNode(this);
+            };
+            return;
+        }
         if (nodeData.name === REFERENCE_LOAD_NODE_NAME) {
             const text = REFERENCE_LOAD_TEXT[language()];
             nodeData.display_name = text.title;
@@ -504,6 +556,11 @@ app.registerExtension({
     setup() {
         app.ui?.settings?.addEventListener?.("Comfy.Locale.change", () => {
             for (const node of app.graph?._nodes ?? []) {
+                if (node.comfyClass === IMAGE_LOAD_SCALE_NODE_NAME || node.type === IMAGE_LOAD_SCALE_NODE_NAME) {
+                    localizeImageLoadScaleNode(node);
+                    node.setDirtyCanvas?.(true, true);
+                    continue;
+                }
                 if (node.comfyClass === REFERENCE_LOAD_NODE_NAME || node.type === REFERENCE_LOAD_NODE_NAME) {
                     localizeReferenceLoadNode(node);
                     node.setDirtyCanvas?.(true, true);
