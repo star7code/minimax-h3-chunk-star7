@@ -4,7 +4,7 @@
 
 Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with limited VRAM: this ComfyUI node chunks the two largest RoPE and MLP activation peaks so those operations fit in dedicated VRAM instead of spilling into much slower shared system memory. For workloads that would otherwise OOM or page through shared memory, this can greatly improve the practical video size and runtime; when a workload already fits entirely in VRAM, chunking alone is not a speedup. The default path uses Comfy Kitchen INT8 attention and does not change the sampler, latent, VAE, video duration, or spatial resolution; choose `existing` to preserve an upstream Sage or environment-selected attention backend.
 
-**New in v2.6.0:** architecture-specific SLA sparse attention is included. For best results, use it with the [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA). SM75 uses a bundled precompiled CUDA kernel; SM80+ uses Triton.
+**New in v2.7.0:** SLA now includes bundled SM75 kernels for Windows x64 and Linux x86_64, bounded-memory QKV projection, and strict NaN/Inf guards. For best results, use it with the [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA). SM80+ continues to use Triton.
 
 > This is an independent community project. MiniMax, ComfyUI, Comfy Kitchen, KJNodes, and NVIDIA are trademarks or projects of their respective owners.
 
@@ -12,7 +12,7 @@ Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with li
 
 让高画质、长时长 MiniMax H3 视频在有限显存的显卡上高效运行：本节点把最容易爆显存的 RoPE 与 MLP 激活按 token 分块，使这两段关键计算适配专用显存，避免溢出到速度远低于显存的共享系统内存。对于原本会 OOM 或发生共享显存换页的任务，这能显著提升可运行规模与实际生成效率；如果任务本来就能完整装入显存，分块本身不会凭空加速。
 
-**v2.6.0 已加入按显卡架构区分的 SLA 稀疏注意力加速。** 建议配合
+**v2.7.0 已加入 Windows/Linux SM75 SLA 内核、QKV 投影分块和 NaN/Inf 严格检查。** 建议配合
 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA)
 使用。SM75 使用随节点分发的预编译 CUDA 内核，SM80+ 使用 Triton。
 
@@ -38,9 +38,12 @@ softmax 状态和最终累积保持 FP32。目标音频查询使用完整注意�
 
 注意事项：
 
-- SM75 Windows x64 内核已预编译，用户无需安装或编译 SageAttention；要求 SM75 GPU 和支持 CUDA 13 的 580+ NVIDIA 驱动。
+- SM75 Windows x64：预编译 CUDA 13 静态运行时内核，要求支持 CUDA 13 的 580+ NVIDIA 驱动。
+- SM75 Linux x86_64：预编译 CUDA 12.6 静态运行时内核，兼容 Ubuntu 20.04 / glibc 2.31 及更新系统，要求 NVIDIA 驱动 525.60.13+；不依赖 PyTorch C++ ABI 或 SageAttention。若 Turing Triton 不可用，路由与量化会自动改用有界显存 PyTorch 预处理，SLA 核心仍由 `.so` 执行。
+- RTX 20/SM75 的已验证模型链路是 `Native FP16 Loader - Star7 -> LoRA -> 本节点`；日志出现 `FP16 Exact=False` 时会明确警告。
 - SM80+ 使用 Triton，首次运行会编译并缓存内核。
 - SLA 不会静默回退；环境、自检或计算失败会直接中止，需手动改选 CK 或 `existing`。
+- 严格 SLA 会在每个完整 Transformer block 后检查 NaN/Inf，覆盖注意力、残差门控和 MLP；异常时在进入 VAE 前停止，避免输出棋格闪烁等损坏画面。
 - All-INT8 量化误差高于 FP16-PV，因此保留为实验选项。
 
 ## 安装
@@ -70,7 +73,8 @@ ComfyUI/
       ├─ sm75_backend.py
       ├─ csrc/sla_sm75_sparse.cu
       ├─ csrc/third_party/comfy_kitchen_sage/
-      └─ bin/win_amd64/star7_sla_sm75_v7.dll
+      ├─ bin/win_amd64/star7_sla_sm75_v7.dll
+      └─ bin/linux_x86_64/star7_sla_sm75_v7.so
 ```
 
 或者：
@@ -119,6 +123,7 @@ Native FP16 Loader 已包含精确防溢出处理，不要再串接旧的后置 
 |---|---|---:|
 | `chunk_tokens` | RoPE 的目标 token 分块上限；RoPE 工作集相对较小，优先保持较大值 | `8192` |
 | `mlp_chunk_tokens` | MLP 的目标 token 分块上限；节点下方会显示本次实际生效值 | `4096` |
+| `qkv_chunk_tokens` | QKV 投影临时工作集；SLA 直接写入 FP16 后端布局，`0` 表示整段投影但不改变注意力后端 | `4096` |
 | `auto_halve_on_oom` | 当前 chunk OOM 时自动减半重试 | `true` |
 | `提前加载下一层（实验功能已移除）` | 仅为兼容旧工作流保留，不再参与计算，始终关闭 | 兼容字段 |
 | `reuse_mlp_weights` | 自动策略：将已准备权重复制到独立快照后复用；无法快照或 OOM 时改用 streamed | `true` |
@@ -131,7 +136,7 @@ Native FP16 Loader 已包含精确防溢出处理，不要再串接旧的后置 
 
 参数越大不等于必然更快。较大的 chunk 减少 kernel 启动次数，但会增加瞬时激活和权重预取竞争。比较参数时必须固定模型、seed、分辨率、帧数、步数和注意力后端。
 
-节点会在两个数值输入的正下方分别显示 `RoPE 当前使用` 和 `MLP 当前使用`。正常时会显示
+节点会在三个数值输入的正下方分别显示 `RoPE 当前使用`、`MLP 当前使用` 和 `QKV 当前使用`。正常时会显示
 `当前使用 N（设定值）`；发生显存不足后会显示 `已降级为 N（设定 M）`。这里的 `M` 是工作流
 里的目标上限，`N` 是本次模型会话实际采用的上限。输入框本身不会被偷偷改写，也不会把临时
 降级值保存进工作流。
@@ -160,7 +165,8 @@ block 反复以失败的大块重试。用户手动修改任一分块输入并�
 | `fc1` / SwiGLU / `fc2` MLP 激活 OOM | `mlp_chunk_tokens` | `4096 -> 2048 -> 1024 -> 512` |
 | `rms_rope_split_half_` / `apply_rope_split_half1` | `chunk_tokens` | 只有明确 RoPE OOM 时才 `8192 -> 4096 -> 2048` |
 | 旧工作流含下一 block 预取字段 | `提前加载下一层（实验功能已移除）` | 无需处理，字段仅作兼容占位，运行时始终关闭 |
-| QKV 或 attention kernel OOM | 注意力后端 | 改用 CK INT8，或保留上游 Low VRAM/Sage；两个 chunk 值不是主要控制项 |
+| QKV 投影临时张量 OOM | `qkv_chunk_tokens` | `4096 -> 2048 -> 1024`；只降低投影峰值，完整 Q/K/V 仍需驻留 |
+| attention kernel OOM | 注意力后端 | 改用 CK INT8，或保留上游 Low VRAM/Sage；激活分块不能降低注意力核心工作集 |
 | 模型加载阶段已经 OOM | 加载器/量化/卸载策略 | 分块节点尚未执行，调 chunk 无效 |
 
 显存档位只能作为起点，因为同容量显卡还会受到模型格式、LoRA反量化、驱动和常驻策略影响：

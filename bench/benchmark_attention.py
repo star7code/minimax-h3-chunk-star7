@@ -141,11 +141,17 @@ def main() -> None:
         "--sm75-library", type=Path,
         help="Development-only SM75 DLL/.so override for A/B kernel benchmarks.",
     )
+    parser.add_argument(
+        "--torch-sm75-preprocess", action="store_true",
+        help="Force the bounded-memory PyTorch SM75 routing/quantization fallback.",
+    )
     args = parser.parse_args()
 
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
         raise SystemExit("this benchmark requires an SM75 CUDA GPU")
     backend = _load_backend()
+    if args.torch_sm75_preprocess:
+        backend._SM75_TORCH_PREPROCESS = True
     if args.sm75_library is not None:
         library_path = args.sm75_library.resolve()
         digest = hashlib.sha256(library_path.read_bytes()).hexdigest()

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Added a bundled Linux x86_64 SM75 ABI-v7 library built with CUDA 12.6 on
+  Ubuntu 20.04/glibc 2.31. It uses the CUDA static runtime and has no PyTorch
+  C++ ABI or SageAttention dependency. Windows and Linux payload hashes are
+  verified from the package manifest.
+- SM75 no longer requires a working Turing Triton installation for routing and
+  quantization. A bounded-memory PyTorch preprocessing path activates only when
+  Triton is missing or cannot compile; the native CUDA SLA attention core still
+  executes and strict failure semantics remain unchanged.
+- QKV projection chunks now write strict SLA inputs directly into their final
+  FP16 backend layout, avoiding an extra full Q/K/V conversion copy. Setting
+  `qkv_chunk_tokens=0` disables projection chunking without changing the chosen
+  attention backend.
+- Added one strict NaN/Inf check after each complete transformer block so invalid
+  attention, residual/gating, or MLP states stop before VAE decoding instead of
+  becoming checkerboard/flicker output. It replaces the previous SLA-core-only
+  check rather than adding more per-block host synchronizations.
+
 - Split strict SLA selection into architecture-explicit names:
   `sla_sm75_qk_int8_pv_fp16`, `sla_sm75_all_int8_experimental`, and
   `sla_sm80+_qk_int8_pv_fp16`. The unreleased

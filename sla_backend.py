@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import threading
 import importlib.util
+import logging
 import os
 import sys
 import tempfile
@@ -21,6 +22,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+
+
+_LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
 
 
 def _configure_triton_cache() -> None:
@@ -68,6 +72,7 @@ class SLAResult:
 
 
 _TRITON_IMPORT_ERROR = None
+_SM75_TORCH_PREPROCESS = False
 try:
     import triton
     import triton.language as tl
@@ -228,10 +233,6 @@ if triton is not None:
 
 
 def _require_environment(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> None:
-    if triton is None:
-        raise SLAUnavailableError(
-            f"{STRICT_SLA_LABEL} requires Triton; import failed: {_TRITON_IMPORT_ERROR}"
-        )
     if not torch.cuda.is_available() or not q.is_cuda:
         raise SLAUnavailableError(f"{STRICT_SLA_LABEL} requires an NVIDIA CUDA tensor")
     if q.device != k.device or q.device != v.device:
@@ -249,6 +250,11 @@ def _require_environment(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> N
     if q.shape[-1] != HEAD_DIM:
         raise SLAUnavailableError(f"SLA requires head_dim={HEAD_DIM}; got {q.shape[-1]}")
     capability = torch.cuda.get_device_capability(q.device)
+    if triton is None and capability != (7, 5):
+        raise SLAUnavailableError(
+            f"{STRICT_SLA_LABEL} SM80+ requires Triton; import failed: "
+            f"{_TRITON_IMPORT_ERROR}"
+        )
     applied_priority_ranges: tuple[tuple[int, int], ...] = ()
     if capability == (7, 5):
         available, reason = _load_sm75_backend().availability()
@@ -275,13 +281,14 @@ def check_runtime_support(
     requested_backend: str | None = None,
 ) -> tuple[int, int]:
     """Fail before model patching when the strict backend cannot possibly run."""
-    if triton is None:
-        raise SLAUnavailableError(
-            f"{STRICT_SLA_LABEL} requires Triton; import failed: {_TRITON_IMPORT_ERROR}"
-        )
     if not torch.cuda.is_available():
         raise SLAUnavailableError(f"{STRICT_SLA_LABEL} requires NVIDIA CUDA")
     capability = torch.cuda.get_device_capability(device)
+    if triton is None and capability != (7, 5):
+        raise SLAUnavailableError(
+            f"{STRICT_SLA_LABEL} SM80+ requires Triton; import failed: "
+            f"{_TRITON_IMPORT_ERROR}"
+        )
     if requested_backend is None:
         requested_backend = backend_name_for_capability(capability)
     valid_names = {
@@ -314,21 +321,130 @@ def check_runtime_support(
     return capability
 
 
+def _activate_sm75_torch_preprocess(reason: BaseException | str) -> None:
+    global _SM75_TORCH_PREPROCESS
+    if _SM75_TORCH_PREPROCESS:
+        return
+    _SM75_TORCH_PREPROCESS = True
+    _LOG.warning(
+        "[Star7 H3 Chunk] SM75 Triton preprocessing is unavailable (%s); "
+        "using bounded-memory PyTorch routing/quantization with the same "
+        "native CUDA SLA core.",
+        reason,
+    )
+
+
+def _mean_pool_torch(
+    x: torch.Tensor, block: int, mean: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Bounded-memory SM75 fallback; never materializes full FP32 Q/K."""
+    batch, heads, length, head_dim = x.shape
+    blocks = (length + block - 1) // block
+    output = torch.empty(
+        (batch, heads, blocks, head_dim), dtype=x.dtype, device=x.device
+    )
+    blocks_per_chunk = max(1, 4096 // block)
+    mean_fp32 = None if mean is None else mean.float()
+    for block_start in range(0, blocks, blocks_per_chunk):
+        block_end = min(blocks, block_start + blocks_per_chunk)
+        token_start = block_start * block
+        token_end = min(length, block_end * block)
+        valid_tokens = token_end - token_start
+        padded_tokens = (block_end - block_start) * block
+        values = x[:, :, token_start:token_end].float()
+        if valid_tokens < padded_tokens:
+            values = torch.nn.functional.pad(
+                values, (0, 0, 0, padded_tokens - valid_tokens)
+            )
+        values = values.view(
+            batch, heads, block_end - block_start, block, head_dim
+        )
+        if mean_fp32 is not None:
+            values.sub_(mean_fp32.unsqueeze(-2))
+            if valid_tokens < padded_tokens:
+                values[:, :, -1, valid_tokens % block :] = 0.0
+        sums = values.sum(dim=-2)
+        counts = torch.full(
+            (block_end - block_start,), block,
+            dtype=torch.float32, device=x.device,
+        )
+        if block_end == blocks and length % block:
+            counts[-1] = length % block
+        output[:, :, block_start:block_end].copy_(
+            (sums / counts.view(1, 1, -1, 1)).to(x.dtype)
+        )
+    return output
+
+
+def _quantize_torch(
+    x: torch.Tensor,
+    block: int,
+    multiplier: float,
+    mean: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    batch, heads, length, head_dim = x.shape
+    blocks = (length + block - 1) // block
+    quantized = torch.empty_like(x, dtype=torch.int8)
+    scale = torch.empty(
+        (batch, heads, blocks), dtype=torch.float32, device=x.device
+    )
+    blocks_per_chunk = max(1, 4096 // block)
+    mean_fp32 = None if mean is None else mean.float()
+    for block_start in range(0, blocks, blocks_per_chunk):
+        block_end = min(blocks, block_start + blocks_per_chunk)
+        token_start = block_start * block
+        token_end = min(length, block_end * block)
+        valid_tokens = token_end - token_start
+        padded_tokens = (block_end - block_start) * block
+        values = x[:, :, token_start:token_end].float()
+        if valid_tokens < padded_tokens:
+            values = torch.nn.functional.pad(
+                values, (0, 0, 0, padded_tokens - valid_tokens)
+            )
+        values = values.view(
+            batch, heads, block_end - block_start, block, head_dim
+        )
+        if mean_fp32 is not None:
+            values.sub_(mean_fp32.unsqueeze(-2))
+            if valid_tokens < padded_tokens:
+                values[:, :, -1, valid_tokens % block :] = 0.0
+        values.mul_(multiplier)
+        local_scale = values.abs().amax(dim=(-1, -2)).div_(127.0).clamp_min_(1.0e-8)
+        values.div_(local_scale[..., None, None])
+        values.add_(torch.where(values >= 0.0, 0.5, -0.5))
+        values.trunc_().clamp_(-127.0, 127.0)
+        packed = values.to(torch.int8).view(
+            batch, heads, padded_tokens, head_dim
+        )[:, :, :valid_tokens]
+        quantized[:, :, token_start:token_end].copy_(packed)
+        scale[:, :, block_start:block_end].copy_(local_scale)
+    return quantized, scale
+
+
 def _mean_pool(x: torch.Tensor, block: int, mean: torch.Tensor | None = None) -> torch.Tensor:
+    if _SM75_TORCH_PREPROCESS or triton is None:
+        return _mean_pool_torch(x, block, mean)
     batch, heads, length, head_dim = x.shape
     blocks = triton.cdiv(length, block)
     output = torch.empty((batch, heads, blocks, head_dim), dtype=x.dtype, device=x.device)
     placeholder = x if mean is None else mean
-    _mean_pool_kernel[(blocks, batch * heads)](
-        x,
-        placeholder,
-        output,
-        length,
-        head_dim,
-        block,
-        subtract_mean=mean is not None,
-        num_warps=8 if block == BLOCK_Q else 4,
-    )
+    try:
+        _mean_pool_kernel[(blocks, batch * heads)](
+            x,
+            placeholder,
+            output,
+            length,
+            head_dim,
+            block,
+            subtract_mean=mean is not None,
+            num_warps=8 if block == BLOCK_Q else 4,
+        )
+    except Exception as exc:
+        if torch.cuda.get_device_capability(x.device) != (7, 5):
+            raise
+        del output
+        _activate_sm75_torch_preprocess(exc)
+        return _mean_pool_torch(x, block, mean)
     return output
 
 
@@ -372,23 +488,32 @@ def _quantize(
     multiplier: float,
     mean: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    if _SM75_TORCH_PREPROCESS or triton is None:
+        return _quantize_torch(x, block, multiplier, mean)
     batch, heads, length, head_dim = x.shape
     blocks = triton.cdiv(length, block)
     quantized = torch.empty_like(x, dtype=torch.int8)
     scale = torch.empty((batch, heads, blocks), dtype=torch.float32, device=x.device)
     placeholder = x if mean is None else mean
-    _quantize_per_block_int8_kernel[(blocks, batch * heads)](
-        x,
-        placeholder,
-        quantized,
-        scale,
-        length,
-        head_dim,
-        block,
-        multiplier=multiplier,
-        subtract_mean=mean is not None,
-        num_warps=8 if block == BLOCK_Q else 4,
-    )
+    try:
+        _quantize_per_block_int8_kernel[(blocks, batch * heads)](
+            x,
+            placeholder,
+            quantized,
+            scale,
+            length,
+            head_dim,
+            block,
+            multiplier=multiplier,
+            subtract_mean=mean is not None,
+            num_warps=8 if block == BLOCK_Q else 4,
+        )
+    except Exception as exc:
+        if torch.cuda.get_device_capability(x.device) != (7, 5):
+            raise
+        del quantized, scale
+        _activate_sm75_torch_preprocess(exc)
+        return _quantize_torch(x, block, multiplier, mean)
     return quantized, scale
 
 
@@ -428,6 +553,8 @@ def _run_raw(
             if all_int8 else
             "cuda-sm75-sparse-qk-int8-pv-fp16-tensorcore+audio-guard"
         )
+        if _SM75_TORCH_PREPROCESS:
+            implementation += "+torch-preprocess"
     else:
         if all_int8:
             raise SLAUnavailableError(
@@ -556,6 +683,4 @@ def sparse_attention(
         q, k, v, float(sparsity), tuple(query_priority_ranges),
         all_int8=all_int8,
     )
-    if not torch.isfinite(result.output).all():
-        raise RuntimeError(f"{STRICT_SLA_LABEL} produced NaN/Inf; no fallback was attempted")
     return result

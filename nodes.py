@@ -112,7 +112,9 @@ def _remember_effective_chunk(kind: str, failed: int, effective: int) -> None:
     )
     sequence_key = (
         "status_sequence_rope"
-        if kind == "RoPE" else "status_sequence_mlp"
+        if kind == "RoPE"
+        else "status_sequence_mlp" if kind == "MLP"
+        else "status_sequence_qkv"
     )
     sequence = _CONFIG.get(sequence_key)
     _CONFIG[status_key] = min(effective, int(sequence)) if sequence else effective
@@ -685,9 +687,7 @@ def _run_chunked_h3_mlp(
             elapsed_ms, calls, current_chunk, weight_mode,
         )
 
-    final = residual if fuse_residual else output
-    _require_strict_sla_finite(final, "MLP output")
-    return final
+    return residual if fuse_residual else output
 
 
 def _chunked_h3_mlp_forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -842,9 +842,7 @@ def _minimax_sla_forward(
     out = result.output.transpose(1, 2).reshape(
         1, sequence, self.heads * self.head_dim
     )
-    projected = self.out_proj(out.squeeze(0))
-    _require_strict_sla_finite(projected, "attention out_proj")
-    return projected
+    return self.out_proj(out.squeeze(0))
 
 
 _minimax_sla_forward._star7_consumes_input = True
@@ -856,10 +854,15 @@ def _sla_segment_passthrough(original_forward):
         old_segments = getattr(self.attn, "_star7_sla_mod_segments", None)
         self.attn._star7_sla_mod_segments = mod_segments
         try:
-            return original_forward(
+            result = original_forward(
                 x, t_emb, mod_segments, rope_freqs,
                 transformer_options=transformer_options,
             )
+            # One check after the complete block catches attention projection,
+            # residual/gating and MLP failures without adding extra host
+            # synchronizations beyond the previous SLA output guard.
+            _require_strict_sla_finite(result, "transformer block output")
+            return result
         finally:
             if old_segments is None:
                 delattr(self.attn, "_star7_sla_mod_segments")
@@ -1262,6 +1265,13 @@ def install_model_patch(
         attention_patch_name = attention_backend
         sage_attention = False
         sla_attention = True
+        if capability == (7, 5) and not star7_fp16:
+            _LOG.warning(
+                "[Star7 H3 Chunk] SM75 strict SLA is running with FP16 Exact=False. "
+                "The validated RTX 20 path uses MiniMax H3 Native FP16 Loader - "
+                "Star7 before LoRA and this node; a non-finite transformer block "
+                "will stop the task instead of producing corrupted VAE output."
+            )
         if verbose:
             arithmetic = (
                 "All-INT8 (experimental)"

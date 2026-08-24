@@ -1,4 +1,6 @@
 import importlib.util
+import hashlib
+import json
 import pathlib
 import sys
 from types import SimpleNamespace
@@ -512,6 +514,25 @@ def test_manual_settings_reset_learned_runtime_values():
         chunk_nodes._CONFIG.update(original_config)
 
 
+def test_qkv_oom_status_uses_qkv_sequence_length():
+    original_config = chunk_nodes._CONFIG.copy()
+    try:
+        chunk_nodes._CONFIG.update(
+            qkv_chunk_tokens=4096,
+            effective_qkv_chunk_tokens=4096,
+            status_effective_qkv_chunk_tokens=4096,
+            status_sequence_qkv=3000,
+            status_sequence_mlp=700,
+            node_id=None,
+        )
+        chunk_nodes._remember_effective_chunk("QKV", 4096, 2048)
+        assert chunk_nodes._CONFIG["effective_qkv_chunk_tokens"] == 2048
+        assert chunk_nodes._CONFIG["status_effective_qkv_chunk_tokens"] == 2048
+    finally:
+        chunk_nodes._CONFIG.clear()
+        chunk_nodes._CONFIG.update(original_config)
+
+
 def test_legacy_node_alias_is_deprecated():
     assert chunk_nodes.NODE_CLASS_MAPPINGS["MiniMaxH3ActivationChunkStar7"] is (
         chunk_nodes.MiniMaxH3ActivationChunkStar7
@@ -566,10 +587,10 @@ def test_sla_backend_is_strict_and_architecture_checked():
     assert backend.SM75_ALL_INT8_BACKEND_NAME in choices
     assert backend.SM80PLUS_BACKEND_NAME in choices
 
-    if backend.triton is None:
-        return
     original_available = backend.torch.cuda.is_available
     original_capability = backend.torch.cuda.get_device_capability
+    original_triton = backend.triton
+    original_native_loader = backend._load_sm75_backend
     try:
         backend.torch.cuda.is_available = lambda: True
         backend.torch.cuda.get_device_capability = lambda _device=None: (7, 0)
@@ -592,9 +613,74 @@ def test_sla_backend_is_strict_and_architecture_checked():
             assert "requires SM80" in str(exc)
         else:
             raise AssertionError("SM80+ SLA name incorrectly accepted SM75")
+
+        backend.triton = None
+        backend._load_sm75_backend = lambda: SimpleNamespace(
+            availability=lambda: (True, "test SM75 native library")
+        )
+        assert backend.check_runtime_support(
+            requested_backend=backend.SM75_BACKEND_NAME
+        ) == (7, 5)
+        try:
+            backend.torch.cuda.get_device_capability = lambda _device=None: (8, 0)
+            backend.check_runtime_support(
+                requested_backend=backend.SM80PLUS_BACKEND_NAME
+            )
+        except backend.SLAUnavailableError as exc:
+            assert "requires Triton" in str(exc)
+        else:
+            raise AssertionError("SM80+ SLA incorrectly accepted missing Triton")
     finally:
         backend.torch.cuda.is_available = original_available
         backend.torch.cuda.get_device_capability = original_capability
+        backend.triton = original_triton
+        backend._load_sm75_backend = original_native_loader
+
+
+def test_sm75_binary_manifest_payloads():
+    root = pathlib.Path(__file__).resolve().parent
+    manifest = json.loads(
+        (root / "bin" / "sm75_manifest.json").read_text(encoding="utf-8")
+    )
+    for platform_key in ("windows_x64", "linux_x86_64"):
+        entry = manifest[platform_key]
+        payload = root / "bin" / entry["file"]
+        assert payload.is_file(), f"missing {platform_key} SM75 binary"
+        data = payload.read_bytes()
+        assert len(data) == entry["size"]
+        assert hashlib.sha256(data).hexdigest() == entry["sha256"]
+
+
+def test_sm75_torch_preprocess_matches_triton():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
+        return
+    backend = chunk_nodes._load_sla_backend()
+    if backend.triton is None:
+        return
+    original_mode = backend._SM75_TORCH_PREPROCESS
+    try:
+        generator = torch.Generator(device="cuda")
+        generator.manual_seed(0x75)
+        value = torch.randn(
+            (1, 2, 257, backend.HEAD_DIM), generator=generator,
+            device="cuda", dtype=torch.float16,
+        )
+        mean = value.mean(dim=-2, keepdim=True, dtype=torch.float32).to(value.dtype)
+        backend._SM75_TORCH_PREPROCESS = False
+        triton_pool = backend._mean_pool(value, backend.BLOCK_K, mean)
+        triton_q, triton_scale = backend._quantize(
+            value, backend.BLOCK_K, 1.0, mean
+        )
+        backend._SM75_TORCH_PREPROCESS = True
+        torch_pool = backend._mean_pool(value, backend.BLOCK_K, mean)
+        torch_q, torch_scale = backend._quantize(
+            value, backend.BLOCK_K, 1.0, mean
+        )
+        assert torch.equal(triton_q, torch_q)
+        assert torch.equal(triton_scale, torch_scale)
+        assert torch.allclose(triton_pool, torch_pool, atol=1e-6, rtol=0.0)
+    finally:
+        backend._SM75_TORCH_PREPROCESS = original_mode
 
 
 def test_sla_sm75_native_cuda_self_test():
@@ -658,11 +744,14 @@ if __name__ == "__main__":
     test_rope_oom_value_is_reused_for_k_and_later_calls()
     test_mlp_oom_value_is_reused_for_later_blocks()
     test_manual_settings_reset_learned_runtime_values()
+    test_qkv_oom_status_uses_qkv_sequence_length()
     test_legacy_node_alias_is_deprecated()
     test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse()
     test_install_preserves_upstream_block_patch()
     test_comfy_kitchen_int8_attention_forward_cuda()
     test_sla_backend_is_strict_and_architecture_checked()
+    test_sm75_binary_manifest_payloads()
+    test_sm75_torch_preprocess_matches_triton()
     test_sla_sm75_native_cuda_self_test()
     test_sla_attention_forward_cuda()
     print("MiniMax H3 prefetch removal compatibility test passed")

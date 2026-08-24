@@ -3,10 +3,16 @@
   "backend": "cuda-sm75-sparse-fp16-pv-and-experimental-all-int8",
   "compute_capability": "7.5",
   "cuda_toolkit": "13.0.88",
+  "linux_cuda_toolkit": "12.6.3 (Ubuntu 20.04 / glibc 2.31)",
   "windows_x64": {
     "file": "win_amd64/star7_sla_sm75_v7.dll",
     "sha256": "e740dd476a349661ebf5bbbf09b4f3467e28bb23b928de6e32feaccdd5a58dd4",
     "size": 833024
+  },
+  "linux_x86_64": {
+    "file": "linux_x86_64/star7_sla_sm75_v7.so",
+    "sha256": "722befbd654ee502dea319e583d74c87d84a22859345794b08a3f8256b0cb35e",
+    "size": 1303088
   },
   "kernel": {
     "head_dim": 128,
