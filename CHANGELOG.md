@@ -2,29 +2,41 @@
 
 ## Unreleased
 
+- Fixed the reported reference-speech regression with a validated SM75 QKV
+  quality cap of 4,096 tokens. In a same-seed four-step Turbo-LoRA A/B run,
+  QKV 8,192 changed decoded PCM versus 4,096 (20.18 dB difference), while
+  changing only MLP from 4,096 to 8,192 remained PCM hash-identical. SM80+
+  keeps the requested QKV size; OOM fallback may still reduce either path.
+- SM75 QKV now prepares one private weight snapshot and reuses it across any
+  speech-stable tile at or below 4,096 instead of repeating dynamic weight
+  staging for every token chunk. Snapshot OOM falls back to the same numerical
+  path with per-chunk streaming.
+- At `S=103,546`, QKV snapshot reuse reduced the first-block QKV stage from
+  565.5 ms to 391.3 ms. The complete four-step run averaged 196.27 seconds per
+  step, and its decoded PCM was bitwise identical to both automatic-cap and
+  explicit-QKV-4,096 validation runs.
+- The Star7 reference loader now preserves source audio up to 15 seconds
+  instead of trimming it to the shorter `17n+5`-aligned video duration, which
+  could remove as much as 16/24 seconds and cut the final spoken syllable.
+- Clarified that `ref_audio_N` creates the standalone `<Audio N>` speech/voice
+  reference used by existing workflows, while `ref_video_audio_N` deliberately
+  creates a different fused video-audio conditioning block.
+
 - Fixed automatic VRAM fallback for zero-valued RoPE/MLP/QKV controls. Zero
-  now means "try one full-sequence operation first"; if that reducible stage
-  OOMs, only the failing stage is halved and the working value is reused by
-  later H3 blocks. Previously QKV zero bypassed fallback entirely.
+  tries one full-sequence operation first except for the SM75 QKV speech cap;
+  after a reducible OOM, only the failing stage is halved and reused by later
+  H3 blocks. Previously QKV zero bypassed fallback entirely.
 - Full Q/K/V buffer allocation now retries once after allocator-cache cleanup
   and reports a distinct non-chunkable OOM instead of suggesting unrelated
   MLP/RoPE reductions.
-- RTX 2080 Ti validation at `S=103,546` reproduced a 4.15 GiB full-QKV
-  projection OOM, automatically reduced QKV from 103,546 to 51,773, and
-  completed. Its decoded video frames and PCM audio were hash-identical to a
-  fixed QKV=8,192 run with the same seed.
-- Documented the reference-audio distinction: same-numbered
-  `ref_video_audio_N` binds a soundtrack to its video, while `ref_audio_N` is a
-  valid standalone `<Audio N>` reference that must be named explicitly in the
-  prompt.
-- New Activation Chunk nodes now open with RoPE/MLP/QKV all set to 8,192,
-  matching the validated 22GB reference-video configuration. Saved workflows
-  retain their existing values unchanged.
+- New Activation Chunk nodes open with RoPE/MLP at 8,192 and QKV at 4,096 on
+  SM75; SM80+ opens QKV at 8,192. Saved workflow inputs remain readable, while
+  SM75 values above the validated quality cap run at 4,096 and report it.
 - Added the standalone `Reference Video Load - Star7` node with only a video
   selector, H3 long-edge limit, and explicit small-video upscale switch. It
   decodes directly to the selected 32-pixel-aligned canvas, fixes output to
   24fps, caps references at 15 seconds, trims to the H3 `17n+5` frame grid,
-  and extracts a duration-matched stereo soundtrack without depending on VHS.
+  and extracts the source stereo soundtrack up to 15 seconds without VHS.
 - Kept small-reference upscaling disabled by default because interpolation
   adds no source detail while increasing H3 reference tokens. The explicit
   switch remains available for structure/motion A/B tests.

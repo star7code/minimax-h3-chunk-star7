@@ -205,6 +205,32 @@ def test_star7_resident_weight_path_matches_formula(device=torch.device("cpu")):
     torch.testing.assert_close(actual, expected, rtol=2e-3, atol=2e-3)
 
 
+def test_patched_qkv_resident_snapshot_matches_streamed_chunks(
+    device=torch.device("cpu"),
+):
+    import comfy.ops
+
+    torch.manual_seed(0x4096)
+    operations = comfy.ops.mixed_precision_ops(compute_dtype=torch.float16)
+    linear = operations.Linear(16, 48, bias=False, device=device)
+    linear.weight = torch.nn.Parameter(
+        torch.randn(48, 16, dtype=torch.float16, device=device) * 0.02,
+        requires_grad=False,
+    )
+    delta = torch.randn_like(linear.weight) * 0.001
+    linear.weight_function = [lambda weight: weight + delta]
+    linear.bias_function = []
+    x = torch.randn(519, 16, dtype=torch.float16, device=device)
+
+    expected = torch.cat([linear(x[start:start + 256]) for start in range(0, 519, 256)])
+    resident_call, backend = chunk_nodes._resident_qkv_caller(linear, x)
+    actual = torch.cat([
+        resident_call(x[start:start + 256]) for start in range(0, 519, 256)
+    ])
+    assert backend == "dense"
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 def test_weight_only_quantized_resident_path_stays_quantized(device=torch.device("cpu")):
     import contextlib
     import comfy.ops
@@ -252,6 +278,26 @@ def test_weight_only_quantized_resident_path_stays_quantized(device=torch.device
         _fc1, _fc2, backend = chunk_nodes._resident_mlp_callers(mlp, x, stack)
         assert backend == "quantized"
     if device.type == "cuda":
+        qkv_input = torch.randn(257, 256, dtype=torch.float16, device=device)
+        resident_call, qkv_backend = chunk_nodes._resident_qkv_caller(
+            mlp.fc1, qkv_input,
+        )
+        quant_mode = chunk_nodes._linear_quantization_mode(mlp.fc1)
+        direct_weight = mlp.fc1.weight.to(dtype=qkv_input.dtype)
+        expected_qkv = torch.cat([
+            chunk_nodes._resident_linear_forward(
+                mlp.fc1, qkv_input[start:start + 128],
+                direct_weight, None, quant_mode,
+            )
+            for start in range(0, 257, 128)
+        ])
+        actual_qkv = torch.cat([
+            resident_call(qkv_input[start:start + 128])
+            for start in range(0, 257, 128)
+        ])
+        assert qkv_backend == "quantized"
+        assert torch.equal(actual_qkv, expected_qkv)
+
         chunk_nodes._CONFIG.update(
             mlp_chunk_tokens=256,
             auto_halve_on_oom=False,
@@ -816,11 +862,45 @@ def test_legacy_node_alias_is_deprecated():
     assert chunk_nodes.MiniMaxH3RoPEChunkPatch.DEPRECATED is True
 
 
-def test_new_activation_chunk_defaults_are_all_8192():
+def test_new_activation_chunk_defaults_are_architecture_safe():
     required = chunk_nodes.MiniMaxH3ActivationChunkStar7.INPUT_TYPES()["required"]
     assert required["chunk_tokens"][1]["default"] == 8192
     assert required["mlp_chunk_tokens"][1]["default"] == 8192
-    assert required["qkv_chunk_tokens"][1]["default"] == 8192
+    expected_qkv = (
+        4096
+        if torch.cuda.is_available() and torch.cuda.get_device_capability() == (7, 5)
+        else 8192
+    )
+    assert required["qkv_chunk_tokens"][1]["default"] == expected_qkv
+
+
+def test_sm75_qkv_quality_cap_is_architecture_isolated():
+    assert chunk_nodes._quality_limited_qkv_chunk(8192, (7, 5)) == (4096, True)
+    assert chunk_nodes._quality_limited_qkv_chunk(0, (7, 5)) == (4096, True)
+    assert chunk_nodes._quality_limited_qkv_chunk(2048, (7, 5)) == (2048, False)
+    for capability in ((8, 0), (8, 6), (8, 9), (12, 0), None):
+        assert chunk_nodes._quality_limited_qkv_chunk(8192, capability) == (8192, False)
+        assert chunk_nodes._quality_limited_qkv_chunk(0, capability) == (0, False)
+
+
+def test_sm75_qkv_resident_reuse_includes_explicit_4096_and_smaller():
+    original_capability = torch.cuda.get_device_capability
+    original_config = dict(chunk_nodes._CONFIG)
+    fake_cuda_tensor = SimpleNamespace(device=torch.device("cuda"))
+    try:
+        torch.cuda.get_device_capability = lambda _device=None: (7, 5)
+        for effective in (4096, 2048):
+            chunk_nodes._CONFIG["effective_qkv_chunk_tokens"] = effective
+            assert chunk_nodes._sm75_qkv_reuse_path(fake_cuda_tensor) is True
+        chunk_nodes._CONFIG["effective_qkv_chunk_tokens"] = 8192
+        assert chunk_nodes._sm75_qkv_reuse_path(fake_cuda_tensor) is False
+        torch.cuda.get_device_capability = lambda _device=None: (8, 0)
+        chunk_nodes._CONFIG["effective_qkv_chunk_tokens"] = 4096
+        assert chunk_nodes._sm75_qkv_reuse_path(fake_cuda_tensor) is False
+    finally:
+        torch.cuda.get_device_capability = original_capability
+        chunk_nodes._CONFIG.clear()
+        chunk_nodes._CONFIG.update(original_config)
 
 
 def test_reference_video_optimizer_is_registered():
@@ -867,6 +947,15 @@ def test_reference_video_frame_count_is_h3_aligned():
     assert chunk_nodes._align_h3_reference_frame_count(360) == 345
     assert chunk_nodes._align_h3_reference_frame_count(205) == 192
     assert chunk_nodes._align_h3_reference_frame_count(5) == 5
+
+
+def test_reference_audio_keeps_source_duration_instead_of_frame_grid_trim():
+    command = chunk_nodes._reference_audio_decode_command(
+        "ffmpeg", "reference.mp4", 44100,
+    )
+    assert command[command.index("-t") + 1] == "15"
+    assert command[command.index("-ar") + 1] == "44100"
+    assert "17n+5" not in " ".join(command)
 
 
 def test_comfy_kitchen_int8_attention_forward_cuda():
@@ -1098,6 +1187,7 @@ if __name__ == "__main__":
         test_auto_fp16_out_proj_uses_exact_scaling(test_device)
         test_qkv_chunk_writes_backend_dtype_without_full_cast(test_device)
         test_star7_resident_weight_path_matches_formula(test_device)
+        test_patched_qkv_resident_snapshot_matches_streamed_chunks(test_device)
         test_weight_only_quantized_resident_path_stays_quantized(test_device)
         test_fused_residual_matches_materialized_mlp(test_device)
         test_fp16_block_patch_matches_materialized_formula(test_device)
@@ -1110,7 +1200,9 @@ if __name__ == "__main__":
     test_qkv_oom_status_uses_qkv_sequence_length()
     test_qkv_zero_prefers_full_then_learns_oom_chunk()
     test_legacy_node_alias_is_deprecated()
-    test_new_activation_chunk_defaults_are_all_8192()
+    test_new_activation_chunk_defaults_are_architecture_safe()
+    test_sm75_qkv_quality_cap_is_architecture_isolated()
+    test_sm75_qkv_resident_reuse_includes_explicit_4096_and_smaller()
     test_reference_video_optimizer_is_registered()
     test_reference_video_match_area_downscales_without_upscaling()
     test_reference_video_match_area_preserves_area_and_aspect_closely()
@@ -1118,6 +1210,7 @@ if __name__ == "__main__":
     test_reference_video_long_edge_limit_preserves_orientation()
     test_reference_video_long_edge_upscale_is_explicit()
     test_reference_video_frame_count_is_h3_aligned()
+    test_reference_audio_keeps_source_duration_instead_of_frame_grid_trim()
     test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse()
     test_install_preserves_upstream_block_patch()
     test_sm75_sla_auto_installs_fp16_exact_without_external_node()

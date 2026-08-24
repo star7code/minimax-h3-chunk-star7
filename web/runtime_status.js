@@ -23,7 +23,7 @@ const REAL_WIDGET_NAMES = Object.keys(REAL_WIDGET_DEFAULTS);
 
 const TEXT = {
     en: {
-        title: "MiniMax H3 VRAM Chunk Acceleration - Star7",
+        title: "MiniMax H3 QKV Chunk & SLA - Star7",
         legacyTitle: "MiniMax H3 VRAM Chunk Acceleration (Legacy Workflow)",
         labels: {
             chunk_tokens: "RoPE chunk size",
@@ -32,29 +32,30 @@ const TEXT = {
             mlp_chunk_tokens: "MLP chunk size (main VRAM control)",
             qkv_chunk_tokens: "QKV chunk size",
             disable_dynamic_prefetch: "Preload next block (experimental feature removed)",
-            reuse_mlp_weights: "Reuse MLP weights (faster)",
+            reuse_mlp_weights: "Reuse chunked weights (faster)",
             attention_backend: "Attention method",
         },
         tooltips: {
             chunk_tokens: "0 tries full-sequence RoPE first. With automatic reduction enabled, only a RoPE VRAM error makes it retry with a smaller chunk. Usually keep 8192.",
             auto_halve_on_oom: "Retries only the failing RoPE, MLP, or QKV stage with a smaller chunk. It cannot reduce model weights, attention buffers, or other fixed allocations.",
-            verbose: "Shows actual chunk sizes, automatic reductions, and the active MLP weight mode in the console.",
+            verbose: "Shows actual chunk sizes, automatic reductions, and active QKV/MLP weight modes in the console.",
             mlp_chunk_tokens: "0 tries full-sequence MLP first. With automatic reduction enabled, an MLP VRAM error is retried with a smaller chunk. Otherwise this is the main VRAM control.",
-            qkv_chunk_tokens: "0 tries full-sequence projection first. With automatic reduction enabled, a QKV projection VRAM error is retried with a smaller chunk. This does not reduce the attention backend's fixed buffers.",
+            qkv_chunk_tokens: "On SM75, 0 or values above 4096 run at the speech-stable 4096 quality cap. SM80+ follows the requested value. A QKV projection VRAM error can still reduce only this stage further.",
             disable_dynamic_prefetch: "Legacy workflow field only. This experimental feature has been removed and is always disabled.",
-            reuse_mlp_weights: "Uses isolated MLP weight snapshots to avoid repeated preparation. Falls back safely if snapshots fail or run out of VRAM.",
+            reuse_mlp_weights: "Reuses isolated QKV/MLP weight snapshots across token chunks. Falls back safely if a snapshot runs out of VRAM.",
             attention_backend: "Strict SLA never falls back. The SM75 All-INT8 option is experimental and may reduce quality; the FP16-PV option remains recommended.",
         },
         current: (label, value) => `${label} in use: ${value} (configured)`,
         limited: (label, value, configured) => `${label} in use: ${value} (set ${configured}, limited by video size)`,
         reduced: (label, value, configured) => `${label} auto-reduced to: ${value} (set ${configured})`,
+        qualityLimited: (label, value, configured) => `${label} quality cap: ${value} (SM75 speech stability; set ${configured})`,
         full: (label) => `${label}: full sequence (no fixed chunk)`,
         reducedFromFull: (label, value) => `${label} auto-reduced from full sequence to: ${value}`,
         rope: "RoPE",
         mlp: "MLP",
     },
     zh: {
-        title: "MiniMax H3 显存分块加速 - Star7",
+        title: "MiniMax H3 QKV 分块与 SLA 加速 - Star7",
         legacyTitle: "MiniMax H3 显存分块加速（旧工作流兼容）",
         labels: {
             chunk_tokens: "RoPE 分块大小",
@@ -63,22 +64,23 @@ const TEXT = {
             mlp_chunk_tokens: "MLP 分块大小（主要显存调节）",
             qkv_chunk_tokens: "QKV 分块大小",
             disable_dynamic_prefetch: "提前加载下一层（实验功能已移除）",
-            reuse_mlp_weights: "复用 MLP 权重（提速）",
+            reuse_mlp_weights: "复用分块权重（提速）",
             attention_backend: "注意力计算方式",
         },
         tooltips: {
             chunk_tokens: "设为 0 会先尝试整段 RoPE；开启自动降档后，只有 RoPE 显存不足才缩小重试。通常保持 8192。",
             auto_halve_on_oom: "只缩小发生显存不足的 RoPE、MLP 或 QKV 阶段并重试；模型权重、注意力固定缓冲等显存不会被误降。",
-            verbose: "在控制台显示实际分块、是否自动降档以及 MLP 权重加速方式。",
+            verbose: "在控制台显示实际分块、是否自动降档以及 QKV/MLP 权重加速方式。",
             mlp_chunk_tokens: "设为 0 会先尝试整段 MLP；开启自动降档后，只有 MLP 显存不足才缩小重试。它仍是主要显存调节项。",
-            qkv_chunk_tokens: "设为 0 会先尝试整段 QKV 投影；开启自动降档后，只有 QKV 投影显存不足才缩小重试，不会改变注意力后端的固定缓冲。",
+            qkv_chunk_tokens: "SM75 上，0 或高于 4096 的设定会按语音稳定值 4096 运行；SM80+ 按设定值运行。QKV 投影显存不足时仍只会继续降低这一阶段。",
             disable_dynamic_prefetch: "仅为兼容旧工作流保留，不再参与计算，功能始终关闭。",
-            reuse_mlp_weights: "使用独立 MLP 权重快照减少重复准备；快照失败或显存不足时会自动切换安全模式。",
+            reuse_mlp_weights: "在 token 块之间复用独立 QKV/MLP 权重快照；快照显存不足时自动切换安全流式路径。",
             attention_backend: "严格 SLA 绝不回退。SM75 All-INT8 是可能降低质量的实验模式，仍推荐使用 FP16-PV 模式。",
         },
         current: (label, value) => `${label} 实际使用：${value}（设定值）`,
         limited: (label, value, configured) => `${label} 实际使用：${value}（设定 ${configured}，视频规模只需要这么多）`,
         reduced: (label, value, configured) => `${label} 已自动降为：${value}（原设定 ${configured}）`,
+        qualityLimited: (label, value, configured) => `${label} 质量保护：${value}（SM75 语音稳定；原设定 ${configured}）`,
         full: (label) => `${label}：整段计算（未固定分块）`,
         reducedFromFull: (label, value) => `${label} 已从整段自动降为：${value}`,
         rope: "RoPE",
@@ -174,6 +176,9 @@ function localizeReferenceLoadNode(node) {
 
 function formatValue(label, effective, configured, reason = "active") {
     const text = strings();
+    if (label === "QKV" && reason === "qkv_quality_cap") {
+        return text.qualityLimited(label, effective, configured);
+    }
     if (configured === 0) {
         const stage = label.toLowerCase();
         if (reason === `${stage}_oom` && effective > 0) {

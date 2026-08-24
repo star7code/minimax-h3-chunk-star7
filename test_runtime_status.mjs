@@ -93,7 +93,7 @@ const nodeData = {
 await extension.beforeRegisterNodeDef(MockNode, nodeData);
 extension.setup();
 
-assert.equal(nodeData.display_name, "MiniMax H3 显存分块加速 - Star7");
+assert.equal(nodeData.display_name, "MiniMax H3 QKV 分块与 SLA 加速 - Star7");
 assert.equal(
     nodeData.input.required.mlp_chunk_tokens[1].display_name,
     "MLP 分块大小（主要显存调节）",
@@ -125,7 +125,7 @@ assert.equal(
     node.widgets.find((widget) => widget.name === "disable_dynamic_prefetch")?.value,
     "实验功能已移除",
 );
-assert.equal(node.title, "MiniMax H3 显存分块加速 - Star7");
+assert.equal(node.title, "MiniMax H3 QKV 分块与 SLA 加速 - Star7");
 assert.equal(
     node.widgets.find((widget) => widget.name === "mlp_chunk_tokens")?.label,
     "MLP 分块大小（主要显存调节）",
@@ -268,6 +268,25 @@ assert.match(
     ).name,
     /QKV 已从整段自动降为：51773/,
 );
+corrupted.widgets.find((widget) => widget.name === "qkv_chunk_tokens").value = 8192;
+statusHandler({
+    detail: {
+        node_id: "299",
+        configured_rope: 0,
+        effective_rope: 103546,
+        configured_mlp: 4096,
+        effective_mlp: 4096,
+        configured_qkv: 8192,
+        effective_qkv: 4096,
+        reason: "qkv_quality_cap",
+    },
+});
+assert.match(
+    corrupted.widgets.find(
+        (widget) => widget.__star7StatusName === "star7_qkv_runtime_status",
+    ).name,
+    /QKV 质量保护：4096（SM75 语音稳定；原设定 8192）/,
+);
 corrupted.widgets.find((widget) => widget.name === "chunk_tokens").value = 8192;
 corrupted.widgets.find((widget) => widget.name === "qkv_chunk_tokens").value = 4096;
 statusHandler({
@@ -284,7 +303,7 @@ statusHandler({
 
 locale = "en-US";
 localeChangeHandler();
-assert.equal(corrupted.title, "MiniMax H3 VRAM Chunk Acceleration - Star7");
+assert.equal(corrupted.title, "MiniMax H3 QKV Chunk & SLA - Star7");
 assert.equal(customTitleNode.title, "我的自定义标题");
 assert.equal(
     corrupted.widgets.find((widget) => widget.name === "mlp_chunk_tokens")?.label,

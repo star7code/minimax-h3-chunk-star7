@@ -13,7 +13,8 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.9.1"
+NODE_VERSION = "2.9.2"
+SM75_QKV_QUALITY_CHUNK = 4096
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -42,6 +43,38 @@ _CONFIG = {
     "reuse_mlp_weights": True,
     "node_id": None,
 }
+
+
+def _current_cuda_capability():
+    if not torch.cuda.is_available():
+        return None
+    try:
+        return torch.cuda.get_device_capability()
+    except Exception:
+        return None
+
+
+def _default_qkv_chunk_tokens() -> int:
+    return SM75_QKV_QUALITY_CHUNK if _current_cuda_capability() == (7, 5) else 8192
+
+
+def _quality_limited_qkv_chunk(requested: int, capability) -> tuple[int, bool]:
+    requested = int(requested)
+    if capability != (7, 5) or (requested != 0 and requested <= SM75_QKV_QUALITY_CHUNK):
+        return requested, False
+    return SM75_QKV_QUALITY_CHUNK, True
+
+
+def _sm75_qkv_reuse_path(x: torch.Tensor) -> bool:
+    """Use the validated resident-weight path for any SM75 QKV tile <= 4096."""
+    if x.device.type != "cuda":
+        return False
+    try:
+        capability = torch.cuda.get_device_capability(x.device)
+    except Exception:
+        return False
+    effective = int(_CONFIG["effective_qkv_chunk_tokens"])
+    return capability == (7, 5) and 0 < effective <= SM75_QKV_QUALITY_CHUNK
 
 
 def _is_cuda_oom(exc: BaseException) -> bool:
@@ -185,7 +218,9 @@ def _configure_runtime(
     _send_runtime_status("configured")
 
 
-def _set_sequence_status(kind: str, sequence_length: int) -> None:
+def _set_sequence_status(
+    kind: str, sequence_length: int, reason_override: Optional[str] = None,
+) -> None:
     """Expose the cap used by this forward without learning it as an OOM cap."""
     sequence_length = max(1, int(sequence_length))
     if kind == "RoPE":
@@ -213,8 +248,41 @@ def _set_sequence_status(kind: str, sequence_length: int) -> None:
     _CONFIG[sequence_key] = sequence_length
     if changed:
         _send_runtime_status(
-            "sequence_limit" if learned > 0 and actual < learned else "active"
+            reason_override
+            or ("sequence_limit" if learned > 0 and actual < learned else "active")
         )
+
+
+def _limit_sm75_qkv_chunk_for_quality(x: torch.Tensor) -> bool:
+    """Keep Turing QKV projection on the validated speech-stable tile size.
+
+    A same-seed four-step H3 run changes decoded PCM between 4,096 and 8,192
+    even though isolated INT8 projection and RoPE tests are bitwise chunk
+    invariant. Keep the validated 4,096 upper bound on Turing; smaller
+    OOM-learned values remain valid, while SM80+ keeps the requested value.
+    """
+    if x.device.type != "cuda":
+        return False
+    # Direct SM75 INT8 projection and RoPE tests are bitwise chunk invariant,
+    # including the irregular tail. The complete H3 workflow is not: changing
+    # this allocation/call schedule changes downstream long-sequence results,
+    # and four diffusion steps amplify that difference in reference speech.
+    # Apply the validated cap regardless of how ComfyUI materialized LoRA.
+    try:
+        capability = torch.cuda.get_device_capability(x.device)
+    except Exception:
+        return False
+    configured = int(_CONFIG["qkv_chunk_tokens"])
+    _configured_limit, applies = _quality_limited_qkv_chunk(configured, capability)
+    if not applies:
+        return False
+    current = int(_CONFIG["effective_qkv_chunk_tokens"])
+    if current == 0 or current > SM75_QKV_QUALITY_CHUNK:
+        _CONFIG["effective_qkv_chunk_tokens"] = SM75_QKV_QUALITY_CHUNK
+        current = SM75_QKV_QUALITY_CHUNK
+    # If OOM fallback already learned a smaller value, report that as a
+    # reduction rather than mislabelling it as the 4096 quality cap.
+    return current == SM75_QKV_QUALITY_CHUNK
 
 
 def _slice_freqs_for_tokens(freqs_cis: torch.Tensor, start: int, end: int, seq_len: int) -> torch.Tensor:
@@ -361,7 +429,7 @@ def _chunked_rms_rope_split_half_inplace(
 
 
 def _linear_can_reuse_weights(linear) -> bool:
-    """Whether a ComfyUI Linear exposes the primitives needed for one cast per MLP."""
+    """Whether a ComfyUI Linear supports one cast per chunked operation."""
     return all(
         hasattr(linear, name)
         for name in ("weight", "weight_function", "bias_function", "_forward")
@@ -410,6 +478,42 @@ def _resident_linear_forward(linear, x, weight, bias, quant_mode):
         x = comfy.ops.QuantizedTensor.from_float(x, linear.layout_type, scale=scale)
 
     return linear._forward(x, weight, bias)
+
+
+def _resident_qkv_caller(linear, x: torch.Tensor):
+    """Prepare one private QKV weight snapshot for all token chunks."""
+    import comfy.ops
+
+    if not _linear_can_reuse_weights(linear):
+        raise RuntimeError("QKV Linear implementation does not support resident weight reuse")
+    quant_mode = _linear_quantization_mode(linear)
+    stage_dtype = linear.weight.dtype if quant_mode == "weight-only" else x.dtype
+    with comfy.ops.CastBiasWeightContext(
+        linear,
+        input=None,
+        dtype=stage_dtype,
+        device=x.device,
+        bias_dtype=x.dtype,
+        offloadable=True,
+        compute_dtype=x.dtype,
+        want_requant=quant_mode is not None,
+    ) as (weight, bias):
+        private_weight = weight.detach().clone() if weight is not None else None
+        private_bias = bias.detach().clone() if bias is not None else None
+    if quant_mode == "weight-only":
+        private_weight = private_weight.to(dtype=x.dtype)
+
+    def call(value):
+        return _resident_linear_forward(
+            linear, value, private_weight, private_bias, quant_mode
+        )
+
+    prepared_backend = (
+        "quantized"
+        if isinstance(private_weight, comfy.ops.QuantizedTensor)
+        else "dense"
+    )
+    return call, prepared_backend
 
 
 def _resident_mlp_callers(self, x: torch.Tensor, stack: contextlib.ExitStack):
@@ -952,6 +1056,7 @@ def _prepare_h3_qkv_chunked(
     """
     sequence = int(x.shape[0])
     heads, head_dim = self.heads, self.head_dim
+    quality_limited = _limit_sm75_qkv_chunk_for_quality(x)
     configured_chunk = int(_CONFIG["effective_qkv_chunk_tokens"])
     chunk = sequence if configured_chunk == 0 else min(
         sequence, max(256, configured_chunk)
@@ -973,7 +1078,30 @@ def _prepare_h3_qkv_chunked(
     total_profile_start = time.perf_counter() if profile_total else None
     first_projection_ms = None
     first_rope_ms = None
-    _set_sequence_status("QKV", sequence)
+    qkv_call = self.qkv_proj
+    qkv_weight_mode = "streamed"
+    if (
+        _sm75_qkv_reuse_path(x)
+        and _CONFIG["reuse_mlp_weights"]
+        and _linear_can_reuse_weights(self.qkv_proj)
+    ):
+        try:
+            qkv_call, prepared_backend = _resident_qkv_caller(self.qkv_proj, x)
+            qkv_weight_mode = f"resident-{prepared_backend}"
+        except Exception as exc:
+            if not _is_cuda_oom(exc):
+                raise
+            exc.__traceback__ = None
+            _clear_cuda_after_oom(x.device)
+            qkv_weight_mode = "streamed-fallback"
+            _LOG.warning(
+                "[Star7 H3 Chunk] Holding the patched QKV weight exceeded VRAM; "
+                "using speech-stable per-chunk streaming"
+            )
+    _set_sequence_status(
+        "QKV", sequence,
+        reason_override="qkv_quality_cap" if quality_limited else None,
+    )
     # These complete Q/K/V tensors are required by CK and SLA regardless of
     # projection chunk size. Retry their allocation once after releasing only
     # unused allocator cache, but do not pretend that lowering a local chunk can
@@ -1019,7 +1147,7 @@ def _prepare_h3_qkv_chunked(
         try:
             profile_qkv = bool(profile_total and start == 0)
             qkv_profile_start = time.perf_counter() if profile_qkv else None
-            qkv_chunk = self.qkv_proj(x[start:end])
+            qkv_chunk = qkv_call(x[start:end])
             if profile_qkv:
                 if x.device.type == "cuda":
                     torch.cuda.synchronize(x.device)
@@ -1083,10 +1211,10 @@ def _prepare_h3_qkv_chunked(
             reserved = torch.cuda.memory_reserved(x.device) / 1024**3
         _LOG.info(
             "[Star7 H3 Chunk] First-block QKV | S=%d | chunk=%d x %d | "
-            "quantized=%s | %s->%s | first projection=%.1fms | "
+            "quantized=%s | weights=%s | %s->%s | first projection=%.1fms | "
             "first norm+RoPE=%.1fms | total=%.1fms | VRAM=%.2f/%.2fGiB",
             sequence, chunk, (sequence + chunk - 1) // chunk,
-            qkv_quantized, x.dtype, output_dtype,
+            qkv_quantized, qkv_weight_mode, x.dtype, output_dtype,
             first_projection_ms or 0.0, first_rope_ms or 0.0,
             (time.perf_counter() - total_profile_start) * 1000.0,
             allocated, reserved,
@@ -1452,7 +1580,7 @@ def install_model_patch(
         )
         _LOG.info(
             "[Star7 H3 Chunk] Ready v%s | %s | attention=%s | precision=%s | "
-            "chunks(RoPE/MLP/QKV)=%d/%d/%d | MLP-weight-reuse=%s | "
+            "chunks(RoPE/MLP/QKV)=%d/%d/%d | chunk-weight-reuse=%s | "
             "block-cache=%s | finite-guard=model-output%s",
             NODE_VERSION, architecture, selected_attention, precision,
             int(chunk_tokens), int(mlp_chunk_tokens), int(qkv_chunk_tokens),
@@ -1467,6 +1595,7 @@ class MiniMaxH3ActivationChunkStar7:
 
     @classmethod
     def INPUT_TYPES(cls):
+        qkv_default = _default_qkv_chunk_tokens()
         return {
             "required": {
                 "model": ("MODEL",),
@@ -1515,18 +1644,18 @@ class MiniMaxH3ActivationChunkStar7:
                 "qkv_chunk_tokens": (
                     "INT",
                     {
-                        "default": 8192,
+                        "default": qkv_default,
                         "min": 0,
                         "max": 65536,
                         "step": 256,
-                        "tooltip": "H3 QKV 投影临时显存分块。设为 0 会优先整段投影；若自动降档开启且整段 OOM，只降低 QKV 后重试。数值越小只会缩小投影临时张量，不会消除注意力所需的完整 Q/K/V。SLA 会直接保存 FP16 Q/K/V。默认 8192。",
+                        "tooltip": "H3 QKV 投影临时显存分块。SM75 为保护参考语音稳定性，0 或高于 4096 的设定会按 4096 运行；SM80+ 不设此质量上限。若自动降档开启，QKV OOM 时只降低 QKV 后重试。",
                     },
                 ),
                 "reuse_mlp_weights": (
                     "BOOLEAN",
                     {
                         "default": True,
-                        "tooltip": "Automatic MLP weight strategy: reuse only when weights are static and unpatched; otherwise switch to streamed-safe mode.",
+                        "tooltip": "Reuse prepared QKV/MLP weight snapshots across token chunks when safe. Falls back to streamed preparation on VRAM pressure.",
                     },
                 ),
                 "attention_backend": (
@@ -1561,8 +1690,8 @@ class MiniMaxH3ActivationChunkStar7:
     FUNCTION = "patch"
     CATEGORY = "Star7/MiniMax H3"
     DESCRIPTION = (
-        "Low-VRAM MiniMax H3 patch. Chunks fused split-half RoPE and the large MLP "
-        "expansion activation, preserves INT8/ConvRot weights, and keeps the upstream "
+        "Low-VRAM MiniMax H3 patch. Chunks QKV projection, fused split-half RoPE, and "
+        "the large MLP expansion activation; preserves INT8/ConvRot weights and the upstream "
         "DiT block path for FP16/BF16, Sage, LoRA, and third-party compatibility. "
         "Can safely retry without AIMDO prefetch. "
         "Compatible with FP16 Exact Fix - Star7. The default Comfy Kitchen INT8 "
@@ -1704,6 +1833,24 @@ def _video_stream_info(video_path: str) -> tuple[int, int, bool]:
         return source_width, source_height, bool(container.streams.audio)
 
 
+def _reference_audio_decode_command(
+    ffmpeg: str, video_path: str, audio_rate: int = 44100,
+) -> list[str]:
+    """Keep source audio up to 15 seconds instead of H3 frame-grid duration."""
+    return [
+        ffmpeg,
+        "-v", "error",
+        "-i", video_path,
+        "-t", "15",
+        "-vn",
+        "-ac", "2",
+        "-ar", str(audio_rate),
+        "-f", "f32le",
+        "-acodec", "pcm_f32le",
+        "pipe:1",
+    ]
+
+
 class MiniMaxH3ReferenceVideoLoadStar7:
     """Minimal 24fps H3 reference loader with a target-aware long-edge limit."""
 
@@ -1802,19 +1949,9 @@ class MiniMaxH3ReferenceVideoLoadStar7:
         audio_status = "none"
         if has_audio:
             audio_rate = 44100
-            duration = aligned_count / 24.0
-            audio_command = [
-                ffmpeg,
-                "-v", "error",
-                "-i", video_path,
-                "-t", f"{duration:.9f}",
-                "-vn",
-                "-ac", "2",
-                "-ar", str(audio_rate),
-                "-f", "f32le",
-                "-acodec", "pcm_f32le",
-                "pipe:1",
-            ]
+            audio_command = _reference_audio_decode_command(
+                ffmpeg, video_path, audio_rate,
+            )
             audio_result = subprocess.run(
                 audio_command, capture_output=True, check=False, **_hidden_subprocess_kwargs(),
             )
@@ -1828,7 +1965,7 @@ class MiniMaxH3ReferenceVideoLoadStar7:
             if complete_values:
                 waveform = sample_values[:complete_values].reshape(-1, 2).transpose(0, 1)
                 audio = {"waveform": waveform.unsqueeze(0), "sample_rate": audio_rate}
-                audio_status = "stereo-44100Hz"
+                audio_status = "stereo-44100Hz-source-up-to-15s"
 
         scale_direction = "same"
         if width * height < source_width * source_height:
@@ -1948,7 +2085,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "MiniMaxH3ActivationChunkStar7": "MiniMax H3 Activation Chunk (RoPE + MLP) - Star7",
+    "MiniMaxH3ActivationChunkStar7": "MiniMax H3 QKV Chunk & SLA - Star7",
     "MiniMaxH3ReferenceVideoLoadStar7": "MiniMax H3 Reference Video Load - Star7",
     "MiniMaxH3ReferenceVideoOptimizeStar7": "MiniMax H3 Reference Video Optimize - Star7",
     "MiniMaxH3RoPEChunkPatch": "MiniMax H3 RoPE Chunk Patch (Legacy) - Star7",
