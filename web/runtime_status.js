@@ -10,6 +10,7 @@ const REAL_WIDGET_DEFAULTS = {
     auto_halve_on_oom: true,
     verbose: true,
     mlp_chunk_tokens: 4096,
+    qkv_chunk_tokens: 4096,
     disable_dynamic_prefetch: "实验功能已移除",
     reuse_mlp_weights: true,
     attention_backend: "comfy_kitchen_int8",
@@ -25,15 +26,17 @@ const TEXT = {
             auto_halve_on_oom: "Auto-reduce after VRAM error",
             verbose: "Show runtime details",
             mlp_chunk_tokens: "MLP chunk size (main VRAM control)",
+            qkv_chunk_tokens: "QKV chunk size",
             disable_dynamic_prefetch: "Preload next block (experimental feature removed)",
             reuse_mlp_weights: "Reuse MLP weights (faster)",
             attention_backend: "Attention method",
         },
         tooltips: {
-            chunk_tokens: "Usually keep 8192. Lower it only when the log specifically reports a RoPE VRAM error.",
+            chunk_tokens: "0 bypasses the Star7 RoPE patch. Otherwise usually keep 8192; lower it only when the log reports a RoPE VRAM error.",
             auto_halve_on_oom: "Automatically halves the failing RoPE or MLP chunk and retries instead of stopping the task.",
             verbose: "Shows actual chunk sizes, automatic reductions, and the active MLP weight mode in the console.",
-            mlp_chunk_tokens: "The main VRAM control. Smaller values save more VRAM but may be slower. Lower this before RoPE.",
+            mlp_chunk_tokens: "0 bypasses the Star7 MLP patch. Otherwise this is the main VRAM control; smaller values save more VRAM but may be slower.",
+            qkv_chunk_tokens: "0 disables projection chunking only and keeps the selected attention backend. Smaller values reduce only temporary projection memory; full attention inputs still remain. SLA stores Q/K/V directly in FP16.",
             disable_dynamic_prefetch: "Legacy workflow field only. This experimental feature has been removed and is always disabled.",
             reuse_mlp_weights: "Uses isolated MLP weight snapshots to avoid repeated preparation. Falls back safely if snapshots fail or run out of VRAM.",
             attention_backend: "Strict SLA never falls back. The SM75 All-INT8 option is experimental and may reduce quality; the FP16-PV option remains recommended.",
@@ -52,15 +55,17 @@ const TEXT = {
             auto_halve_on_oom: "显存不足时自动降档",
             verbose: "显示运行详情",
             mlp_chunk_tokens: "MLP 分块大小（主要显存调节）",
+            qkv_chunk_tokens: "QKV 分块大小",
             disable_dynamic_prefetch: "提前加载下一层（实验功能已移除）",
             reuse_mlp_weights: "复用 MLP 权重（提速）",
             attention_backend: "注意力计算方式",
         },
         tooltips: {
-            chunk_tokens: "通常保持 8192。它对显存影响相对较小，只有日志明确提示 RoPE 显存不足时才降低。",
+            chunk_tokens: "设为 0 完全绕过 Star7 RoPE 补丁；否则通常保持 8192，只有日志明确提示 RoPE 显存不足时才降低。",
             auto_halve_on_oom: "RoPE 或 MLP 分块显存不足时自动减半重试，避免任务直接停止。",
             verbose: "在控制台显示实际分块、是否自动降档以及 MLP 权重加速方式。",
-            mlp_chunk_tokens: "主要显存调节项。数值越小越省显存，但可能更慢；显存不足时优先降低它。",
+            mlp_chunk_tokens: "设为 0 完全绕过 Star7 MLP 补丁；否则它是主要显存调节项，数值越小越省显存但可能更慢。",
+            qkv_chunk_tokens: "设为 0 只关闭投影分块，不改变所选注意力。较小数值只减少投影临时显存，注意力仍需保留完整输入；SLA 会直接保存 FP16 Q/K/V。",
             disable_dynamic_prefetch: "仅为兼容旧工作流保留，不再参与计算，功能始终关闭。",
             reuse_mlp_weights: "使用独立 MLP 权重快照减少重复准备；快照失败或显存不足时会自动切换安全模式。",
             attention_backend: "严格 SLA 绝不回退。SM75 All-INT8 是可能降低质量的实验模式，仍推荐使用 FP16-PV 模式。",
@@ -86,6 +91,14 @@ function strings() {
 
 function formatValue(label, effective, configured, reason = "active") {
     const text = strings();
+    if (configured === 0) {
+        if (label === "QKV") {
+            return language() === "zh"
+                ? "QKV：整段投影（未分块）"
+                : "QKV: full projection (not chunked)";
+        }
+        return language() === "zh" ? `${label}：已绕过（0）` : `${label}: bypassed (0)`;
+    }
     if (effective === configured) {
         return text.current(label, effective);
     }
@@ -130,6 +143,7 @@ function removeStatusWidgets(node) {
         "star7_runtime_status",
         "star7_rope_runtime_status",
         "star7_mlp_runtime_status",
+        "star7_qkv_runtime_status",
         "RoPE 当前使用",
         "MLP 当前使用",
     ]);
@@ -173,9 +187,11 @@ function normalizeConfiguredInputs(node) {
     for (const [name, fallback] of [
         ["chunk_tokens", 8192],
         ["mlp_chunk_tokens", 4096],
+        ["qkv_chunk_tokens", 4096],
     ]) {
         const widget = node.widgets?.find((item) => item.name === name);
-        if (!widget || Number.isFinite(Number(widget.value)) && Number(widget.value) >= 256) {
+        const numeric = Number(widget?.value);
+        if (!widget || (Number.isInteger(numeric) && (numeric === 0 || numeric >= 256))) {
             continue;
         }
         widget.value = fallback;
@@ -184,8 +200,9 @@ function normalizeConfiguredInputs(node) {
 }
 
 function validSavedValue(name, value) {
-    if (name === "chunk_tokens" || name === "mlp_chunk_tokens") {
-        return Number.isInteger(Number(value)) && Number(value) >= 256;
+    if (name === "chunk_tokens" || name === "mlp_chunk_tokens" || name === "qkv_chunk_tokens") {
+        const numeric = Number(value);
+        return Number.isInteger(numeric) && (numeric === 0 || numeric >= 256);
     }
     if (name === "attention_backend") {
         return value === "existing"
@@ -248,6 +265,8 @@ function reorderDisplayWidgets(node) {
     const displayOrder = [
         "mlp_chunk_tokens",
         "star7_mlp_runtime_status",
+        "qkv_chunk_tokens",
+        "star7_qkv_runtime_status",
         "chunk_tokens",
         "star7_rope_runtime_status",
         "auto_halve_on_oom",
@@ -290,21 +309,27 @@ function ensureStatusWidgets(node) {
     removeStatusWidgets(node);
     normalizeConfiguredInputs(node);
     const configuredRope = Number(
-        node.widgets?.find((item) => item.name === "chunk_tokens")?.value ?? 4096,
+        node.widgets?.find((item) => item.name === "chunk_tokens")?.value ?? 8192,
     );
     const configuredMlp = Number(
         node.widgets?.find((item) => item.name === "mlp_chunk_tokens")?.value ?? 4096,
+    );
+    const configuredQkv = Number(
+        node.widgets?.find((item) => item.name === "qkv_chunk_tokens")?.value ?? 4096,
     );
     localizeNode(node);
     const text = strings();
     const runtime = node.__star7RuntimeDetail;
     const runtimeMatchesInputs = runtime
         && Number(runtime.configured_rope) === configuredRope
-        && Number(runtime.configured_mlp) === configuredMlp;
+        && Number(runtime.configured_mlp) === configuredMlp
+        && Number(runtime.configured_qkv) === configuredQkv;
     const effectiveRope = runtimeMatchesInputs
         ? Number(runtime.effective_rope) : configuredRope;
     const effectiveMlp = runtimeMatchesInputs
         ? Number(runtime.effective_mlp) : configuredMlp;
+    const effectiveQkv = runtimeMatchesInputs
+        ? Number(runtime.effective_qkv) : configuredQkv;
     const reason = runtimeMatchesInputs ? runtime.reason : "active";
     const rope = makeStatusWidget(
         node,
@@ -316,10 +341,16 @@ function ensureStatusWidgets(node) {
         "star7_mlp_runtime_status",
         formatValue(text.mlp, effectiveMlp, configuredMlp, reason),
     );
+    const qkv = makeStatusWidget(
+        node,
+        "star7_qkv_runtime_status",
+        formatValue("QKV", effectiveQkv, configuredQkv, reason),
+    );
     moveAfter(node, rope, "chunk_tokens");
     moveAfter(node, mlp, "mlp_chunk_tokens");
+    moveAfter(node, qkv, "qkv_chunk_tokens");
     reorderDisplayWidgets(node);
-    return { rope, mlp };
+    return { rope, mlp, qkv };
 }
 
 api.addEventListener("star7-h3-chunk-status", ({ detail }) => {

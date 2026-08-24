@@ -11,6 +11,7 @@ is a development tool, not imported by the custom node at runtime.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import statistics
 import sys
@@ -136,11 +137,22 @@ def main() -> None:
     parser.add_argument("--heads", type=int, default=56)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--sparsity", type=float, default=0.85)
+    parser.add_argument(
+        "--sm75-library", type=Path,
+        help="Development-only SM75 DLL/.so override for A/B kernel benchmarks.",
+    )
     args = parser.parse_args()
 
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
         raise SystemExit("this benchmark requires an SM75 CUDA GPU")
     backend = _load_backend()
+    if args.sm75_library is not None:
+        library_path = args.sm75_library.resolve()
+        digest = hashlib.sha256(library_path.read_bytes()).hexdigest()
+        native = backend._load_sm75_backend()
+        native._LIBRARY = None
+        native._LOAD_ERROR = None
+        native._library_path = lambda: (library_path, {"sha256": digest})
     print(
         f"gpu={torch.cuda.get_device_name()} torch={torch.__version__} "
         f"cuda={torch.version.cuda} sparsity={args.sparsity:.3f}"

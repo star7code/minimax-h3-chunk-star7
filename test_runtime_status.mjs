@@ -50,6 +50,7 @@ class MockNode {
             { name: "auto_halve_on_oom", value: true },
             { name: "verbose", value: true },
             { name: "mlp_chunk_tokens", value: 4096 },
+            { name: "qkv_chunk_tokens", value: 4096 },
             { name: "disable_dynamic_prefetch", value: true },
             { name: "reuse_mlp_weights", value: true },
             { name: "attention_backend", value: "existing" },
@@ -82,6 +83,7 @@ const nodeData = {
             auto_halve_on_oom: "BOOLEAN",
             verbose: "BOOLEAN",
             mlp_chunk_tokens: "INT",
+            qkv_chunk_tokens: "INT",
             disable_dynamic_prefetch: "BOOLEAN",
             reuse_mlp_weights: "BOOLEAN",
             attention_backend: ["existing", "comfy_kitchen_int8"],
@@ -107,6 +109,7 @@ node.configure({
         8192,
         true,
         true,
+        4096,
         4096,
         true,
         true,
@@ -135,6 +138,7 @@ assert.deepEqual(
     node.widgets.filter((widget) => !widget.__star7StatusName).map((widget) => widget.name),
     [
         "mlp_chunk_tokens",
+        "qkv_chunk_tokens",
         "chunk_tokens",
         "auto_halve_on_oom",
         "verbose",
@@ -145,7 +149,7 @@ assert.deepEqual(
 );
 assert.equal(
     node.widgets.filter((widget) => widget.__star7StatusName).length,
-    2,
+    3,
 );
 assert.match(
     node.widgets.find((widget) => widget.__star7StatusName === "star7_rope_runtime_status").name,
@@ -189,6 +193,7 @@ assert.deepEqual(restored, {
     auto_halve_on_oom: true,
     verbose: true,
     mlp_chunk_tokens: 4096,
+    qkv_chunk_tokens: 4096,
     disable_dynamic_prefetch: "实验功能已移除",
     reuse_mlp_weights: true,
     attention_backend: "comfy_kitchen_int8",
@@ -198,7 +203,7 @@ const serialized = {};
 corrupted.onSerialize(serialized);
 assert.equal(
     JSON.stringify(serialized.widgets_values),
-    JSON.stringify([8192, true, true, 4096, "实验功能已移除", true, "comfy_kitchen_int8"]),
+    JSON.stringify([8192, true, true, 4096, 4096, "实验功能已移除", true, "comfy_kitchen_int8"]),
 );
 for (const [name, value] of Object.entries(restored)) {
     assert.equal(serialized.widgets_values_named[name], value);
@@ -220,6 +225,8 @@ statusHandler({
         effective_rope: 4096,
         configured_mlp: 4096,
         effective_mlp: 2048,
+        configured_qkv: 4096,
+        effective_qkv: 4096,
     },
 });
 assert.match(
@@ -260,6 +267,8 @@ statusHandler({
         effective_rope: 2048,
         configured_mlp: 4096,
         effective_mlp: 2048,
+        configured_qkv: 4096,
+        effective_qkv: 4096,
         reason: "sequence_limit",
     },
 });

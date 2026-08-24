@@ -79,6 +79,47 @@ def test_star7_fp16_mlp_chunk_matches_full_formula(device=torch.device("cpu")):
     torch.testing.assert_close(actual, expected, rtol=2e-3, atol=2e-3)
 
 
+def test_qkv_chunk_writes_backend_dtype_without_full_cast(device=torch.device("cpu")):
+    from comfy.ldm.minimax import model as h3_model
+    import comfy.model_management as mm
+    import comfy.quant_ops
+
+    torch.manual_seed(7891)
+    attention = h3_model.Attention(
+        hidden=16,
+        heads=2,
+        head_dim=8,
+        eps=1e-6,
+        operations=torch.nn,
+    ).to(device=device, dtype=torch.float32)
+    x = torch.randn(519, 16, device=device, dtype=torch.float32)
+    qkv = attention.qkv_proj(x)
+    q, k, v = qkv.split(16, dim=-1)
+    expected_q = attention.q_norm(q.view(519, 2, 8)).permute(1, 0, 2).unsqueeze(0).half()
+    expected_k = attention.k_norm(k.view(519, 2, 8)).permute(1, 0, 2).unsqueeze(0).half()
+    expected_v = v.view(519, 2, 8).permute(1, 0, 2).unsqueeze(0).half()
+
+    original_config = chunk_nodes._CONFIG.copy()
+    try:
+        chunk_nodes._CONFIG.update(
+            qkv_chunk_tokens=256,
+            effective_qkv_chunk_tokens=256,
+            status_effective_qkv_chunk_tokens=256,
+            auto_halve_on_oom=False,
+            verbose=False,
+        )
+        actual_q, actual_k, actual_v = chunk_nodes._prepare_h3_qkv_chunked(
+            attention, x, None, mm, comfy.quant_ops, output_dtype=torch.float16
+        )
+        assert actual_q.dtype == actual_k.dtype == actual_v.dtype == torch.float16
+        torch.testing.assert_close(actual_q, expected_q, rtol=1e-3, atol=5e-7)
+        torch.testing.assert_close(actual_k, expected_k, rtol=1e-3, atol=5e-7)
+        torch.testing.assert_close(actual_v, expected_v, rtol=1e-3, atol=5e-7)
+    finally:
+        chunk_nodes._CONFIG.clear()
+        chunk_nodes._CONFIG.update(original_config)
+
+
 def test_star7_resident_weight_path_matches_formula(device=torch.device("cpu")):
     import comfy.ops
 
@@ -441,6 +482,8 @@ def test_mlp_oom_value_is_reused_for_later_blocks():
             "effective_rope": original_config["status_effective_chunk_tokens"],
             "configured_mlp": 1024,
             "effective_mlp": 512,
+            "configured_qkv": original_config["qkv_chunk_tokens"],
+            "effective_qkv": original_config["status_effective_qkv_chunk_tokens"],
             "reason": "test",
         }
     finally:
@@ -453,13 +496,17 @@ def test_manual_settings_reset_learned_runtime_values():
     try:
         chunk_nodes._CONFIG["effective_chunk_tokens"] = 2048
         chunk_nodes._CONFIG["effective_mlp_chunk_tokens"] = 1024
+        chunk_nodes._CONFIG["effective_qkv_chunk_tokens"] = 512
         chunk_nodes._configure_runtime(
-            3072, 1536, True, False, True, node_id=None
+            3072, 1536, True, False, True, node_id=None,
+            qkv_chunk_tokens=2048,
         )
         assert chunk_nodes._CONFIG["chunk_tokens"] == 3072
         assert chunk_nodes._CONFIG["effective_chunk_tokens"] == 3072
         assert chunk_nodes._CONFIG["mlp_chunk_tokens"] == 1536
         assert chunk_nodes._CONFIG["effective_mlp_chunk_tokens"] == 1536
+        assert chunk_nodes._CONFIG["qkv_chunk_tokens"] == 2048
+        assert chunk_nodes._CONFIG["effective_qkv_chunk_tokens"] == 2048
     finally:
         chunk_nodes._CONFIG.clear()
         chunk_nodes._CONFIG.update(original_config)
@@ -602,6 +649,7 @@ if __name__ == "__main__":
         test_rope_matches_eager_partial_rotary(test_device)
         test_mlp_chunk_matches_full_forward(test_device)
         test_star7_fp16_mlp_chunk_matches_full_formula(test_device)
+        test_qkv_chunk_writes_backend_dtype_without_full_cast(test_device)
         test_star7_resident_weight_path_matches_formula(test_device)
         test_weight_only_quantized_resident_path_stays_quantized(test_device)
         test_fused_residual_matches_materialized_mlp(test_device)

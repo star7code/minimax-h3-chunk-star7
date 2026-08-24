@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.6.0"
+NODE_VERSION = "2.7.0"
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -18,19 +18,29 @@ _LOGGED_MLP_SHAPES = set()
 _PROFILED_MLP_SHAPES = set()
 _PROFILED_ATTENTION_SHAPES = set()
 _LOGGED_SLA_SHAPES = set()
+_LOGGED_QKV_MEMORY = set()
+_LOGGED_QKV_MODE = set()
+_PROFILED_QKV_STAGES = set()
 _CONFIG = {
     "chunk_tokens": 8192,
     "mlp_chunk_tokens": 4096,
+    "qkv_chunk_tokens": 4096,
     "effective_chunk_tokens": 8192,
     "effective_mlp_chunk_tokens": 4096,
+    "effective_qkv_chunk_tokens": 4096,
     "status_effective_chunk_tokens": 8192,
     "status_effective_mlp_chunk_tokens": 4096,
+    "status_effective_qkv_chunk_tokens": 4096,
     "status_sequence_rope": None,
     "status_sequence_mlp": None,
+    "status_sequence_qkv": None,
     "auto_halve_on_oom": True,
     "verbose": True,
     "reuse_mlp_weights": True,
     "node_id": None,
+    "qkv_mode_logged": False,
+    "qkv_memory_logged": False,
+    "qkv_quantized_modes_seen": set(),
 }
 
 
@@ -58,6 +68,8 @@ def _runtime_status_payload(reason: str) -> dict:
         "effective_rope": int(_CONFIG["status_effective_chunk_tokens"]),
         "configured_mlp": int(_CONFIG["mlp_chunk_tokens"]),
         "effective_mlp": int(_CONFIG["status_effective_mlp_chunk_tokens"]),
+        "configured_qkv": int(_CONFIG["qkv_chunk_tokens"]),
+        "effective_qkv": int(_CONFIG["status_effective_qkv_chunk_tokens"]),
         "reason": reason,
     }
 
@@ -83,6 +95,9 @@ def _remember_effective_chunk(kind: str, failed: int, effective: int) -> None:
     elif kind == "MLP":
         configured_key = "mlp_chunk_tokens"
         effective_key = "effective_mlp_chunk_tokens"
+    elif kind == "QKV":
+        configured_key = "qkv_chunk_tokens"
+        effective_key = "effective_qkv_chunk_tokens"
     else:
         raise ValueError(f"unknown chunk kind: {kind}")
 
@@ -91,8 +106,9 @@ def _remember_effective_chunk(kind: str, failed: int, effective: int) -> None:
     effective = min(previous, max(256, int(effective)))
     _CONFIG[effective_key] = effective
     status_key = (
-        "status_effective_chunk_tokens"
-        if kind == "RoPE" else "status_effective_mlp_chunk_tokens"
+        "status_effective_chunk_tokens" if kind == "RoPE"
+        else "status_effective_mlp_chunk_tokens" if kind == "MLP"
+        else "status_effective_qkv_chunk_tokens"
     )
     sequence_key = (
         "status_sequence_rope"
@@ -115,27 +131,38 @@ def _configure_runtime(
     verbose: bool,
     reuse_mlp_weights: bool,
     node_id=None,
+    qkv_chunk_tokens: int = 4096,
 ) -> None:
     """Start a fresh runtime budget whenever the node inputs are re-executed."""
     configured_rope = int(chunk_tokens)
     configured_mlp = int(mlp_chunk_tokens)
+    configured_qkv = int(qkv_chunk_tokens)
     # Older workflows may contain the pre-MLP field's zero placeholder.
-    if configured_rope < 256:
+    if configured_rope < 0:
         configured_rope = 8192
-    if configured_mlp < 256:
+    if configured_mlp < 0:
         configured_mlp = 4096
+    if configured_qkv < 0:
+        configured_qkv = 4096
     _CONFIG["chunk_tokens"] = configured_rope
     _CONFIG["mlp_chunk_tokens"] = configured_mlp
+    _CONFIG["qkv_chunk_tokens"] = configured_qkv
     _CONFIG["effective_chunk_tokens"] = configured_rope
     _CONFIG["effective_mlp_chunk_tokens"] = configured_mlp
+    _CONFIG["effective_qkv_chunk_tokens"] = configured_qkv
     _CONFIG["status_effective_chunk_tokens"] = configured_rope
     _CONFIG["status_effective_mlp_chunk_tokens"] = configured_mlp
+    _CONFIG["status_effective_qkv_chunk_tokens"] = configured_qkv
     _CONFIG["status_sequence_rope"] = None
     _CONFIG["status_sequence_mlp"] = None
+    _CONFIG["status_sequence_qkv"] = None
     _CONFIG["auto_halve_on_oom"] = bool(auto_halve_on_oom)
     _CONFIG["verbose"] = bool(verbose)
     _CONFIG["reuse_mlp_weights"] = bool(reuse_mlp_weights)
     _CONFIG["node_id"] = str(node_id) if node_id is not None else None
+    _CONFIG["qkv_mode_logged"] = False
+    _CONFIG["qkv_memory_logged"] = False
+    _CONFIG["qkv_quantized_modes_seen"] = set()
     _send_runtime_status("configured")
 
 
@@ -150,6 +177,10 @@ def _set_sequence_status(kind: str, sequence_length: int) -> None:
         learned_key = "effective_mlp_chunk_tokens"
         status_key = "status_effective_mlp_chunk_tokens"
         sequence_key = "status_sequence_mlp"
+    elif kind == "QKV":
+        learned_key = "effective_qkv_chunk_tokens"
+        status_key = "status_effective_qkv_chunk_tokens"
+        sequence_key = "status_sequence_qkv"
     else:
         raise ValueError(f"unknown chunk kind: {kind}")
 
@@ -225,6 +256,13 @@ def _chunked_rms_rope_split_half_inplace(
     rot_dim: int = 0,
 ):
     global _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE
+
+    if int(_CONFIG.get("chunk_tokens", 8192)) == 0:
+        if _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE is None:
+            raise RuntimeError("MiniMax H3 RoPE original fallback is unavailable")
+        return _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE(
+            q, k, freqs_cis, q_scale, k_scale, epsilon=epsilon, rot_dim=rot_dim
+        )
 
     if k_scale is None:
         k_scale = q_scale
@@ -647,7 +685,9 @@ def _run_chunked_h3_mlp(
             elapsed_ms, calls, current_chunk, weight_mode,
         )
 
-    return residual if fuse_residual else output
+    final = residual if fuse_residual else output
+    _require_strict_sla_finite(final, "MLP output")
+    return final
 
 
 def _chunked_h3_mlp_forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -659,6 +699,23 @@ def _make_chunked_h3_mlp_forward(star7_fp16: bool):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return _run_chunked_h3_mlp(self, x, star7_fp16=star7_fp16)
     return forward
+
+
+def _require_strict_sla_finite(value: torch.Tensor, stage: str) -> None:
+    """Stop strict SLA jobs at the first observable non-finite model stage."""
+    if not str(_CONFIG.get("attention_backend", "")).startswith("sla_"):
+        return
+    if bool(torch.isfinite(value).all().item()):
+        return
+    nan_count = int(torch.isnan(value).sum().item())
+    inf_count = int(torch.isinf(value).sum().item())
+    raise RuntimeError(
+        f"Star7 strict SLA detected NaN/Inf after {stage} "
+        f"(nan={nan_count}, inf={inf_count}). The task was stopped before VAE "
+        "decode to prevent checkerboard/flicker output. On RTX 20/SM75, use "
+        "the Star7 Native FP16/FP16 Exact loader and verify the model/LoRA "
+        "combination. No CK/Sage fallback was attempted."
+    )
 
 
 def _minimax_ck_int8_attention_forward(self, x, rope_freqs=None, transformer_options={}):
@@ -674,40 +731,16 @@ def _minimax_ck_int8_attention_forward(self, x, rope_freqs=None, transformer_opt
     )
 
     s = x.shape[0]
-    qkv = self.qkv_proj(x)
+    q, k, v = _prepare_h3_qkv_chunked(
+        self, x, rope_freqs, mm, comfy.quant_ops, output_dtype=x.dtype
+    )
     del x
-    q, k, v = qkv.split(self.heads * self.head_dim, dim=-1)
-    v = v.view(s, self.heads, self.head_dim)
-
-    if rope_freqs is not None:
-        q = q.view(1, s, self.heads, self.head_dim)
-        k = k.view(1, s, self.heads, self.head_dim)
-        qw = mm.cast_to(self.q_norm.weight, device=q.device)
-        kw = mm.cast_to(self.k_norm.weight, device=k.device)
-        rot = rope_freqs.shape[-3] * 2
-        if mm.in_training:
-            q, k = comfy.quant_ops.ck.rms_rope_split_half(
-                q, k, rope_freqs, qw, kw,
-                epsilon=self.q_norm.eps, rot_dim=rot,
-            )
-        else:
-            comfy.quant_ops.ck.rms_rope_split_half_(
-                q, k, rope_freqs, qw, kw,
-                epsilon=self.q_norm.eps, rot_dim=rot,
-            )
-        q = q[0]
-        k = k[0]
-    else:
-        q = self.q_norm(q.view(s, self.heads, self.head_dim))
-        k = self.k_norm(k.view(s, self.heads, self.head_dim))
 
     # Stop V sharing the fused QKV storage. CK consumes Q/K after
     # pre-quantization, allowing the much larger QKV allocation to be freed.
-    v = v.clone()
-    del qkv
-    q = AttentionTensorContainer(q.transpose(0, 1).unsqueeze(0))
-    k = AttentionTensorContainer(k.transpose(0, 1).unsqueeze(0))
-    v = AttentionTensorContainer(v.transpose(0, 1).unsqueeze(0))
+    q = AttentionTensorContainer(q)
+    k = AttentionTensorContainer(k)
+    v = AttentionTensorContainer(v)
     out = attention_comfy_kitchen_int8(
         q, k, v, self.heads,
         mask=None,
@@ -755,39 +788,15 @@ def _minimax_sla_forward(
 
     sla_backend = _load_sla_backend()
     sequence = x.shape[0]
-    qkv = self.qkv_proj(x)
+    q, k, v = _prepare_h3_qkv_chunked(
+        self, x, rope_freqs, mm, comfy.quant_ops, output_dtype=torch.float16
+    )
     del x
-    q, k, v = qkv.split(self.heads * self.head_dim, dim=-1)
-    v = v.view(sequence, self.heads, self.head_dim)
-
-    if rope_freqs is not None:
-        q = q.view(1, sequence, self.heads, self.head_dim)
-        k = k.view(1, sequence, self.heads, self.head_dim)
-        qw = mm.cast_to(self.q_norm.weight, device=q.device)
-        kw = mm.cast_to(self.k_norm.weight, device=k.device)
-        rot = rope_freqs.shape[-3] * 2
-        if mm.in_training:
-            q, k = comfy.quant_ops.ck.rms_rope_split_half(
-                q, k, rope_freqs, qw, kw,
-                epsilon=self.q_norm.eps, rot_dim=rot,
-            )
-        else:
-            comfy.quant_ops.ck.rms_rope_split_half_(
-                q, k, rope_freqs, qw, kw,
-                epsilon=self.q_norm.eps, rot_dim=rot,
-            )
-        q = q[0]
-        k = k[0]
-    else:
-        q = self.q_norm(q.view(sequence, self.heads, self.head_dim))
-        k = self.k_norm(k.view(sequence, self.heads, self.head_dim))
 
     # SLA kernels take strict FP16 inputs. Both architecture paths quantize Q/K
     # for tensor-core QK while keeping V and the PV multiplication in FP16.
-    q = q.transpose(0, 1).unsqueeze(0).to(torch.float16).contiguous()
-    k = k.transpose(0, 1).unsqueeze(0).to(torch.float16).contiguous()
-    v = v.transpose(0, 1).unsqueeze(0).to(torch.float16).contiguous()
-    del qkv
+    # The chunk helper writes FP16 directly, avoiding a second full Q/K/V copy
+    # when the upstream H3 projection computes in FP32.
 
     sla_segments = star7_sla_mod_segments or getattr(
         self, "_star7_sla_mod_segments", ()
@@ -833,7 +842,9 @@ def _minimax_sla_forward(
     out = result.output.transpose(1, 2).reshape(
         1, sequence, self.heads * self.head_dim
     )
-    return self.out_proj(out.squeeze(0))
+    projected = self.out_proj(out.squeeze(0))
+    _require_strict_sla_finite(projected, "attention out_proj")
+    return projected
 
 
 _minimax_sla_forward._star7_consumes_input = True
@@ -856,6 +867,166 @@ def _sla_segment_passthrough(original_forward):
                 self.attn._star7_sla_mod_segments = old_segments
 
     return forward
+
+
+def _prepare_h3_qkv_chunked(
+    self, x, rope_freqs, mm, quant_ops, output_dtype: Optional[torch.dtype] = None,
+):
+    """Prepare contiguous backend-layout Q/K/V in token chunks.
+
+    Buffers are allocated directly as [1, H, S, D], so CK/SLA do not create a
+    second full-size transpose/contiguous copy after projection.
+    """
+    sequence = int(x.shape[0])
+    heads, head_dim = self.heads, self.head_dim
+    configured_chunk = int(_CONFIG["effective_qkv_chunk_tokens"])
+    chunk = sequence if configured_chunk == 0 else min(
+        sequence, max(256, configured_chunk)
+    )
+    output_dtype = output_dtype or x.dtype
+    total_profile_key = (
+        sequence, chunk, str(x.dtype), str(output_dtype),
+        x.device.type, x.device.index,
+    )
+    profile_total = bool(
+        _CONFIG["verbose"]
+        and ("total", total_profile_key) not in _PROFILED_QKV_STAGES
+    )
+    total_profile_start = time.perf_counter() if profile_total else None
+    qkv_weight = getattr(self.qkv_proj, "weight", None)
+    qkv_quantized = (
+        getattr(self.qkv_proj, "layout_type", None) is not None
+        or type(qkv_weight).__name__ == "QuantizedTensor"
+    )
+    mode_key = (
+        sequence, chunk, str(x.dtype), str(output_dtype),
+        x.device.type, x.device.index, qkv_quantized,
+    )
+    if _CONFIG["verbose"] and not _CONFIG["qkv_mode_logged"]:
+        _CONFIG["qkv_mode_logged"] = True
+        _LOGGED_QKV_MODE.add(mode_key)
+        _LOG.info(
+            "[Star7 H3 Chunk] QKV mode | S=%d | requested=%d | quantized=%s | "
+            "backend-layout direct write enabled",
+            sequence, configured_chunk, qkv_quantized,
+        )
+    if _CONFIG["verbose"] and qkv_quantized not in _CONFIG["qkv_quantized_modes_seen"]:
+        _CONFIG["qkv_quantized_modes_seen"].add(qkv_quantized)
+        if len(_CONFIG["qkv_quantized_modes_seen"]) > 1:
+            _LOG.warning(
+                "[Star7 H3 Chunk] QKV quantization mode changed across blocks: "
+                "now quantized=%s | smaller chunks may have block-dependent tile scales",
+                qkv_quantized,
+            )
+    def mem(stage):
+        if (
+            not _CONFIG["verbose"]
+            or x.device.type != "cuda"
+            or _CONFIG["qkv_memory_logged"]
+        ):
+            return
+        try:
+            _LOG.info(
+                "[Star7 H3 Chunk] QKV memory | stage=%s | allocated=%.2fGiB | reserved=%.2fGiB",
+                stage, torch.cuda.memory_allocated(x.device) / 1024**3,
+                torch.cuda.memory_reserved(x.device) / 1024**3,
+            )
+            if stage == "done":
+                _CONFIG["qkv_memory_logged"] = True
+                _LOGGED_QKV_MEMORY.add(mode_key)
+        except Exception:
+            pass
+    _set_sequence_status("QKV", sequence)
+    q_out = torch.empty(
+        (1, heads, sequence, head_dim), dtype=output_dtype, device=x.device
+    )
+    k_out = torch.empty_like(q_out)
+    v_out = torch.empty_like(q_out)
+    mem("buffers")
+    rope_fn = _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE or quant_ops.ck.rms_rope_split_half_
+    start = 0
+    while start < sequence:
+        end = min(start + chunk, sequence)
+        try:
+            profile_key = (
+                sequence, chunk, x.dtype, output_dtype, x.device.type
+            )
+            profile_qkv = bool(
+                _CONFIG["verbose"] and start == 0
+                and ("projection", profile_key) not in _PROFILED_QKV_STAGES
+            )
+            qkv_profile_start = time.perf_counter() if profile_qkv else None
+            qkv_chunk = self.qkv_proj(x[start:end])
+            if profile_qkv:
+                if x.device.type == "cuda":
+                    torch.cuda.synchronize(x.device)
+                elapsed_ms = (time.perf_counter() - qkv_profile_start) * 1000.0
+                _PROFILED_QKV_STAGES.add(("projection", profile_key))
+                _LOG.info(
+                    "[Star7 H3 Chunk] QKV cold-start stage | projection=%.1f ms | "
+                    "S=%d | chunk=%d | dtype=%s",
+                    elapsed_ms, sequence, chunk, x.dtype,
+                )
+            q, k, v = qkv_chunk.split(heads * head_dim, dim=-1)
+            v = v.view(end - start, heads, head_dim)
+            if rope_freqs is not None:
+                q = q.view(1, end - start, heads, head_dim)
+                k = k.view(1, end - start, heads, head_dim)
+                qw = mm.cast_to(self.q_norm.weight, device=q.device)
+                kw = mm.cast_to(self.k_norm.weight, device=k.device)
+                freq_chunk = rope_freqs[:, start:end, ...]
+                rot = rope_freqs.shape[-3] * 2
+                profile_rope = bool(
+                    _CONFIG["verbose"] and start == 0
+                    and ("norm_rope", profile_key) not in _PROFILED_QKV_STAGES
+                )
+                rope_profile_start = time.perf_counter() if profile_rope else None
+                rope_fn(q, k, freq_chunk, qw, kw, epsilon=self.q_norm.eps, rot_dim=rot)
+                if profile_rope:
+                    if x.device.type == "cuda":
+                        torch.cuda.synchronize(x.device)
+                    elapsed_ms = (time.perf_counter() - rope_profile_start) * 1000.0
+                    _PROFILED_QKV_STAGES.add(("norm_rope", profile_key))
+                    _LOG.info(
+                        "[Star7 H3 Chunk] QKV cold-start stage | norm+RoPE=%.1f ms | "
+                        "S=%d | chunk=%d | dtype=%s",
+                        elapsed_ms, sequence, chunk, x.dtype,
+                    )
+                q_out[:, :, start:end, :].copy_(q.permute(0, 2, 1, 3))
+                k_out[:, :, start:end, :].copy_(k.permute(0, 2, 1, 3))
+            else:
+                q_norm = self.q_norm(q.view(end - start, heads, head_dim))
+                k_norm = self.k_norm(k.view(end - start, heads, head_dim))
+                q_out[:, :, start:end, :].copy_(q_norm.permute(1, 0, 2).unsqueeze(0))
+                k_out[:, :, start:end, :].copy_(k_norm.permute(1, 0, 2).unsqueeze(0))
+            v_out[:, :, start:end, :].copy_(v.permute(1, 0, 2).unsqueeze(0))
+            start = end
+            del qkv_chunk, q, k, v
+        except Exception as exc:
+            if not (
+                configured_chunk != 0
+                and _is_cuda_oom(exc)
+                and _CONFIG["auto_halve_on_oom"]
+                and chunk > 256
+            ):
+                raise
+            new_chunk = max(256, chunk // 2)
+            _remember_effective_chunk("QKV", chunk, new_chunk)
+            exc.__traceback__ = None
+            _clear_cuda_after_oom(x.device)
+            chunk = new_chunk
+    mem("done")
+    if profile_total:
+        if x.device.type == "cuda":
+            torch.cuda.synchronize(x.device)
+        _PROFILED_QKV_STAGES.add(("total", total_profile_key))
+        _LOG.info(
+            "[Star7 H3 Chunk] QKV cold-start stage | total-preparation=%.1f ms | "
+            "S=%d | chunk=%d | dtype=%s",
+            (time.perf_counter() - total_profile_start) * 1000.0,
+            sequence, chunk, x.dtype,
+        )
+    return q_out, k_out, v_out
 
 
 def _make_chunked_h3_block_forward(star7_fp16: bool, h3_model):
@@ -961,6 +1132,7 @@ def install_patch(
     auto_halve_on_oom: bool,
     verbose: bool,
     mlp_chunk_tokens: int = 4096,
+    qkv_chunk_tokens: int = 4096,
     reuse_mlp_weights: bool = True,
     node_id=None,
 ):
@@ -978,13 +1150,17 @@ def install_patch(
 
     _configure_runtime(
         chunk_tokens, mlp_chunk_tokens, auto_halve_on_oom, verbose,
-        reuse_mlp_weights, node_id,
+        reuse_mlp_weights, node_id, qkv_chunk_tokens=qkv_chunk_tokens,
     )
 
-    # Replace only the public in-place function used by ComfyUI MiniMax H3.
-    # The separate model patch below controls the explicit optional attention
-    # backend; RoPE dispatch itself does not alter backend priority.
-    ck.rms_rope_split_half_ = _chunked_rms_rope_split_half_inplace
+    # Keep the zero setting as a true control group: restore the exact public
+    # operator so unrelated encoders never even enter the Star7 dispatcher.
+    # Otherwise replace only the public in-place function used by H3.
+    ck.rms_rope_split_half_ = (
+        _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE
+        if int(chunk_tokens) == 0
+        else _chunked_rms_rope_split_half_inplace
+    )
 
     if verbose:
         active_backends = []
@@ -1014,12 +1190,24 @@ def install_model_patch(
     reuse_mlp_weights: bool,
     attention_backend: str,
     node_id=None,
+    qkv_chunk_tokens: int = 4096,
 ):
     install_patch(
-        chunk_tokens, auto_halve_on_oom, verbose,
-        mlp_chunk_tokens, reuse_mlp_weights, node_id,
+        chunk_tokens=chunk_tokens,
+        auto_halve_on_oom=auto_halve_on_oom,
+        verbose=verbose,
+        mlp_chunk_tokens=mlp_chunk_tokens,
+        qkv_chunk_tokens=qkv_chunk_tokens,
+        reuse_mlp_weights=reuse_mlp_weights,
+        node_id=node_id,
     )
     _CONFIG["attention_backend"] = attention_backend
+    if verbose and torch.cuda.is_available():
+        _LOG.info(
+            "[Star7 H3 Chunk] Before H3 model load | allocated=%.2fGiB | reserved=%.2fGiB",
+            torch.cuda.memory_allocated() / 1024**3,
+            torch.cuda.memory_reserved() / 1024**3,
+        )
 
     from comfy.ldm.minimax import model as h3_model
     patched = model.clone()
@@ -1085,7 +1273,13 @@ def install_model_patch(
                 "sparsity with native audio guard); no Sage/CK failure fallback "
                 "is enabled", arithmetic
             )
+            if attention_backend == "sla_sm75_all_int8_experimental":
+                _LOG.warning(
+                    "[Star7 H3 Chunk] All-INT8 SLA is approximate for audio as well; "
+                    "use sla_sm75_qk_int8_pv_fp16 or existing for an audio-quality control run"
+                )
     elif attention_backend == "comfy_kitchen_int8":
+        backend_probe_start = time.perf_counter()
         try:
             import comfy_kitchen
             ck_available = comfy_kitchen.int8_attention_is_available()
@@ -1097,6 +1291,12 @@ def install_model_patch(
                     "keeping the existing attention backend",
                     exc,
                 )
+        if verbose:
+            _LOG.info(
+                "[Star7 H3 Chunk] Attention backend probe | comfy_kitchen_int8=%.1f ms | available=%s",
+                (time.perf_counter() - backend_probe_start) * 1000.0,
+                ck_available,
+            )
         if ck_available:
             for index, block in enumerate(diffusion_model.blocks):
                 patched.add_object_patch(
@@ -1124,12 +1324,13 @@ def install_model_patch(
     # ownership of its residual/attention execution.  The previous whole-block
     # replacement was numerically fragile when no LoRA was present and added
     # extra norm/modulation kernels to every token chunk.
-    mlp_forward = _make_chunked_h3_mlp_forward(star7_fp16)
-    for index, block in enumerate(diffusion_model.blocks):
-        patched.add_object_patch(
-            f"diffusion_model.blocks.{index}.mlp.forward",
-            MethodType(mlp_forward, block.mlp),
-        )
+    if int(mlp_chunk_tokens) != 0:
+        mlp_forward = _make_chunked_h3_mlp_forward(star7_fp16)
+        for index, block in enumerate(diffusion_model.blocks):
+            patched.add_object_patch(
+                f"diffusion_model.blocks.{index}.mlp.forward",
+                MethodType(mlp_forward, block.mlp),
+            )
 
     # Dynamic VBAR prefetch is intentionally disabled for H3.  The upstream
     # queue synchronizes the transfer before the block runs, so it adds latency
@@ -1164,7 +1365,7 @@ class MiniMaxH3ActivationChunkStar7:
                     "INT",
                     {
                         "default": 8192,
-                        "min": 256,
+                        "min": 0,
                         "max": 65536,
                         "step": 256,
                         "tooltip": "H3 RoPE sequence tokens per chunk. 2080 Ti 22GB: use 8192 after a safe 4096 validation run.",
@@ -1188,7 +1389,7 @@ class MiniMaxH3ActivationChunkStar7:
                     "INT",
                     {
                         "default": 4096,
-                        "min": 256,
+                        "min": 0,
                         "max": 65536,
                         "step": 256,
                         "tooltip": "H3 MLP tokens per chunk. Keeps the upstream block path while streaming the large expansion activation. Start at 4096.",
@@ -1200,6 +1401,16 @@ class MiniMaxH3ActivationChunkStar7:
                         "default": "实验功能已移除",
                         "multiline": False,
                         "tooltip": "提前加载下一层（实验功能已移除）。该字段仅用于兼容旧工作流，不再参与计算。",
+                    },
+                ),
+                "qkv_chunk_tokens": (
+                    "INT",
+                    {
+                        "default": 4096,
+                        "min": 0,
+                        "max": 65536,
+                        "step": 256,
+                        "tooltip": "H3 QKV 投影临时显存分块。设为 0 仅关闭投影分块，不改变所选注意力；数值越小只会缩小投影临时张量，不会消除注意力所需的完整 Q/K/V。SLA 会直接保存 FP16 Q/K/V。建议 4096。",
                     },
                 ),
                 "reuse_mlp_weights": (
@@ -1254,12 +1465,13 @@ class MiniMaxH3ActivationChunkStar7:
     def patch(
         self, model, chunk_tokens=8192, auto_halve_on_oom=True, verbose=True,
         mlp_chunk_tokens=4096, disable_dynamic_prefetch=True,
+        qkv_chunk_tokens=4096,
         reuse_mlp_weights=True, attention_backend="comfy_kitchen_int8", unique_id=None,
     ):
         return (install_model_patch(
             model, chunk_tokens, auto_halve_on_oom, verbose,
             mlp_chunk_tokens, disable_dynamic_prefetch, reuse_mlp_weights,
-            attention_backend, unique_id,
+            attention_backend, unique_id, qkv_chunk_tokens=qkv_chunk_tokens,
         ),)
 
 

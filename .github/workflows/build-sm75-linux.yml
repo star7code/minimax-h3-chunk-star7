@@ -1,0 +1,28 @@
+name: Build SM75 Linux binary
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "csrc/**"
+      - ".github/workflows/build-sm75-linux.yml"
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-22.04
+    container: nvidia/cuda:12.6.3-devel-ubuntu22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build SM75 shared library
+        run: bash csrc/build_sm75_linux.sh
+      - name: Verify exported ABI and host dependencies
+        run: |
+          test "$(nm -D --defined-only bin/linux_x86_64/star7_sla_sm75_v7.so | grep -c ' star7_sla_sm75_')" -ge 5
+          ! ldd bin/linux_x86_64/star7_sla_sm75_v7.so | grep -q 'not found'
+          ! ldd bin/linux_x86_64/star7_sla_sm75_v7.so | grep -q 'libcudart'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: star7-sla-sm75-linux-x86_64
+          path: bin/linux_x86_64/star7_sla_sm75_v7.so
+          if-no-files-found: error
+
