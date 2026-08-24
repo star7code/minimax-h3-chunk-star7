@@ -10,7 +10,8 @@ on:
 jobs:
   linux-x86_64:
     runs-on: ubuntu-22.04
-    container: nvidia/cuda:12.6.3-devel-ubuntu22.04
+    # Build on glibc 2.31 so the binary also loads on Ubuntu 20.04 hosts.
+    container: nvidia/cuda:12.6.3-devel-ubuntu20.04
     steps:
       - uses: actions/checkout@v4
       - name: Build SM75 shared library
@@ -25,4 +26,3 @@ jobs:
           name: star7-sla-sm75-linux-x86_64
           path: bin/linux_x86_64/star7_sla_sm75_v7.so
           if-no-files-found: error
-
