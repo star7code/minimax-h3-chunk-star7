@@ -81,6 +81,18 @@ def test_star7_fp16_mlp_chunk_matches_full_formula(device=torch.device("cpu")):
     torch.testing.assert_close(actual, expected, rtol=2e-3, atol=2e-3)
 
 
+def test_auto_fp16_out_proj_uses_exact_scaling(device=torch.device("cpu")):
+    linear = torch.nn.Linear(4, 4, bias=False, device=device, dtype=torch.float16)
+    with torch.no_grad():
+        linear.weight.fill_(4.0)
+    value = torch.full((2, 4), 20000.0, device=device, dtype=torch.float16)
+    expected = value.float().matmul(linear.weight.float().t())
+    assert not torch.isfinite(linear(value)).all()
+    actual = chunk_nodes._fp16_exact_out_proj(linear, value)
+    assert torch.isfinite(actual).all()
+    torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
+
+
 def test_qkv_chunk_writes_backend_dtype_without_full_cast(device=torch.device("cpu")):
     from comfy.ldm.minimax import model as h3_model
     import comfy.model_management as mm
@@ -400,6 +412,69 @@ def test_install_preserves_upstream_block_patch():
     assert patched.wrappers == {}
 
 
+def test_sm75_sla_auto_installs_fp16_exact_without_external_node():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
+        return
+    from comfy.ldm.minimax import model as h3_model
+
+    diffusion_model = h3_model.MiniMaxH3Model(
+        hidden_size=16,
+        num_layers=1,
+        token_refiner_num_layers=1,
+        num_attention_heads=2,
+        attention_head_dim=8,
+        ffn_hidden_size=24,
+        latents_dim=4,
+        audio_latents_dim=4,
+        text_dim=16,
+        timestep_input_dim=8,
+        time_embed_hidden_size=16,
+        time_embed_dim=8,
+        rope_inv_freq_len=2,
+        dtype=torch.float16,
+        device="cpu",
+        operations=torch.nn,
+    )
+
+    class FakeModelPatcher:
+        def __init__(self):
+            self.model_options = {"transformer_options": {}}
+            self.object_patches = {}
+            self.compute_dtype = None
+            self.force_cast_weights = True
+
+        def clone(self):
+            return self
+
+        def get_model_object(self, name):
+            assert name == "diffusion_model"
+            return diffusion_model
+
+        def add_object_patch(self, name, value):
+            self.object_patches[name] = value
+
+        def set_model_compute_dtype(self, dtype):
+            self.compute_dtype = dtype
+
+    patched = chunk_nodes.install_model_patch(
+        FakeModelPatcher(),
+        chunk_tokens=8192,
+        auto_halve_on_oom=True,
+        verbose=False,
+        mlp_chunk_tokens=4096,
+        disable_dynamic_prefetch=True,
+        reuse_mlp_weights=True,
+        attention_backend="sla_sm75_qk_int8_pv_fp16",
+    )
+    assert patched.compute_dtype == torch.float16
+    assert patched.model_options["transformer_options"][
+        "star7_h3_sla_auto_fp16_exact"
+    ] == chunk_nodes.NODE_VERSION
+    assert "diffusion_model.condition_proj.forward" in patched.object_patches
+    assert "diffusion_model.blocks.0.forward" in patched.object_patches
+    assert diffusion_model.blocks[0].attn._star7_sla_auto_fp16_exact is True
+
+
 def test_rope_oom_value_is_reused_for_k_and_later_calls():
     attempts = []
     original = chunk_nodes._rms_rope_one_chunk_inplace
@@ -694,6 +769,28 @@ def test_sla_sm75_native_cuda_self_test():
     backend.ensure_self_test(torch.device("cuda"), all_int8=True)
 
 
+def test_sla_sm75_consuming_inputs():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
+        return
+    backend = chunk_nodes._load_sla_backend()
+    generator = torch.Generator(device="cuda")
+    generator.manual_seed(0x7518)
+    for all_int8 in (False, True):
+        owned = [
+            torch.randn(
+                (1, 1, 1025, backend.HEAD_DIM), generator=generator,
+                device="cuda", dtype=torch.float16,
+            ) * 0.1
+            for _ in range(3)
+        ]
+        result = backend.sparse_attention_consume(
+            owned, run_self_test=False, all_int8=all_int8
+        )
+        torch.cuda.synchronize()
+        assert owned == []
+        assert torch.isfinite(result.output).all()
+
+
 def test_sla_attention_forward_cuda():
     if not torch.cuda.is_available():
         return
@@ -735,6 +832,7 @@ if __name__ == "__main__":
         test_rope_matches_eager_partial_rotary(test_device)
         test_mlp_chunk_matches_full_forward(test_device)
         test_star7_fp16_mlp_chunk_matches_full_formula(test_device)
+        test_auto_fp16_out_proj_uses_exact_scaling(test_device)
         test_qkv_chunk_writes_backend_dtype_without_full_cast(test_device)
         test_star7_resident_weight_path_matches_formula(test_device)
         test_weight_only_quantized_resident_path_stays_quantized(test_device)
@@ -748,10 +846,12 @@ if __name__ == "__main__":
     test_legacy_node_alias_is_deprecated()
     test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse()
     test_install_preserves_upstream_block_patch()
+    test_sm75_sla_auto_installs_fp16_exact_without_external_node()
     test_comfy_kitchen_int8_attention_forward_cuda()
     test_sla_backend_is_strict_and_architecture_checked()
     test_sm75_binary_manifest_payloads()
     test_sm75_torch_preprocess_matches_triton()
     test_sla_sm75_native_cuda_self_test()
+    test_sla_sm75_consuming_inputs()
     test_sla_attention_forward_cuda()
     print("MiniMax H3 prefetch removal compatibility test passed")

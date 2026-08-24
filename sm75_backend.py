@@ -109,13 +109,18 @@ def availability() -> tuple[bool, str]:
 def run(
     q: torch.Tensor,
     k: torch.Tensor,
-    v: torch.Tensor,
+    v: torch.Tensor | list[torch.Tensor],
     q_scale: torch.Tensor,
     k_scale: torch.Tensor,
     lut: torch.Tensor,
     dense_query_ranges: tuple[tuple[int, int], ...] = (),
     all_int8: bool = False,
 ) -> torch.Tensor:
+    consume_v = isinstance(v, list)
+    if consume_v:
+        if len(v) != 1:
+            raise ValueError("SM75 consuming V input requires one tensor")
+        v = v.pop()
     tensors = (q, k, v, q_scale, k_scale, lut)
     if any(not tensor.is_cuda for tensor in tensors):
         raise ValueError("SM75 CUDA backend requires CUDA tensors")
@@ -144,7 +149,6 @@ def run(
         raise ValueError("SM75 Q scale shape does not match 16-row query warps")
     if k_scale.shape != (batch, heads, key_blocks):
         raise ValueError("SM75 K scale shape does not match key blocks")
-    output = torch.empty_like(v)
     stream = torch.cuda.current_stream(q.device).cuda_stream
     library = _load()
     v_int8 = v_scale = None
@@ -166,6 +170,19 @@ def run(
             raise RuntimeError(
                 f"SM75 CUDA SLA V quantization failed with code={quant_code}"
             )
+        if consume_v:
+            # The quantizer and attention launch share this CUDA stream. V is
+            # no longer read after quantization, so its allocation can safely
+            # be reused for the FP16 output queued later on the same stream.
+            del tensors, v
+            output = torch.empty(
+                (batch, heads, length, head_dim),
+                dtype=torch.float16, device=q.device,
+            )
+        else:
+            output = torch.empty_like(v)
+    else:
+        output = torch.empty_like(v)
 
     def launch(active_lut: torch.Tensor, block_base: int, block_count: int) -> None:
         if all_int8:

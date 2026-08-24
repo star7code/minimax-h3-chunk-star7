@@ -517,14 +517,18 @@ def _quantize(
     return quantized, scale
 
 
-def _run_raw(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
+def _run_raw_impl(
+    owned_qkv: list[torch.Tensor],
     sparsity: float,
     query_priority_ranges: tuple[tuple[int, int], ...] = (),
     all_int8: bool = False,
+    release_inputs: bool = False,
 ) -> SLAResult:
+    if len(owned_qkv) != 3:
+        raise ValueError("SLA requires exactly Q, K, and V tensors")
+    q, k, v = owned_qkv
+    if release_inputs:
+        owned_qkv.clear()
     _require_environment(q, k, v)
     lut, k_mean, query_blocks, key_blocks, selected = build_routing_lut(
         q, k, sparsity, query_priority_ranges
@@ -542,8 +546,18 @@ def _run_raw(
                 q_scale, (0, required_q_scales - q_scale.shape[-1]), value=1.0
             )
         k_int8, k_scale = _quantize(k, BLOCK_K, multiplier=1.0, mean=k_mean)
+        v_input: torch.Tensor | list[torch.Tensor] = v
+        if release_inputs:
+            # Routing and Q/K quantization have finished. Drop the two large
+            # FP16 sources before allocating the native output and, in the
+            # All-INT8 mode, transfer sole V ownership to the native wrapper so
+            # it can recycle V storage immediately after V quantization.
+            del q, k, k_mean
+            if all_int8:
+                v_input = [v]
+                del v
         output = _load_sm75_backend().run(
-            q_int8, k_int8, v, q_scale, k_scale, lut,
+            q_int8, k_int8, v_input, q_scale, k_scale, lut,
             dense_query_ranges=query_priority_ranges,
             all_int8=all_int8,
         )
@@ -600,6 +614,21 @@ def _run_raw(
     return SLAResult(
         output, query_blocks, key_blocks, selected, effective_sparsity,
         implementation, len(protected),
+    )
+
+
+def _run_raw(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    sparsity: float,
+    query_priority_ranges: tuple[tuple[int, int], ...] = (),
+    all_int8: bool = False,
+) -> SLAResult:
+    """Non-consuming entry point retained for self-tests and external callers."""
+    return _run_raw_impl(
+        [q, k, v], sparsity, query_priority_ranges, all_int8,
+        release_inputs=False,
     )
 
 
@@ -684,3 +713,27 @@ def sparse_attention(
         all_int8=all_int8,
     )
     return result
+
+
+def sparse_attention_consume(
+    qkv: list[torch.Tensor],
+    sparsity: float = DEFAULT_SPARSITY,
+    run_self_test: bool = True,
+    query_priority_ranges: list[tuple[int, int]] | tuple[tuple[int, int], ...] = (),
+    all_int8: bool = False,
+) -> SLAResult:
+    """Execute strict SLA while consuming Q/K/V to minimize the core peak.
+
+    The caller must relinquish its individual tensor references before calling.
+    The list is cleared as soon as this function transfers ownership.
+    """
+    if len(qkv) != 3:
+        raise ValueError("SLA consume API requires [Q, K, V]")
+    _require_environment(qkv[0], qkv[1], qkv[2])
+    device = qkv[0].device
+    if run_self_test:
+        ensure_self_test(device, all_int8=all_int8)
+    return _run_raw_impl(
+        qkv, float(sparsity), tuple(query_priority_ranges), all_int8,
+        release_inputs=True,
+    )

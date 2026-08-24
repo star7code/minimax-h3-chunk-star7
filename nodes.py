@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.7.0"
+NODE_VERSION = "2.7.1"
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -517,13 +517,14 @@ def _run_chunked_h3_mlp(
     is needed. A different GEMM tile can change only the final float32 rounding
     bit; dtype, formula, weights, and token order remain unchanged.
     """
-    chunk = max(256, int(_CONFIG["effective_mlp_chunk_tokens"]))
+    configured_chunk = int(_CONFIG["effective_mlp_chunk_tokens"])
     import comfy.ops
 
     if x.ndim != 2:
         return comfy.ops.linear_input_act(self.fc2, self.fc1(x), "swiglu")
 
     seq_len = x.shape[0]
+    chunk = seq_len if configured_chunk == 0 else max(256, configured_chunk)
     _set_sequence_status("MLP", seq_len)
     effective_input_dtype = input_dtype or x.dtype
     use_star7_fp16 = bool(star7_fp16 and effective_input_dtype == torch.float16)
@@ -718,6 +719,22 @@ def _require_strict_sla_finite(value: torch.Tensor, stage: str) -> None:
     )
 
 
+def _condition_proj_fp32_forward(original_forward):
+    """Keep the SM75 SLA text-conditioning projection in its FP32 island."""
+    def forward(self, tensor):
+        return original_forward(tensor.to(torch.float32))
+    return forward
+
+
+def _fp16_exact_out_proj(linear, tensor: torch.Tensor) -> torch.Tensor:
+    """Power-of-two protected FP16 attention down-projection, consuming input."""
+    if tensor.dtype == torch.float16:
+        scaled = tensor.div_(64.0)
+    else:
+        scaled = tensor.div(64.0).to(torch.float16)
+    return linear(scaled).to(torch.float32).mul_(64.0)
+
+
 def _minimax_ck_int8_attention_forward(self, x, rope_freqs=None, transformer_options={}):
     """Run H3 attention through Comfy Kitchen INT8 with native lifetimes."""
     if isinstance(x, list):
@@ -818,14 +835,17 @@ def _minimax_sla_forward(
         audio_segment = sla_segments[-2]
         priority_ranges.append((int(audio_segment[0]), int(audio_segment[1])))
     priority_ranges = sorted(set(priority_ranges))
-    result = sla_backend.sparse_attention(
-        q, k, v, query_priority_ranges=priority_ranges,
+    device_index = q.device.index
+    owned_qkv = [q, k, v]
+    del q, k, v
+    result = sla_backend.sparse_attention_consume(
+        owned_qkv, query_priority_ranges=priority_ranges,
         all_int8=(
             _CONFIG.get("attention_backend")
             == "sla_sm75_all_int8_experimental"
         ),
     )
-    shape_key = (sequence, self.heads, self.head_dim, q.device.index)
+    shape_key = (sequence, self.heads, self.head_dim, device_index)
     if _CONFIG["verbose"] and shape_key not in _LOGGED_SLA_SHAPES:
         _LOGGED_SLA_SHAPES.add(shape_key)
         _LOG.info(
@@ -842,6 +862,11 @@ def _minimax_sla_forward(
     out = result.output.transpose(1, 2).reshape(
         1, sequence, self.heads * self.head_dim
     )
+    if getattr(self, "_star7_sla_auto_fp16_exact", False):
+        # Match the standalone Native FP16 fix. Scaling by an exact power of
+        # two prevents the FP16 attention down-projection from overflowing
+        # without changing the represented result.
+        return _fp16_exact_out_proj(self.out_proj, out.squeeze(0))
     return self.out_proj(out.squeeze(0))
 
 
@@ -1116,7 +1141,7 @@ def _make_chunked_h3_block_forward(star7_fp16: bool, h3_model):
             )
             return value.to(mlp_input_dtype)
 
-        return _run_chunked_h3_mlp(
+        result = _run_chunked_h3_mlp(
             self.mlp,
             x,
             star7_fp16=star7_fp16,
@@ -1126,6 +1151,8 @@ def _make_chunked_h3_block_forward(star7_fp16: bool, h3_model):
             input_factory=make_mlp_input,
             input_dtype=mlp_input_dtype,
         )
+        _require_strict_sla_finite(result, "transformer block output")
+        return result
 
     return forward
 
@@ -1235,6 +1262,7 @@ def install_model_patch(
 
     ck_attention = False
     sla_attention = False
+    auto_sm75_fp16_exact = False
     strict_sla_backends = {
         "sla_sm75_qk_int8_pv_fp16",
         "sla_sm75_all_int8_experimental",
@@ -1247,7 +1275,29 @@ def install_model_patch(
         capability = sla_backend.check_runtime_support(
             requested_backend=attention_backend
         )
+        auto_sm75_fp16_exact = capability == (7, 5) and not star7_fp16
+        if auto_sm75_fp16_exact:
+            # SM75 has no native BF16 arithmetic. Make strict SLA self-contained
+            # by installing the same FP16-compute/FP32-residual overflow formula
+            # as the standalone Star7 loader, while preserving quantized weights.
+            patched.set_model_compute_dtype(torch.float16)
+            is_quantized = any(
+                getattr(module, "layout_type", None) is not None
+                for module in diffusion_model.modules()
+            )
+            if is_quantized:
+                patched.force_cast_weights = False
+            condition_proj = diffusion_model.condition_proj
+            patched.add_object_patch(
+                "diffusion_model.condition_proj.forward",
+                MethodType(
+                    _condition_proj_fp32_forward(condition_proj.forward),
+                    condition_proj,
+                ),
+            )
+            transformer_options["star7_h3_sla_auto_fp16_exact"] = NODE_VERSION
         for index, block in enumerate(diffusion_model.blocks):
+            block.attn._star7_sla_auto_fp16_exact = auto_sm75_fp16_exact
             patched.add_object_patch(
                 f"diffusion_model.blocks.{index}.attn.forward",
                 MethodType(_minimax_sla_forward, block.attn),
@@ -1256,21 +1306,28 @@ def install_model_patch(
             upstream_block_forward = patched.object_patches.get(
                 block_path, block.forward
             )
-            patched.add_object_patch(
-                block_path,
-                MethodType(
-                    _sla_segment_passthrough(upstream_block_forward), block
-                ),
-            )
+            if auto_sm75_fp16_exact:
+                patched.add_object_patch(
+                    block_path,
+                    MethodType(
+                        _make_chunked_h3_block_forward(True, h3_model), block
+                    ),
+                )
+            else:
+                patched.add_object_patch(
+                    block_path,
+                    MethodType(
+                        _sla_segment_passthrough(upstream_block_forward), block
+                    ),
+                )
         attention_patch_name = attention_backend
         sage_attention = False
         sla_attention = True
-        if capability == (7, 5) and not star7_fp16:
-            _LOG.warning(
-                "[Star7 H3 Chunk] SM75 strict SLA is running with FP16 Exact=False. "
-                "The validated RTX 20 path uses MiniMax H3 Native FP16 Loader - "
-                "Star7 before LoRA and this node; a non-finite transformer block "
-                "will stop the task instead of producing corrupted VAE output."
+        if auto_sm75_fp16_exact:
+            _LOG.info(
+                "[Star7 H3 Chunk] SM75 SLA auto FP16 Exact enabled | "
+                "FP32 residual/SwiGLU | scaled out_proj/fc2 | no external "
+                "FP16 node required"
             )
         if verbose:
             arithmetic = (
@@ -1329,13 +1386,13 @@ def install_model_patch(
     elif attention_backend != "existing":
         raise ValueError(f"unknown attention backend: {attention_backend}")
 
-    # Patch only the MLP.  The block itself is deliberately left untouched so
-    # an upstream FP16 exact, Sage, low-VRAM, or third-party model patch keeps
-    # ownership of its residual/attention execution.  The previous whole-block
-    # replacement was numerically fragile when no LoRA was present and added
-    # extra norm/modulation kernels to every token chunk.
+    # Outside the self-contained SM75 FP16 Exact path, patch only the MLP so an
+    # upstream loader or third-party block patch keeps residual ownership. The
+    # auto SM75 path intentionally owns the block because FP32 residuals and
+    # FP16 branches are part of its overflow-safety contract.
+    fp16_exact_active = star7_fp16 or auto_sm75_fp16_exact
     if int(mlp_chunk_tokens) != 0:
-        mlp_forward = _make_chunked_h3_mlp_forward(star7_fp16)
+        mlp_forward = _make_chunked_h3_mlp_forward(fp16_exact_active)
         for index, block in enumerate(diffusion_model.blocks):
             patched.add_object_patch(
                 f"diffusion_model.blocks.{index}.mlp.forward",
@@ -1351,8 +1408,9 @@ def install_model_patch(
     if verbose:
         _LOG.info(
             "[Star7 H3 Chunk] Model ready v%s | blocks=%d | FP16 Exact=%s | "
-            "dynamic prefetch=removed | block=preserved | attention=%s",
-            NODE_VERSION, len(diffusion_model.blocks), star7_fp16,
+            "dynamic prefetch=removed | block=%s | attention=%s",
+            NODE_VERSION, len(diffusion_model.blocks), fp16_exact_active,
+            "sm75-auto-fp16-exact" if auto_sm75_fp16_exact else "preserved",
             (
                 attention_patch_name if sla_attention
                 else "comfy-kitchen-int8" if ck_attention

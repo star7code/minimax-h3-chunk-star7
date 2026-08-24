@@ -4,7 +4,7 @@
 
 Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with limited VRAM: this ComfyUI node chunks the two largest RoPE and MLP activation peaks so those operations fit in dedicated VRAM instead of spilling into much slower shared system memory. For workloads that would otherwise OOM or page through shared memory, this can greatly improve the practical video size and runtime; when a workload already fits entirely in VRAM, chunking alone is not a speedup. The default path uses Comfy Kitchen INT8 attention and does not change the sampler, latent, VAE, video duration, or spatial resolution; choose `existing` to preserve an upstream Sage or environment-selected attention backend.
 
-**New in v2.7.0:** SLA now includes bundled SM75 kernels for Windows x64 and Linux x86_64, bounded-memory QKV projection, and strict NaN/Inf guards. For best results, use it with the [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA). SM80+ continues to use Triton.
+**New in v2.7.1:** SM75 SLA now enables its FP16 Exact overflow protection automatically and releases FP16 Q/K/V sources before native All-INT8 allocations. The external FP16 node is no longer required when selecting SM75 SLA. For best results, use it with the [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA).
 
 > This is an independent community project. MiniMax, ComfyUI, Comfy Kitchen, KJNodes, and NVIDIA are trademarks or projects of their respective owners.
 
@@ -12,7 +12,7 @@ Run high-resolution, long-duration MiniMax H3 videos efficiently on GPUs with li
 
 让高画质、长时长 MiniMax H3 视频在有限显存的显卡上高效运行：本节点把最容易爆显存的 RoPE 与 MLP 激活按 token 分块，使这两段关键计算适配专用显存，避免溢出到速度远低于显存的共享系统内存。对于原本会 OOM 或发生共享显存换页的任务，这能显著提升可运行规模与实际生成效率；如果任务本来就能完整装入显存，分块本身不会凭空加速。
 
-**v2.7.0 已加入 Windows/Linux SM75 SLA 内核、QKV 投影分块和 NaN/Inf 严格检查。** 建议配合
+**v2.7.1 已让 SM75 SLA 自动启用 FP16 Exact 防溢出，并在 All-INT8 分配前释放不再使用的 FP16 Q/K/V。** 选择 SM75 SLA 时不再要求外接 FP16 修复节点。建议配合
 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA)
 使用。SM75 使用随节点分发的预编译 CUDA 内核，SM80+ 使用 Triton。
 
@@ -40,7 +40,7 @@ softmax 状态和最终累积保持 FP32。目标音频查询使用完整注意�
 
 - SM75 Windows x64：预编译 CUDA 13 静态运行时内核，要求支持 CUDA 13 的 580+ NVIDIA 驱动。
 - SM75 Linux x86_64：预编译 CUDA 12.6 静态运行时内核，兼容 Ubuntu 20.04 / glibc 2.31 及更新系统，要求 NVIDIA 驱动 525.60.13+；不依赖 PyTorch C++ ABI 或 SageAttention。若 Turing Triton 不可用，路由与量化会自动改用有界显存 PyTorch 预处理，SLA 核心仍由 `.so` 执行。
-- RTX 20/SM75 的已验证模型链路是 `Native FP16 Loader - Star7 -> LoRA -> 本节点`；日志出现 `FP16 Exact=False` 时会明确警告。
+- SM75 SLA 自动使用 FP32 残差与 SwiGLU、FP16 分支计算及 `out_proj/fc2` 二次幂防溢出；外部 Native FP16 Loader 可省略。SM80+ 不启用这条 SM75 专用修复。
 - SM80+ 使用 Triton，首次运行会编译并缓存内核。
 - SLA 不会静默回退；环境、自检或计算失败会直接中止，需手动改选 CK 或 `existing`。
 - 严格 SLA 会在每个完整 Transformer block 后检查 NaN/Inf，覆盖注意力、残差门控和 MLP；异常时在进入 VAE 前停止，避免输出棋格闪烁等损坏画面。
@@ -110,6 +110,9 @@ RTX 20 系及其他不适合原生 BF16 计算的显卡：
 MiniMax H3 Native FP16 Loader - Star7 -> LoRA
     -> Activation Chunk - Star7 -> Guider / Scheduler / Sampler
 ```
+
+以上外部 Loader 仍适用于 CK 或 `existing` 注意力；选择任一 SM75 SLA 模式时，
+本节点会自动安装同一套 FP16 Exact 防溢出公式，可以直接使用普通 H3 Loader。
 
 20 系示例依赖另一个项目：
 

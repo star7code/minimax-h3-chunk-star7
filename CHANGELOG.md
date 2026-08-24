@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- SM75 strict SLA now installs its validated FP16 Exact formula automatically
+  when the standalone Star7 loader is absent: FP32 residual/SwiGLU, FP16
+  branches, and power-of-two protected attention `out_proj`/MLP `fc2`. This is
+  restricted to SM75; SM80+ keeps its native BF16-capable path.
+- Added a consuming SLA input path. Once routing and Q/K quantization finish,
+  the full FP16 Q/K sources are released; All-INT8 also recycles FP16 V storage
+  after V quantization. At `S=59,904`, 56 heads on RTX 2080 Ti, the measured
+  attention allocation above resident Q/K/V fell from 2.017 GiB to 0.815 GiB
+  for All-INT8, matching FP16-PV's new peak.
+
 - Added a bundled Linux x86_64 SM75 ABI-v7 library built with CUDA 12.6 on
   Ubuntu 20.04/glibc 2.31. It uses the CUDA static runtime and has no PyTorch
   C++ ABI or SageAttention dependency. Windows and Linux payload hashes are
