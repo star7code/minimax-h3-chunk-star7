@@ -1963,7 +1963,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "MiniMaxH3ActivationChunkStar7": "MiniMax H3 QKV Chunk & SLA - Star7",
+    "MiniMaxH3ActivationChunkStar7": "MiniMax H3 Activation Chunk - Star7",
     "MiniMaxH3ReferenceVideoLoadStar7": "MiniMax H3 Reference Video Load - Star7",
     "MiniMaxH3RoPEChunkPatch": "MiniMax H3 RoPE Chunk Patch (Legacy) - Star7",
 }

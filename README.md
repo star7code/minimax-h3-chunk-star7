@@ -1,8 +1,8 @@
-# MiniMax H3 Activation Chunk & SLA Attention - Star7
+# MiniMax H3 Activation Chunk & Attention Acceleration - Star7
 
 [中文说明](#中文说明) · [Benchmark](BENCHMARKS.md) · [Example workflows](examples/workflows)
 
-MiniMax H3 QKV/RoPE/MLP activation chunking and strict SLA attention for ComfyUI. SM75 uses the bundled CUDA SLA kernel; SM80+ uses Triton. Comfy Kitchen INT8 remains the default, while `existing` preserves an upstream Sage or other attention patch. Sampling, latent layout, VAE, duration, and output resolution are unchanged.
+MiniMax H3 activation chunking and selectable attention acceleration for ComfyUI. QKV/RoPE/MLP can be chunked independently; attention can use Comfy Kitchen INT8, preserve an existing upstream backend, or select an architecture-specific SLA mode. Sampling, latent layout, VAE, duration, and output resolution are unchanged.
 
 An optional reference-video loader can limit conditioning resolution before H3 Video VAE encoding.
 
@@ -10,7 +10,7 @@ An optional reference-video loader can limit conditioning resolution before H3 V
 
 ## 中文说明
 
-核心功能是 MiniMax H3 的 QKV/RoPE/MLP 激活分块与严格 SLA 注意力加速：SM75 使用随节点分发的 CUDA SLA 内核，SM80+ 使用 Triton。默认注意力为 Comfy Kitchen INT8，选择 `existing` 可保留上游 Sage 或其他注意力补丁；采样器、latent、VAE、时长和输出分辨率均不改变。
+本节点用于 MiniMax H3 的显存分块与可选注意力加速：QKV、RoPE、MLP 可分别分块；注意力可选择 Comfy Kitchen INT8、保留上游已有后端，或使用对应架构的 SLA 模式。采样器、latent、VAE、时长和输出分辨率均不改变。
 
 SLA 建议配合 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA) 使用；另附参考视频载入节点，可在 H3 Video VAE 编码前限制参考分辨率。
 
@@ -87,7 +87,7 @@ git clone https://github.com/star7code/minimax-h3-chunk-star7.git
 重启 ComfyUI，搜索：
 
 ```text
-MiniMax H3 QKV Chunk & SLA - Star7
+MiniMax H3 Activation Chunk - Star7
 ```
 
 节点界面会跟随 ComfyUI 语言：中文环境自动显示中文标题、参数名、提示和运行状态，

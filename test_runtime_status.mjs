@@ -93,7 +93,7 @@ const nodeData = {
 await extension.beforeRegisterNodeDef(MockNode, nodeData);
 extension.setup();
 
-assert.equal(nodeData.display_name, "MiniMax H3 QKV 分块与 SLA 加速 - Star7");
+assert.equal(nodeData.display_name, "MiniMax H3 显存分块加速 - Star7");
 assert.equal(
     nodeData.input.required.mlp_chunk_tokens[1].display_name,
     "MLP 分块大小（主要显存调节）",
@@ -125,7 +125,7 @@ assert.equal(
     node.widgets.find((widget) => widget.name === "disable_dynamic_prefetch")?.value,
     "实验功能已移除",
 );
-assert.equal(node.title, "MiniMax H3 QKV 分块与 SLA 加速 - Star7");
+assert.equal(node.title, "MiniMax H3 显存分块加速 - Star7");
 assert.equal(
     node.widgets.find((widget) => widget.name === "mlp_chunk_tokens")?.label,
     "MLP 分块大小（主要显存调节）",
@@ -303,7 +303,7 @@ statusHandler({
 
 locale = "en-US";
 localeChangeHandler();
-assert.equal(corrupted.title, "MiniMax H3 QKV Chunk & SLA - Star7");
+assert.equal(corrupted.title, "MiniMax H3 VRAM Chunk Acceleration - Star7");
 assert.equal(customTitleNode.title, "我的自定义标题");
 assert.equal(
     corrupted.widgets.find((widget) => widget.name === "mlp_chunk_tokens")?.label,

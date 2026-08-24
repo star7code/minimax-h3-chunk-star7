@@ -22,7 +22,7 @@ const REAL_WIDGET_NAMES = Object.keys(REAL_WIDGET_DEFAULTS);
 
 const TEXT = {
     en: {
-        title: "MiniMax H3 QKV Chunk & SLA - Star7",
+        title: "MiniMax H3 VRAM Chunk Acceleration - Star7",
         legacyTitle: "MiniMax H3 VRAM Chunk Acceleration (Legacy Workflow)",
         labels: {
             chunk_tokens: "RoPE chunk size",
@@ -54,7 +54,7 @@ const TEXT = {
         mlp: "MLP",
     },
     zh: {
-        title: "MiniMax H3 QKV 分块与 SLA 加速 - Star7",
+        title: "MiniMax H3 显存分块加速 - Star7",
         legacyTitle: "MiniMax H3 显存分块加速（旧工作流兼容）",
         labels: {
             chunk_tokens: "RoPE 分块大小",
