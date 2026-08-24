@@ -90,7 +90,7 @@ const TEXT = {
 
 const REFERENCE_LOAD_TEXT = {
     en: {
-        title: "MiniMax H3 Reference Video Load - Star7",
+        title: "Reference Video Load - Star7",
         labels: {
             video: "Reference video",
             max_long_edge: "Maximum long edge",
@@ -99,7 +99,7 @@ const REFERENCE_LOAD_TEXT = {
         outputs: ["reference video", "reference audio", "frame count", "report"],
     },
     zh: {
-        title: "MiniMax H3 参考视频载入 - Star7",
+        title: "参考视频载入 - Star7",
         labels: {
             video: "参考视频",
             max_long_edge: "最长边限制",
@@ -111,12 +111,12 @@ const REFERENCE_LOAD_TEXT = {
 
 const IMAGE_LOAD_SCALE_TEXT = {
     en: {
-        title: "Load & Scale Image - Star7",
+        title: "Reference Image Load - Star7",
         labels: { image: "Image", upscale_method: "Scale method", scale_by: "Scale factor" },
         outputs: ["image", "mask"],
     },
     zh: {
-        title: "加载并缩放图片 - Star7",
+        title: "参考图像载入 - Star7",
         labels: { image: "图片", upscale_method: "缩放算法", scale_by: "缩放系数" },
         outputs: ["图片", "遮罩"],
     },

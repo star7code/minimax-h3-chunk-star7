@@ -2051,7 +2051,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3ActivationChunkStar7": "MiniMax H3 Activation Chunk - Star7",
-    "MiniMaxH3ReferenceVideoLoadStar7": "MiniMax H3 Reference Video Load - Star7",
-    "MiniMaxH3LoadImageScaleStar7": "Load & Scale Image - Star7",
+    "MiniMaxH3ReferenceVideoLoadStar7": "Reference Video Load - Star7",
+    "MiniMaxH3LoadImageScaleStar7": "Reference Image Load - Star7",
     "MiniMaxH3RoPEChunkPatch": "MiniMax H3 RoPE Chunk Patch (Legacy) - Star7",
 }
