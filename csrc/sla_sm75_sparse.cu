@@ -2,11 +2,12 @@
 // The quantizer is derived from Comfy Kitchen and the FP16-PV kernel from the
 // Apache-2.0 SageAttention SM75 implementation; see third_party licenses.
 
+#include <cstdint>
+
 #include "sla_sm75_fp16_kernel.cuh"
 #include "third_party/comfy_kitchen_sage/qk_int_sv_i8_cuda.cuh"
 #include "third_party/comfy_kitchen_sage/quant_v_int8.cu"
 
-#include <cstdint>
 #include <cuda_runtime.h>
 
 #if defined(_WIN32)
