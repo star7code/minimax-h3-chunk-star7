@@ -50,7 +50,10 @@ __device__ __forceinline__ void load_tile(const T *ptr, float *out_vals) {
     out_vals[6] = v1.z;
     out_vals[7] = v1.w;
   } else {
-    const T *loaded = comfy::load_f16x8(ptr);
+    // Keep the V quantizer buildable with CUDA 11/12 as well as CUDA 13.
+    // comfy::load_f16x8 is only declared by newer CUDA headers.
+    const uint4 packed = *reinterpret_cast<const uint4 *>(ptr);
+    const T *loaded = reinterpret_cast<const T *>(&packed);
 #pragma unroll
     for (int i = 0; i < kDTile; ++i) {
       out_vals[i] = static_cast<float>(loaded[i]);
