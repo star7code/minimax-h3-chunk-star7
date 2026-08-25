@@ -183,10 +183,12 @@ def test_mlp_chunk_matches_full_forward(device=torch.device("cpu")):
     expected = h3_model.MLP.forward(mlp, x)
 
     chunk_nodes._CONFIG.update(mlp_chunk_tokens=256, auto_halve_on_oom=False, verbose=False)
+    mlp._star7_reuse_mlp_input = True
     actual = chunk_nodes._chunked_h3_mlp_forward(mlp, x)
 
     # Splitting a GEMM can select a different kernel tile, so float32 reduction
     # order may differ in the last bit even though every row's math is unchanged.
+    assert actual.data_ptr() == x.data_ptr()
     torch.testing.assert_close(actual, expected, rtol=1e-4, atol=2e-7)
 
 

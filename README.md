@@ -2,7 +2,7 @@
 
 [中文说明](#中文说明) · [Benchmark](BENCHMARKS.md) · [Example workflows](examples/workflows)
 
-MiniMax H3 activation chunking and selectable attention acceleration for ComfyUI. QKV/RoPE/MLP can be chunked independently; attention can use Comfy Kitchen INT8, preserve an existing upstream backend, or select an architecture-specific SLA mode. Sampling, latent layout, VAE, duration, and output resolution are unchanged.
+This ComfyUI project helps MiniMax H3 run high-quality, long-duration video generation on GPUs with limited VRAM. It provides independent QKV/RoPE/MLP activation chunking and selectable attention acceleration while preserving the original sampling process, latent layout, VAE, duration, and output resolution. Attention can use Comfy Kitchen INT8, preserve an existing upstream backend, or select an architecture-specific SLA mode.
 
 An optional reference-video loader can limit conditioning resolution before H3 Video VAE encoding.
 
@@ -10,9 +10,17 @@ An optional reference-video loader can limit conditioning resolution before H3 V
 
 ## 中文说明
 
+让高画质、长时长MiniMax H3视频在有限显存的显卡上高效运行。
+
 本节点用于 MiniMax H3 的显存分块与可选注意力加速：QKV、RoPE、MLP 可分别分块；注意力可选择 Comfy Kitchen INT8、保留上游已有后端，或使用对应架构的 SLA 模式。采样器、latent、VAE、时长和输出分辨率均不改变。
 
+SLA 是动态稀疏注意力，通过块级路由只计算选中的 K 块，减少长序列中的注意力计算量，因此中段采样通常更快。当前已经支持 SM75 的 CK + SLA 混合注意力：采样前段和后段使用 Comfy Kitchen INT8，中段使用 SM75 All-INT8 SLA，在速度与画质之间取得更好的平衡；该模式仍属于实验功能，实际收益取决于显卡、分辨率、帧数和采样步数。
+
 SLA 建议配合 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA) 使用；另附参考视频载入节点，可在 H3 Video VAE 编码前限制参考分辨率。
+
+对于不支持原生 BF16 的 RTX 20 系等显卡，请先使用独立的
+[MiniMax H3 Native FP16 Loader - Star7](https://github.com/star7code/minimax-h3-fp16-exact-star7)，
+再连接本分块节点；支持原生 BF16 的显卡通常只需使用本分块节点。
 
 节点控制 MiniMax H3 长序列推理的三个临时显存峰值：
 
@@ -248,6 +256,7 @@ SM75 上 `qkv_chunk_tokens=0` 或高于 `4096` 时，运行状态会明确显示
 | Comfy Kitchen INT8 | 约120秒/步 | 约620秒 | 基准 |
 | SLA SM75 QK-INT8/PV-FP16 | **96.68秒/步** | **约470秒** | **约1.24×** |
 | SLA SM75 All-INT8 实验模式 | **60.83秒/步** | **约325秒** | **约1.97×** |
+| CK + SLA Hybrid（SM75，CK 2步 + SLA 2步） | — | **约463秒** | — |
 
 建议 SLA 配合 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA) 使用。
 完整任务包含模型调度、VAE 解码、超分、音频和视频封装；结果仅代表本机配置。

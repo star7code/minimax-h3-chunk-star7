@@ -586,20 +586,25 @@ def _run_raw_impl(
         # Match the query warp consumed by the SM75 kernel. Per-16-row scales
         # avoid a mixed audio/video CTA allowing much larger video Q values to
         # erase the last audio queries during INT8 quantization.
+        # Quantize Q and K one at a time. Keeping both full FP16 sources alive
+        # while allocating both INT8 copies creates an avoidable peak for long
+        # H3 sequences. The kernels only need the quantized tensors after this
+        # point, so release each FP16 source immediately after its copy exists.
         q_int8, q_scale = _quantize(q, 16, multiplier=1.0)
+        del q
         required_q_scales = query_blocks * 8
         if q_scale.shape[-1] < required_q_scales:
             q_scale = torch.nn.functional.pad(
                 q_scale, (0, required_q_scales - q_scale.shape[-1]), value=1.0
             )
         k_int8, k_scale = _quantize(k, BLOCK_K, multiplier=1.0, mean=k_mean)
+        del k, k_mean
         v_input: torch.Tensor | list[torch.Tensor] = v
         if release_inputs:
             # Routing and Q/K quantization have finished. Drop the two large
             # FP16 sources before allocating the native output and, in the
             # All-INT8 mode, transfer sole V ownership to the native wrapper so
             # it can recycle V storage immediately after V quantization.
-            del q, k, k_mean
             if all_int8:
                 v_input = [v]
                 del v
@@ -624,18 +629,23 @@ def _run_raw_impl(
             raise SLAUnavailableError(
                 "Experimental All-INT8 SLA is currently available only on SM75"
             )
+        # Keep the full-sequence preprocessing peak bounded: after each source
+        # is quantized, its FP16 storage is no longer needed by the Triton
+        # attention kernel.
         q_int8, q_scale = _quantize(
             q, BLOCK_Q, multiplier=(HEAD_DIM ** -0.5) * _LOG2E,
         )
+        del q
         k_int8, k_scale = _quantize(
             k, BLOCK_K, multiplier=1.0, mean=k_mean,
         )
+        del k, k_mean
         if debug:
             _log_debug_tensor("q_scale", q_scale)
             _log_debug_tensor("k_scale", k_scale)
         output = torch.empty_like(v)
-        compute_query_blocks = triton.cdiv(q.shape[-2], 64)
-        _sparse_qk_int8_pv_fp16_kernel[(compute_query_blocks, q.shape[0] * q.shape[1])](
+        compute_query_blocks = triton.cdiv(q_int8.shape[-2], 64)
+        _sparse_qk_int8_pv_fp16_kernel[(compute_query_blocks, q_int8.shape[0] * q_int8.shape[1])](
             q_int8,
             k_int8,
             v,

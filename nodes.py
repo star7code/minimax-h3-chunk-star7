@@ -548,7 +548,11 @@ def _run_chunked_h3_mlp(
     seq_len = x.shape[0]
     chunk = seq_len if configured_chunk == 0 else max(256, configured_chunk)
     _set_sequence_status("MLP", seq_len)
-    output = None
+    # H3 MLP is row-independent and the block does not need the normalized
+    # input after each row has been transformed. Reuse ``x`` as the output
+    # buffer when the dtype is unchanged instead of retaining a second full-S
+    # hidden-state allocation.
+    output = x if bool(getattr(self, "_star7_reuse_mlp_input", False)) else None
     current_chunk = min(chunk, seq_len)
     auto_halve = bool(_CONFIG["auto_halve_on_oom"])
     mode = "upstream-preserved" if upstream_forward is not None else "native"
@@ -587,6 +591,10 @@ def _run_chunked_h3_mlp(
                     "unexpected H3 MLP chunk output: "
                     f"got shape={tuple(result.shape)}, expected shape={expected}"
                 )
+            if output is x and result.dtype != x.dtype:
+                # Preserve the previous safe behavior for an upstream MLP
+                # that deliberately changes the block compute dtype.
+                output = None
             if output is None:
                 output = torch.empty(
                     (seq_len, x.shape[1]), dtype=result.dtype, device=result.device
@@ -753,6 +761,66 @@ def _hybrid_sampling_context(transformer_options: dict) -> tuple[int, int, str]:
         float(current_value.item()), total_steps, step_index
     )
     return step_index, total_steps, backend
+
+
+def _hybrid_step_timing_start(
+    transformer_options: dict,
+    x: torch.Tensor,
+    step_index: int,
+    total_steps: int,
+    backend: str,
+) -> None:
+    """Start one full H3 block-loop timer for the selected hybrid backend."""
+    if x.device.type == "cuda":
+        event = torch.cuda.Event(enable_timing=True)
+        event.record(torch.cuda.current_stream(x.device))
+        transformer_options["_star7_hybrid_step_timing"] = {
+            "step": step_index,
+            "total": total_steps,
+            "backend": backend,
+            "start_event": event,
+            "start_time": None,
+        }
+    else:
+        transformer_options["_star7_hybrid_step_timing"] = {
+            "step": step_index,
+            "total": total_steps,
+            "backend": backend,
+            "start_event": None,
+            "start_time": time.perf_counter(),
+        }
+
+
+def _hybrid_step_timing_finish(
+    transformer_options: dict,
+    x: torch.Tensor,
+    step_index: int,
+    total_steps: int,
+    backend: str,
+    block_count: int,
+) -> None:
+    """Finish and log one backend-specific H3 block-loop duration."""
+    timing = transformer_options.get("_star7_hybrid_step_timing")
+    if not isinstance(timing, dict) or timing.get("step") != step_index:
+        return
+
+    start_event = timing.get("start_event")
+    if start_event is not None and x.device.type == "cuda":
+        end_event = torch.cuda.Event(enable_timing=True)
+        end_event.record(torch.cuda.current_stream(x.device))
+        end_event.synchronize()
+        elapsed_seconds = start_event.elapsed_time(end_event) / 1000.0
+    else:
+        start_time = timing.get("start_time")
+        if start_time is None:
+            return
+        elapsed_seconds = time.perf_counter() - start_time
+
+    _LOG.info(
+        "[Star7 H3 Hybrid] step %d/%d -> %-3s | %7.2fs/it | blocks=%d",
+        step_index + 1, total_steps, backend, elapsed_seconds, block_count,
+    )
+    transformer_options.pop("_star7_hybrid_step_timing", None)
 
 
 def _complete_automatic_sla_debug(block_index) -> None:
@@ -1151,7 +1219,10 @@ def _minimax_hybrid_attention_forward(
 _minimax_hybrid_attention_forward._star7_consumes_input = True
 
 
-def _sla_segment_passthrough(original_forward, block_index=None):
+def _sla_segment_passthrough(
+    original_forward, block_index=None, last_block_index=None,
+    hybrid_timing=False,
+):
     """Expose H3 packed segments to SLA while preserving the upstream block."""
     original_forward = _weak_callable(original_forward)
 
@@ -1159,6 +1230,13 @@ def _sla_segment_passthrough(original_forward, block_index=None):
         old_segments = getattr(self.attn, "_star7_sla_mod_segments", None)
         self.attn._star7_sla_mod_segments = mod_segments
         try:
+            timing_context = None
+            if hybrid_timing:
+                timing_context = _hybrid_sampling_context(transformer_options)
+                if block_index == 0:
+                    _hybrid_step_timing_start(
+                        transformer_options, x, *timing_context,
+                    )
             result = original_forward(
                 x, t_emb, mod_segments, rope_freqs,
                 transformer_options=transformer_options,
@@ -1177,6 +1255,11 @@ def _sla_segment_passthrough(original_forward, block_index=None):
             )
             if _is_sla_debug_block(block_index):
                 _complete_automatic_sla_debug(block_index)
+            if hybrid_timing and block_index == last_block_index:
+                _hybrid_step_timing_finish(
+                    transformer_options, result, *timing_context,
+                    last_block_index + 1,
+                )
             return result
         finally:
             if old_segments is None:
@@ -1381,14 +1464,24 @@ def _prepare_h3_qkv_chunked(
         if x.device.type == "cuda":
             allocated = torch.cuda.memory_allocated(x.device) / 1024**3
             reserved = torch.cuda.memory_reserved(x.device) / 1024**3
+        fixed_qkv_gib = (
+            3 * sequence * heads * head_dim * torch.empty(
+                (), dtype=output_dtype
+            ).element_size() / 1024**3
+        )
+        hidden_gib = (
+            sequence * x.shape[1] * x.element_size() / 1024**3
+        )
         _LOG.info(
             "[Star7 H3 Chunk] First-block QKV | S=%d | chunk=%d x %d | "
             "quantized=%s | weights=%s | %s->%s | first projection=%.1fms | "
-            "first norm+RoPE=%.1fms | total=%.1fms | VRAM=%.2f/%.2fGiB",
+            "first norm+RoPE=%.1fms | total=%.1fms | fixed-QKV=%.2fGiB | "
+            "hidden=%.2fGiB | VRAM=%.2f/%.2fGiB",
             sequence, chunk, (sequence + chunk - 1) // chunk,
             qkv_quantized, qkv_weight_mode, x.dtype, output_dtype,
             first_projection_ms or 0.0, first_rope_ms or 0.0,
             (time.perf_counter() - total_profile_start) * 1000.0,
+            fixed_qkv_gib, hidden_gib,
             allocated, reserved,
         )
     return q_out, k_out, v_out
@@ -1550,6 +1643,7 @@ def install_model_patch(
     transformer_options["star7_h3_output_finite_guard"] = NODE_VERSION
 
     if attention_backend in sla_or_hybrid_backends:
+        last_block_index = len(diffusion_model.blocks) - 1
         for index, block in enumerate(diffusion_model.blocks):
             block._star7_block_index = index
             block.attn._star7_block_index = index
@@ -1574,7 +1668,10 @@ def install_model_patch(
                 _weak_method(
                     block,
                     _sla_segment_passthrough(
-                        upstream_block_forward, block_index=index
+                        upstream_block_forward,
+                        block_index=index,
+                        last_block_index=last_block_index,
+                        hybrid_timing=hybrid_attention,
                     ),
                 ),
             )
@@ -1625,6 +1722,7 @@ def install_model_patch(
     if int(mlp_chunk_tokens) != 0:
         for index, block in enumerate(diffusion_model.blocks):
             mlp_path = f"diffusion_model.blocks.{index}.mlp.forward"
+            block.mlp._star7_reuse_mlp_input = True
             upstream_mlp = patched.object_patches.get(mlp_path)
             if upstream_mlp is not None:
                 upstream_mlp = _star7_wrapper_original(
