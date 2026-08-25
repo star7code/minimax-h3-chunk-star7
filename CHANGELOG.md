@@ -12,6 +12,9 @@
   run, where QKV conversion, routing/quantization, raw SLA output, `out_proj`,
   and each MLP chunk are checked without adding normal-path synchronizations.
   `STAR7_SLA_DEBUG_BLOCK` is supported for remote SM80+/SM120 reproduction.
+- SM100/SM120 strict SLA now probes those internal stages during the first run
+  automatically and reports the first non-finite stage directly; SM75 and
+  established SM80+ paths keep the previous opt-in diagnostics behavior.
 - NaN/Inf errors now report bad token rows/ranges and heads, and describe the
   real architecture precision path instead of mentioning SM75 FP16 Exact on
   SM80+/SM120. Repeated model/block finite wrappers are collapsed to one layer.

@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import time
+import weakref
 from types import MethodType
 from typing import Optional
 
@@ -37,11 +38,37 @@ _CONFIG = {
     "status_sequence_mlp": None,
     "status_sequence_qkv": None,
     "auto_halve_on_oom": True,
+    "auto_sla_probe": False,
     "verbose": True,
     "reuse_mlp_weights": True,
     "node_id": None,
     "fp16_exact_present": False,
 }
+
+
+def _weak_callable(value):
+    """Keep an upstream bound model method callable without retaining its owner."""
+    if value is None:
+        return None
+    owner = getattr(value, "__self__", None)
+    function = getattr(value, "__func__", value)
+    if owner is None or isinstance(owner, weakref.ProxyTypes):
+        return value
+
+    owner_ref = weakref.ref(owner)
+
+    def call(*args, **kwargs):
+        current = owner_ref()
+        if current is None:
+            raise ReferenceError("Star7 H3 Chunk wrapper owner was released")
+        return function(current, *args, **kwargs)
+
+    return call
+
+
+def _weak_method(owner, function):
+    """Bind a model patch through a weak proxy instead of the model module."""
+    return MethodType(function, weakref.proxy(owner))
 
 
 def _current_cuda_capability():
@@ -597,6 +624,8 @@ def _chunked_h3_mlp_forward(self, x: torch.Tensor) -> torch.Tensor:
 
 
 def _make_chunked_h3_mlp_forward(upstream_forward=None):
+    upstream_forward = _weak_callable(upstream_forward)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return _run_chunked_h3_mlp(self, x, upstream_forward=upstream_forward)
     forward._star7_wrapper_kind = "mlp-chunk-upstream"
@@ -620,6 +649,15 @@ def _sla_debug_block() -> Optional[int]:
 def _is_sla_debug_block(block_index) -> bool:
     selected = _sla_debug_block()
     return selected is not None and block_index is not None and int(block_index) == selected
+
+
+def _auto_sla_probe_enabled() -> bool:
+    """Probe every SLA stage only on newer architectures during first-run triage."""
+    return bool(_CONFIG.get("auto_sla_probe"))
+
+
+def _auto_sla_probe_for_capability(capability) -> bool:
+    return bool(capability and capability >= (10, 0))
 
 
 def _complete_automatic_sla_debug(block_index) -> None:
@@ -702,10 +740,13 @@ def _raise_strict_sla_failure(
     heads = (
         f", bad-heads={structure['bad_heads']}" if structure["bad_heads"] else ""
     )
-    rerun = (
-        f" Detailed diagnostics are armed for block {block_index} on the next run."
-        if block_index is not None else ""
-    )
+    if _auto_sla_probe_enabled():
+        rerun = " Automatic new-architecture stage diagnostics were active for this run."
+    else:
+        rerun = (
+            f" Detailed diagnostics are armed for block {block_index} on the next run."
+            if block_index is not None else ""
+        )
     raise RuntimeError(
         f"Star7 strict SLA detected NaN/Inf after {stage} "
         f"(nan={nan_count}, inf={inf_count}, bad-rows={structure['bad_rows']}, "
@@ -737,11 +778,19 @@ def _debug_sla_tensor(
     row_dim: int = 0,
     check_fp16_range: bool = False,
 ) -> None:
-    """Synchronizing checkpoint enabled only for one explicitly armed block."""
-    if not _is_sla_debug_block(block_index):
+    """Check an explicitly armed block, or probe all stages on newer GPUs."""
+    targeted = _is_sla_debug_block(block_index)
+    automatic = _auto_sla_probe_enabled()
+    if not targeted and not automatic:
         return
     finite = torch.isfinite(value)
     is_finite = bool(finite.all().item())
+    if automatic and not targeted and not is_finite:
+        _raise_strict_sla_failure(
+            value, stage, block_index=block_index, row_dim=row_dim
+        )
+    if automatic and not targeted:
+        return
     max_abs = float(value.abs().max().item()) if is_finite and value.numel() else float("nan")
     overflow = (
         int((value.abs() > torch.finfo(torch.float16).max).sum().item())
@@ -791,6 +840,8 @@ def _star7_wrapper_original(value, kind: str):
 
 def _h3_output_finite_passthrough(original_forward):
     """Reject invalid H3 video/audio velocities before the sampler or VAE."""
+    original_forward = _weak_callable(original_forward)
+
     def forward(self, *args, **kwargs):
         result = original_forward(*args, **kwargs)
         labels = ("video model output", "audio model output")
@@ -969,6 +1020,8 @@ _minimax_sla_forward._star7_consumes_input = True
 
 def _sla_segment_passthrough(original_forward, block_index=None):
     """Expose H3 packed segments to SLA while preserving the upstream block."""
+    original_forward = _weak_callable(original_forward)
+
     def forward(self, x, t_emb, mod_segments, rope_freqs, transformer_options={}):
         old_segments = getattr(self.attn, "_star7_sla_mod_segments", None)
         self.attn._star7_sla_mod_segments = mod_segments
@@ -1264,6 +1317,7 @@ def install_model_patch(
         node_id=node_id,
     )
     _CONFIG["attention_backend"] = attention_backend
+    _CONFIG["auto_sla_probe"] = False
     from comfy.ldm.minimax import model as h3_model
     patched = model.clone()
     diffusion_model = patched.get_model_object("diffusion_model")
@@ -1328,9 +1382,9 @@ def install_model_patch(
     )
     patched.add_object_patch(
         model_forward_path,
-        MethodType(
-            _h3_output_finite_passthrough(upstream_model_forward),
+        _weak_method(
             diffusion_model,
+            _h3_output_finite_passthrough(upstream_model_forward),
         ),
     )
     transformer_options["star7_h3_output_finite_guard"] = NODE_VERSION
@@ -1342,7 +1396,7 @@ def install_model_patch(
             block.mlp._star7_block_index = index
             patched.add_object_patch(
                 f"diffusion_model.blocks.{index}.attn.forward",
-                MethodType(_minimax_sla_forward, block.attn),
+                _weak_method(block.attn, _minimax_sla_forward),
             )
             block_path = f"diffusion_model.blocks.{index}.forward"
             upstream_block_forward = patched.object_patches.get(
@@ -1353,15 +1407,17 @@ def install_model_patch(
             )
             patched.add_object_patch(
                 block_path,
-                MethodType(
+                _weak_method(
+                    block,
                     _sla_segment_passthrough(
                         upstream_block_forward, block_index=index
-                    ), block
+                    ),
                 ),
             )
         attention_patch_name = attention_backend
         sage_attention = False
         sla_attention = True
+        _CONFIG["auto_sla_probe"] = _auto_sla_probe_for_capability(capability)
         if verbose and attention_backend == "sla_sm75_all_int8_experimental":
             _LOG.warning(
                 "[Star7 H3 Chunk] All-INT8 SLA also approximates audio; use "
@@ -1383,7 +1439,7 @@ def install_model_patch(
             for index, block in enumerate(diffusion_model.blocks):
                 patched.add_object_patch(
                     f"diffusion_model.blocks.{index}.attn.forward",
-                    MethodType(_minimax_ck_int8_attention_forward, block.attn),
+                    _weak_method(block.attn, _minimax_ck_int8_attention_forward),
                 )
             attention_patch_name = "star7_comfy_kitchen_int8"
             sage_attention = False
@@ -1410,7 +1466,7 @@ def install_model_patch(
             mlp_forward = _make_chunked_h3_mlp_forward(upstream_mlp)
             patched.add_object_patch(
                 mlp_path,
-                MethodType(mlp_forward, block.mlp),
+                _weak_method(block.mlp, mlp_forward),
             )
 
     # Dynamic VBAR prefetch is intentionally disabled for H3.  The upstream
@@ -1476,6 +1532,13 @@ def install_model_patch(
                         capability[0], capability[1],
                     )
         selected_debug_block = _sla_debug_block() if sla_attention else None
+        if _CONFIG.get("auto_sla_probe"):
+            _LOG.info(
+                "[Star7 H3 Chunk] Automatic SLA stage diagnostics enabled for "
+                "SM%d%d; the first non-finite QKV/SLA/out_proj/MLP stage will "
+                "be reported in this run.",
+                capability[0], capability[1],
+            )
         if selected_debug_block is not None:
             _LOG.info(
                 "[Star7 H3 Chunk] Targeted SLA diagnostics armed for block %d",

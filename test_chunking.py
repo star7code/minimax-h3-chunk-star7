@@ -1,9 +1,11 @@
 import importlib.util
+import gc
 import hashlib
 import json
 import pathlib
 import sys
 from types import MethodType, SimpleNamespace
+import weakref
 
 import torch
 
@@ -313,6 +315,24 @@ def test_star7_finite_wrapper_is_idempotent_and_unwraps_legacy_shape():
     ) is original_forward
 
 
+def test_weak_model_method_does_not_retain_owner():
+    class Owner:
+        def __init__(self):
+            self.value = 3
+
+        def forward(self, value):
+            return self.value + value
+
+    owner = Owner()
+    method = chunk_nodes._weak_method(owner, Owner.forward)
+    owner_ref = weakref.ref(owner)
+    assert method(4) == 7
+
+    del owner
+    gc.collect()
+    assert owner_ref() is None
+
+
 def test_sla_failure_structure_reports_chunk_rows_and_heads():
     hidden = torch.zeros(10, 7)
     hidden[2:6] = float("nan")
@@ -334,6 +354,32 @@ def test_sla_error_precision_text_is_architecture_specific():
     sm120 = chunk_nodes._sla_architecture_note_for_capability((12, 0))
     assert "SM120" in sm120
     assert "SM75 FP16 Exact" not in sm120
+    assert not chunk_nodes._auto_sla_probe_for_capability((7, 5))
+    assert not chunk_nodes._auto_sla_probe_for_capability((8, 9))
+    assert chunk_nodes._auto_sla_probe_for_capability((12, 0))
+
+
+def test_new_architecture_auto_sla_probe_reports_first_bad_stage():
+    value = torch.zeros(8, 4)
+    value[3] = float("nan")
+    original_probe = chunk_nodes._CONFIG["auto_sla_probe"]
+    original_block = chunk_nodes._LAST_FAILED_SLA_BLOCK
+    try:
+        chunk_nodes._CONFIG["auto_sla_probe"] = False
+        chunk_nodes._debug_sla_tensor("unarmed", value, block_index=44)
+
+        chunk_nodes._CONFIG["auto_sla_probe"] = True
+        try:
+            chunk_nodes._debug_sla_tensor("raw SLA output", value, block_index=44)
+        except RuntimeError as exc:
+            message = str(exc)
+            assert "after raw SLA output" in message
+            assert "Automatic new-architecture stage diagnostics" in message
+        else:
+            raise AssertionError("automatic SLA probe did not report a non-finite stage")
+    finally:
+        chunk_nodes._CONFIG["auto_sla_probe"] = original_probe
+        chunk_nodes._LAST_FAILED_SLA_BLOCK = original_block
 
 
 def test_audio_guard_status_distinguishes_sm75_full_from_sm80_routing_only():
@@ -433,7 +479,11 @@ def test_install_preserves_upstream_block_patch():
     wrapped_mlp = patched.object_patches[
         "diffusion_model.blocks.0.mlp.forward"
     ].__func__
-    assert wrapped_mlp._star7_original_forward is external_mlp_patch
+    # The upstream behavior is preserved through a weak callable. Keeping the
+    # original bound method object here would retain the MLP and its H3 model.
+    assert callable(wrapped_mlp._star7_original_forward)
+    assert wrapped_mlp._star7_original_forward is not external_mlp_patch
+    assert not isinstance(wrapped_mlp._star7_original_forward, MethodType)
     assert patched.wrappers == {}
 
     patched = chunk_nodes.install_model_patch(
