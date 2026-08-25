@@ -5,6 +5,7 @@ import json
 import pathlib
 import sys
 from types import MethodType, SimpleNamespace
+from unittest import mock
 import weakref
 
 import torch
@@ -18,6 +19,128 @@ SPEC = importlib.util.spec_from_file_location("h3_chunk_nodes", pathlib.Path(__f
 chunk_nodes = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(chunk_nodes)
+
+
+def test_hybrid_scheduler_supports_arbitrary_step_counts():
+    expected = {
+        1: "CK",
+        2: "CK CK",
+        3: "CK SLA CK",
+        4: "CK SLA SLA CK",
+        5: "CK SLA SLA SLA CK",
+        6: "CK SLA SLA SLA SLA CK",
+        7: "CK CK SLA SLA SLA CK CK",
+        8: "CK CK SLA SLA SLA SLA CK CK",
+        9: "CK CK SLA SLA SLA SLA SLA CK CK",
+        12: "CK CK SLA SLA SLA SLA SLA SLA SLA SLA CK CK",
+    }
+    for total_steps, sequence in expected.items():
+        actual = " ".join(
+            chunk_nodes.select_hybrid_backend(index, total_steps)
+            for index in range(total_steps)
+        )
+        assert actual == sequence
+
+    for total_steps in (20, 50):
+        sequence = [
+            chunk_nodes.select_hybrid_backend(index, total_steps)
+            for index in range(total_steps)
+        ]
+        assert sequence[0] == sequence[-1] == "CK"
+        assert sequence == list(reversed(sequence))
+        assert "SLA" in sequence
+
+
+def test_hybrid_sampler_context_is_step_stable_across_h3_blocks():
+    sample_sigmas = torch.tensor([1.0, 0.7, 0.4, 0.0])
+    transformer_options = {
+        "sample_sigmas": sample_sigmas,
+        "sigmas": torch.tensor([1.0]),
+    }
+    first = chunk_nodes._hybrid_sampling_context(transformer_options)
+    assert first == (0, 3, "CK")
+    for _ in range(50):
+        assert chunk_nodes._hybrid_sampling_context(transformer_options) == first
+
+    transformer_options["sigmas"] = torch.tensor([0.7])
+    assert chunk_nodes._hybrid_sampling_context(transformer_options) == (1, 3, "SLA")
+
+
+def test_hybrid_attention_dispatch_reuses_existing_paths():
+    options = {
+        "sample_sigmas": torch.tensor([1.0, 0.7, 0.4, 0.0]),
+        "sigmas": torch.tensor([1.0]),
+    }
+    with (
+        mock.patch.object(chunk_nodes, "_minimax_ck_int8_attention_forward", return_value="ck") as ck,
+        mock.patch.object(chunk_nodes, "_minimax_sla_forward", return_value="sla") as sla,
+    ):
+        assert chunk_nodes._minimax_hybrid_attention_forward(object(), None, transformer_options=options) == "ck"
+        ck.assert_called_once()
+        sla.assert_not_called()
+
+        options["sigmas"] = torch.tensor([0.7])
+        assert chunk_nodes._minimax_hybrid_attention_forward(object(), None, transformer_options=options) == "sla"
+        sla.assert_called_once()
+
+
+def test_hybrid_sampler_context_requires_real_comfy_sigma_metadata():
+    try:
+        chunk_nodes._hybrid_sampling_context({"sigmas": torch.tensor([1.0])})
+    except RuntimeError as exc:
+        assert "sample_sigmas" in str(exc)
+    else:
+        raise AssertionError("Hybrid scheduling must not infer total steps")
+
+
+def test_hybrid_all_int8_selects_existing_all_int8_sla_path():
+    sequence = 129
+    qkv = [
+        torch.zeros((1, 1, sequence, 128), dtype=torch.float16)
+        for _ in range(3)
+    ]
+    captured = []
+
+    def sparse_attention_consume(owned, **kwargs):
+        captured.append(kwargs["all_int8"])
+        output = torch.zeros_like(owned[0])
+        return SimpleNamespace(
+            output=output,
+            query_blocks=1,
+            key_blocks=1,
+            selected_key_blocks=1,
+            protected_query_blocks=0,
+            effective_sparsity=0.0,
+            dense_guard_status="test",
+            implementation="test",
+        )
+
+    fake_backend = SimpleNamespace(
+        sparse_attention_consume=sparse_attention_consume,
+    )
+    attention = SimpleNamespace(
+        heads=1,
+        head_dim=128,
+        out_proj=lambda value: value,
+        _star7_block_index=0,
+    )
+    original_backend = chunk_nodes._CONFIG.get("attention_backend")
+    original_verbose = chunk_nodes._CONFIG.get("verbose")
+    try:
+        chunk_nodes._CONFIG["verbose"] = False
+        input_tokens = torch.zeros((sequence, 128), dtype=torch.float16)
+        with (
+            mock.patch.object(chunk_nodes, "_load_sla_backend", return_value=fake_backend),
+            mock.patch.object(chunk_nodes, "_prepare_h3_qkv_chunked", return_value=tuple(qkv)),
+        ):
+            chunk_nodes._CONFIG["attention_backend"] = chunk_nodes.HYBRID_ALL_INT8_BACKEND_NAME
+            chunk_nodes._minimax_sla_forward(attention, input_tokens)
+            chunk_nodes._CONFIG["attention_backend"] = "sla_sm75_qk_int8_pv_fp16"
+            chunk_nodes._minimax_sla_forward(attention, input_tokens)
+        assert captured == [True, False]
+    finally:
+        chunk_nodes._CONFIG["attention_backend"] = original_backend
+        chunk_nodes._CONFIG["verbose"] = original_verbose
 
 
 def _rotation_table(seq_len: int, rot_dim: int, device: torch.device) -> torch.Tensor:
@@ -900,6 +1023,20 @@ def test_reference_video_long_edge_upscale_is_explicit():
     assert chunk_nodes._long_edge_reference_size(360, 640, 1056, True) == (608, 1056)
 
 
+def test_reference_image_uses_long_edge_controls():
+    inputs = chunk_nodes.MiniMaxH3LoadImageScaleStar7.INPUT_TYPES()["required"]
+    assert "最长边" in inputs
+    assert "允许小图放大" in inputs
+    assert "缩放算法" not in inputs
+    assert "scale_by" not in inputs
+    assert inputs["最长边"][1]["default"] == 1024
+    assert inputs["最长边"][1]["min"] == 0
+    assert inputs["允许小图放大"][1]["default"] is False
+    assert chunk_nodes._normalize_reference_max_long_edge(0) == 0
+    assert chunk_nodes._normalize_reference_max_long_edge(1) == 1024
+    assert chunk_nodes._normalize_reference_max_long_edge(1024) == 1024
+
+
 def test_reference_video_frame_count_is_h3_aligned():
     assert chunk_nodes._align_h3_reference_frame_count(360) == 345
     assert chunk_nodes._align_h3_reference_frame_count(205) == 192
@@ -955,6 +1092,14 @@ def test_sla_backend_is_strict_and_architecture_checked():
     choices = chunk_nodes.MiniMaxH3ActivationChunkStar7.INPUT_TYPES()["required"][
         "attention_backend"
     ][0]
+    assert chunk_nodes.HYBRID_ALL_INT8_BACKEND_NAME == "hybrid_sm75_ck_sla_all_int8"
+    assert chunk_nodes.HYBRID_ALL_INT8_BACKEND_NAME in choices
+    assert choices[2:6] == [
+        backend.SM75_BACKEND_NAME,
+        backend.SM75_ALL_INT8_BACKEND_NAME,
+        chunk_nodes.HYBRID_ALL_INT8_BACKEND_NAME,
+        backend.SM80PLUS_BACKEND_NAME,
+    ]
     assert backend.SM75_BACKEND_NAME in choices
     assert backend.SM75_ALL_INT8_BACKEND_NAME in choices
     assert backend.SM80PLUS_BACKEND_NAME in choices
@@ -1004,6 +1149,15 @@ def test_sla_backend_is_strict_and_architecture_checked():
             raise AssertionError("SM80+ SLA incorrectly accepted missing Triton")
 
         backend.triton = object()
+        backend.torch.cuda.get_device_capability = lambda _device=None: (8, 0)
+        try:
+            backend.check_runtime_support(
+                requested_backend=backend.SM75_BACKEND_NAME
+            )
+        except backend.SLAUnavailableError as exc:
+            assert "requires exactly SM75" in str(exc)
+        else:
+            raise AssertionError("SM75 Hybrid SLA incorrectly accepted SM80")
         for capability in ((8, 0), (8, 6), (8, 9), (12, 0)):
             backend.torch.cuda.get_device_capability = (
                 lambda _device=None, cap=capability: cap
@@ -1134,6 +1288,11 @@ def test_sla_attention_forward_cuda():
 
 
 if __name__ == "__main__":
+    test_hybrid_scheduler_supports_arbitrary_step_counts()
+    test_hybrid_sampler_context_is_step_stable_across_h3_blocks()
+    test_hybrid_attention_dispatch_reuses_existing_paths()
+    test_hybrid_sampler_context_requires_real_comfy_sigma_metadata()
+    test_hybrid_all_int8_selects_existing_all_int8_sla_path()
     devices = [torch.device("cpu")]
     if torch.cuda.is_available():
         devices.append(torch.device("cuda"))
@@ -1163,6 +1322,7 @@ if __name__ == "__main__":
     test_reference_video_loader_is_registered()
     test_reference_video_long_edge_limit_preserves_orientation()
     test_reference_video_long_edge_upscale_is_explicit()
+    test_reference_image_uses_long_edge_controls()
     test_reference_video_frame_count_is_h3_aligned()
     test_reference_audio_keeps_source_duration_instead_of_frame_grid_trim()
     test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse()

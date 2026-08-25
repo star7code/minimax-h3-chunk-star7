@@ -30,6 +30,7 @@ SLA 建议配合 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Min
 | `comfy_kitchen_int8` | 由 CK 决定 | Comfy Kitchen INT8 |
 | `sla_sm75_qk_int8_pv_fp16` | SM75 | QK INT8、PV FP16；推荐模式 |
 | `sla_sm75_all_int8_experimental` | SM75 | QK INT8、PV INT8；实验模式 |
+| `hybrid_sm75_ck_sla_all_int8` | SM75 | 采样步级 CK / SM75 All-INT8 SLA / CK；实验模式 |
 | `sla_sm80+_qk_int8_pv_fp16` | SM80+ | QK INT8、PV FP16；Triton |
 
 SLA 按 LightX2V 契约使用 `Q=128`、`K=64` 动态块路由，视频查询约保留 15% 的 K 块；
@@ -47,6 +48,13 @@ SM80+ 当前仅使用音频优先路由，日志明确显示 `routing-priority-o
 - NaN/Inf 检查只负责检测，不替代 FP16 修复。严格 SLA 会在每个完整 Transformer block 后检查并报告首个故障 block；下次运行只对该 block 启用 QKV、SLA、`out_proj` 和 MLP 分段诊断。所有注意力模式还会在 H3 的视频/音频模型输出处统一检查。
 - 外部 TE-Speed 等 block-loop 缓存可以接在本节点之前；完整步与缓存前缀仍会经过 Star7 block/attention 补丁。
 - All-INT8 量化误差高于 FP16-PV，因此保留为实验选项。
+- `hybrid_sm75_ck_sla_all_int8` 是 SM75 专用采样步级调度：默认前约 `1/6` 和后约
+  `1/6` 使用现有 CK，中间约 `2/3` 使用现有 SM75 All-INT8 SLA。SM80+ 尚未适配，
+  选择该模式会直接报不支持，不会自动改用 SM80+ SLA。它是在完整采样 step 之间
+  切换 backend，不是在一次 Attention 内混合两个 kernel；Hybrid 的 SLA step 仍保持
+  严格 SLA 语义，失败不会偷偷切回 CK。中间
+  SLA 区域调用现有的 SM75 All-INT8 实验内核。All-INT8 只改变中间区域，仍可能带来
+  比 FP16-PV 更大的近似误差，不代表已完成画质验证。
 
 ## 安装
 
@@ -95,7 +103,7 @@ MiniMax H3 Activation Chunk - Star7
 节点界面会跟随 ComfyUI 语言：中文环境自动显示中文标题、参数名、提示和运行状态，
 其他语言环境显示英文。汉化只改变界面文字，不改变工作流保存的参数名或实际值；旧工作流
 以及 `existing`、`comfy_kitchen_int8` 旧注意力选项均保持兼容；新版本增加
-三个架构/精度明确的 SLA 名称；开发阶段的旧 SLA 值不再读取。
+架构/精度明确的 SLA 名称和可选的 Hybrid 名称；开发阶段的旧 SLA 值不再读取。
 
 ## 推荐连接顺序
 

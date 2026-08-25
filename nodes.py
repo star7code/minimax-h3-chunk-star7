@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import time
 import weakref
+from fractions import Fraction
 from types import MethodType
 from typing import Optional
 
@@ -12,8 +13,10 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.9.4"
+NODE_VERSION = "2.10.3"
 SM75_QKV_QUALITY_CHUNK = 4096
+HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
+HYBRID_GUARD_RATIO = Fraction(1, 6)
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -43,6 +46,7 @@ _CONFIG = {
     "reuse_mlp_weights": True,
     "node_id": None,
     "fp16_exact_present": False,
+    "hybrid_sla_backend": None,
 }
 
 
@@ -660,6 +664,97 @@ def _auto_sla_probe_for_capability(capability) -> bool:
     return bool(capability and capability >= (10, 0))
 
 
+def select_hybrid_backend(
+    step_index: int,
+    total_steps: int,
+    guard_ratio=HYBRID_GUARD_RATIO,
+) -> str:
+    """Select CK or SLA from normalized sampler progress.
+
+    The default ratio is represented as an exact fraction so the boundary
+    decisions do not depend on floating-point rounding.
+    """
+    total_steps = int(total_steps)
+    step_index = int(step_index)
+    if total_steps < 1:
+        raise ValueError(f"total_steps must be positive, got {total_steps}")
+    if step_index < 0 or step_index >= total_steps:
+        raise ValueError(
+            f"step_index must be in [0, {total_steps}), got {step_index}"
+        )
+    ratio = guard_ratio
+    if not isinstance(ratio, Fraction):
+        ratio = Fraction(str(ratio)).limit_denominator(1_000_000)
+    if ratio <= 0 or ratio >= Fraction(1, 2):
+        raise ValueError(f"guard_ratio must be between 0 and 1/2, got {guard_ratio}")
+    if total_steps <= 1:
+        return "CK"
+
+    span = total_steps - 1
+    numerator, denominator = ratio.numerator, ratio.denominator
+    use_ck = (
+        denominator * step_index <= numerator * span
+        or denominator * (span - step_index) <= numerator * span
+    )
+    return "CK" if use_ck else "SLA"
+
+
+def _hybrid_sampling_context(transformer_options: dict) -> tuple[int, int, str]:
+    """Resolve the real sampler step from ComfyUI's sigma context."""
+    sample_sigmas = transformer_options.get("sample_sigmas")
+    current_sigma = transformer_options.get("sigmas")
+    if not torch.is_tensor(sample_sigmas) or not torch.is_tensor(current_sigma):
+        raise RuntimeError(
+            "Star7 Hybrid Attention requires ComfyUI sampler context: "
+            "transformer_options.sample_sigmas and transformer_options.sigmas "
+            "were not provided. The step cannot be inferred from block calls."
+        )
+
+    schedule = sample_sigmas.detach().flatten()
+    current = current_sigma.detach().flatten()
+    if schedule.numel() < 2 or current.numel() < 1:
+        raise RuntimeError(
+            "Star7 Hybrid Attention received an invalid sampler sigma schedule; "
+            "at least one sampling sigma and a terminal sigma are required."
+        )
+    current_value = current[0].to(schedule.device, dtype=schedule.dtype)
+    if not bool(torch.isclose(current, current[0], rtol=1e-5, atol=1e-6).all().item()):
+        raise RuntimeError(
+            "Star7 Hybrid Attention received different sigmas in one H3 model "
+            "call; refusing to guess a shared backend."
+        )
+
+    total_steps = int(schedule.numel() - 1)
+    active_schedule = schedule[:total_steps]
+    matches = torch.isclose(active_schedule, current_value, rtol=1e-4, atol=1e-6)
+    matching_steps = torch.nonzero(matches, as_tuple=False).flatten()
+    if matching_steps.numel() == 0:
+        raise RuntimeError(
+            "Star7 Hybrid Attention could not map the current sigma to "
+            "ComfyUI's sample_sigmas schedule; refusing to guess the step."
+        )
+
+    cached = transformer_options.get("_star7_hybrid_selection")
+    step_index = int(matching_steps[0].item())
+    if cached is not None:
+        cached_sigma, cached_total, cached_step = cached
+        if (
+            cached_total == total_steps
+            and abs(float(cached_sigma) - float(current_value.item())) <= 1e-5
+        ):
+            step_index = int(cached_step)
+        elif cached_total == total_steps:
+            later = matching_steps[matching_steps > int(cached_step)]
+            if later.numel():
+                step_index = int(later[0].item())
+
+    backend = select_hybrid_backend(step_index, total_steps)
+    transformer_options["_star7_hybrid_selection"] = (
+        float(current_value.item()), total_steps, step_index
+    )
+    return step_index, total_steps, backend
+
+
 def _complete_automatic_sla_debug(block_index) -> None:
     global _LAST_FAILED_SLA_BLOCK
     if os.environ.get("STAR7_SLA_DEBUG_BLOCK", "").strip():
@@ -760,9 +855,20 @@ def _raise_strict_sla_failure(
 
 def _require_strict_sla_finite(
     value: torch.Tensor, stage: str, block_index=None, row_dim: int = 0,
+    transformer_options: Optional[dict] = None,
 ) -> None:
     """Stop strict SLA jobs at the first observable non-finite model stage."""
-    if not str(_CONFIG.get("attention_backend", "")).startswith("sla_"):
+    selected_backend = str(_CONFIG.get("attention_backend", ""))
+    if selected_backend == HYBRID_ALL_INT8_BACKEND_NAME:
+        hybrid_selection = (
+            transformer_options.get("_star7_hybrid_selection")
+            if transformer_options else None
+        )
+        if not hybrid_selection or select_hybrid_backend(
+            hybrid_selection[2], hybrid_selection[1]
+        ) != "SLA":
+            return
+    elif not selected_backend.startswith("sla_"):
         return
     if bool(torch.isfinite(value).all().item()):
         return
@@ -977,10 +1083,10 @@ def _minimax_sla_forward(
     del q, k, v
     result = sla_backend.sparse_attention_consume(
         owned_qkv, query_priority_ranges=priority_ranges,
-        all_int8=(
-            _CONFIG.get("attention_backend")
-            == "sla_sm75_all_int8_experimental"
-        ),
+        all_int8=_CONFIG.get("attention_backend") in {
+            "sla_sm75_all_int8_experimental",
+            HYBRID_ALL_INT8_BACKEND_NAME,
+        },
         debug=debug_block,
     )
     shape_key = (sequence, self.heads, self.head_dim, device_index)
@@ -1018,6 +1124,33 @@ def _minimax_sla_forward(
 _minimax_sla_forward._star7_consumes_input = True
 
 
+def _minimax_hybrid_attention_forward(
+    self, x, rope_freqs=None, transformer_options={},
+):
+    """Dispatch whole H3 attention calls between the existing CK and SLA paths."""
+    step_index, total_steps, backend = _hybrid_sampling_context(transformer_options)
+    if transformer_options.get("_star7_hybrid_logged_step") != step_index:
+        transformer_options["_star7_hybrid_logged_step"] = step_index
+        _LOG.info(
+            "[Star7 H3 Hybrid] step %d/%d -> %s | backend=%s | guard_ratio=%.4f",
+            step_index + 1, total_steps, backend, HYBRID_ALL_INT8_BACKEND_NAME,
+            float(HYBRID_GUARD_RATIO),
+        )
+
+    if backend == "CK":
+        return _minimax_ck_int8_attention_forward(
+            self, x, rope_freqs=rope_freqs,
+            transformer_options=transformer_options,
+        )
+    return _minimax_sla_forward(
+        self, x, rope_freqs=rope_freqs,
+        transformer_options=transformer_options,
+    )
+
+
+_minimax_hybrid_attention_forward._star7_consumes_input = True
+
+
 def _sla_segment_passthrough(original_forward, block_index=None):
     """Expose H3 packed segments to SLA while preserving the upstream block."""
     original_forward = _weak_callable(original_forward)
@@ -1039,7 +1172,8 @@ def _sla_segment_passthrough(original_forward, block_index=None):
                 else "transformer block output"
             )
             _require_strict_sla_finite(
-                result, stage, block_index=block_index, row_dim=0
+                result, stage, block_index=block_index, row_dim=0,
+                transformer_options=transformer_options,
             )
             if _is_sla_debug_block(block_index):
                 _complete_automatic_sla_debug(block_index)
@@ -1350,17 +1484,43 @@ def install_model_patch(
         "sla_sm75_all_int8_experimental",
         "sla_sm80+_qk_int8_pv_fp16",
     }
+    hybrid_attention = attention_backend == HYBRID_ALL_INT8_BACKEND_NAME
+    sla_or_hybrid_backends = strict_sla_backends | {
+        HYBRID_ALL_INT8_BACKEND_NAME,
+    }
     sla_backend = None
+    _CONFIG["hybrid_sla_backend"] = None
     capability = (
         torch.cuda.get_device_capability() if torch.cuda.is_available() else None
     )
-    if attention_backend in strict_sla_backends:
+    if attention_backend in strict_sla_backends or hybrid_attention:
         sla_backend = _load_sla_backend()
-        # Strict preflight: selecting SLA must never leave an earlier Sage/CK
-        # patch active while the UI claims SLA was selected.
-        capability = sla_backend.check_runtime_support(
-            requested_backend=attention_backend
+        requested_sla_backend = (
+            sla_backend.SM75_ALL_INT8_BACKEND_NAME
+            if hybrid_attention else attention_backend
         )
+        # Strict preflight: this Hybrid is deliberately SM75-only. Do not
+        # resolve it to the SM80+ backend until that path has been validated.
+        capability = sla_backend.check_runtime_support(
+            requested_backend=requested_sla_backend
+        )
+        if hybrid_attention:
+            _CONFIG["hybrid_sla_backend"] = requested_sla_backend
+
+    if hybrid_attention:
+        try:
+            import comfy_kitchen
+            ck_available = comfy_kitchen.int8_attention_is_available()
+        except (ImportError, AttributeError, RuntimeError) as exc:
+            raise RuntimeError(
+                "Star7 Hybrid Attention requires the existing "
+                f"comfy_kitchen_int8 path; it is unavailable: {exc}"
+            ) from exc
+        if not ck_available:
+            raise RuntimeError(
+                "Star7 Hybrid Attention requires the existing "
+                "comfy_kitchen_int8 path, but it is unavailable."
+            )
 
     if capability == (7, 5) and not star7_fp16:
         _LOG.warning(
@@ -1389,14 +1549,18 @@ def install_model_patch(
     )
     transformer_options["star7_h3_output_finite_guard"] = NODE_VERSION
 
-    if attention_backend in strict_sla_backends:
+    if attention_backend in sla_or_hybrid_backends:
         for index, block in enumerate(diffusion_model.blocks):
             block._star7_block_index = index
             block.attn._star7_block_index = index
             block.mlp._star7_block_index = index
             patched.add_object_patch(
                 f"diffusion_model.blocks.{index}.attn.forward",
-                _weak_method(block.attn, _minimax_sla_forward),
+                _weak_method(
+                    block.attn,
+                    _minimax_hybrid_attention_forward
+                    if hybrid_attention else _minimax_sla_forward,
+                ),
             )
             block_path = f"diffusion_model.blocks.{index}.forward"
             upstream_block_forward = patched.object_patches.get(
@@ -1418,7 +1582,10 @@ def install_model_patch(
         sage_attention = False
         sla_attention = True
         _CONFIG["auto_sla_probe"] = _auto_sla_probe_for_capability(capability)
-        if verbose and attention_backend == "sla_sm75_all_int8_experimental":
+        if verbose and attention_backend in {
+            "sla_sm75_all_int8_experimental",
+            HYBRID_ALL_INT8_BACKEND_NAME,
+        }:
             _LOG.warning(
                 "[Star7 H3 Chunk] All-INT8 SLA also approximates audio; use "
                 "sla_sm75_qk_int8_pv_fp16 for the quality-control path"
@@ -1621,6 +1788,7 @@ class MiniMaxH3ActivationChunkStar7:
                         "comfy_kitchen_int8",
                         "sla_sm75_qk_int8_pv_fp16",
                         "sla_sm75_all_int8_experimental",
+                        HYBRID_ALL_INT8_BACKEND_NAME,
                         "sla_sm80+_qk_int8_pv_fp16",
                     ],
                     {
@@ -1631,6 +1799,8 @@ class MiniMaxH3ActivationChunkStar7:
                             "overrides an earlier MiniMax Sage patch. Strict SLA targets 85% "
                             "dynamic video-block sparsity, protects target-audio queries, and "
                             "never falls back after failure. Choose "
+                            "hybrid_sm75_ck_sla_all_int8 for the faster but more approximate "
+                            "SM75 All-INT8 SLA middle region. Choose "
                             "sla_sm75_qk_int8_pv_fp16 for the recommended SM75 path, "
                             "sla_sm75_all_int8_experimental for the faster but lower-precision "
                             "SM75 experiment, or "
@@ -1653,6 +1823,10 @@ class MiniMaxH3ActivationChunkStar7:
         "Can safely retry without AIMDO prefetch. "
         "Compatible with FP16 Exact Fix - Star7. The default Comfy Kitchen INT8 "
         "attention mode is approximate; select existing to preserve upstream attention math. "
+        "The experimental hybrid_sm75_ck_sla_all_int8 mode is SM75-only and schedules whole "
+        "sampling steps as CK/SLA/CK using ComfyUI's real sigma context; it uses the existing "
+        "experimental SM75 All-INT8 SLA only in the middle region and never falls back from a "
+        "selected SLA step. "
         "Strict SLA is dependency-free from Sage, includes a native target-audio guard, "
         "and errors instead of silently falling back."
     )
@@ -1707,6 +1881,16 @@ def _long_edge_reference_size(
     elif height > width and height > limit:
         height = limit
     return width, height
+
+
+def _normalize_reference_max_long_edge(value, default: int = 1024) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    if value == 0:
+        return 0
+    return int(default) if value < 32 else min(8192, value)
 
 
 def _align_h3_reference_frame_count(frame_count: int) -> int:
@@ -1915,9 +2099,7 @@ class MiniMaxH3RoPEChunkPatch(MiniMaxH3ActivationChunkStar7):
 
 
 class MiniMaxH3LoadImageScaleStar7:
-    """Core image upload plus proportional scaling in one node."""
-
-    UPSCALE_METHODS = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
+    """Core image upload plus an H3-aligned long-edge limit in one node."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1932,10 +2114,22 @@ class MiniMaxH3LoadImageScaleStar7:
         return {
             "required": {
                 "image": (sorted(files), {"image_upload": True}),
-                "upscale_method": (cls.UPSCALE_METHODS, {"default": "nearest-exact"}),
-                "scale_by": (
-                    "FLOAT",
-                    {"default": 1.0, "min": 0.01, "max": 8.0, "step": 0.01},
+                "最长边": (
+                    "INT",
+                    {
+                        "default": 1024,
+                        "min": 0,
+                        "max": 8192,
+                        "step": 32,
+                        "tooltip": "保持宽高比，将图片最长边限制在这个 H3 对齐尺寸内；设为 0 保持原尺寸。",
+                    },
+                ),
+                "允许小图放大": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "默认关闭，不放大小图；需要放大参考图时再开启。",
+                    },
                 ),
             }
         }
@@ -1945,12 +2139,14 @@ class MiniMaxH3LoadImageScaleStar7:
     FUNCTION = "load_and_scale"
     CATEGORY = "Star7/image"
 
-    def load_and_scale(self, image, upscale_method="nearest-exact", scale_by=1.0):
+    def load_and_scale(self, image, **kwargs):
         import comfy.utils
         import folder_paths
         import numpy as np
         from PIL import Image, ImageOps
 
+        max_long_edge = _normalize_reference_max_long_edge(kwargs.get("最长边", 1024))
+        allow_upscale = bool(kwargs.get("允许小图放大", False))
         image_path = folder_paths.get_annotated_filepath(image)
         with Image.open(image_path) as source:
             source = ImageOps.exif_transpose(source)
@@ -1962,13 +2158,20 @@ class MiniMaxH3LoadImageScaleStar7:
             else:
                 mask = torch.zeros((1, rgb.shape[0], rgb.shape[1]), dtype=loaded.dtype)
         source_height, source_width = map(int, loaded.shape[1:3])
-        width = max(1, round(source_width * float(scale_by)))
-        height = max(1, round(source_height * float(scale_by)))
+        max_long_edge = _normalize_reference_max_long_edge(max_long_edge)
+        if max_long_edge == 0:
+            width, height = source_width, source_height
+        else:
+            width, height = _long_edge_reference_size(
+                source_width, source_height, max_long_edge,
+                bool(allow_upscale), 32,
+            )
         if (width, height) == (source_width, source_height):
             return loaded, mask
 
+        # Keep the UI focused on geometry; use a fixed quality-safe resampler.
         scaled = comfy.utils.common_upscale(
-            loaded.movedim(-1, 1), width, height, upscale_method, "disabled",
+            loaded.movedim(-1, 1), width, height, "area", "disabled",
         ).movedim(1, -1)
         if tuple(mask.shape[-2:]) == (source_height, source_width):
             mask = F.interpolate(
@@ -1978,10 +2181,15 @@ class MiniMaxH3LoadImageScaleStar7:
             mask = torch.zeros(
                 (scaled.shape[0], height, width), dtype=scaled.dtype, device=scaled.device,
             )
+        _LOG.info(
+            "[Star7 H3 Ref Image] %dx%d -> %dx%d | max_long_edge=%d | allow_upscale=%s",
+            source_width, source_height, width, height,
+            max_long_edge, bool(allow_upscale),
+        )
         return scaled, mask
 
     @classmethod
-    def IS_CHANGED(cls, image, upscale_method="nearest-exact", scale_by=1.0):
+    def IS_CHANGED(cls, image, **kwargs):
         import folder_paths
         import hashlib
 
@@ -1989,10 +2197,12 @@ class MiniMaxH3LoadImageScaleStar7:
         digest = hashlib.sha256()
         with open(image_path, "rb") as handle:
             digest.update(handle.read())
-        return digest.hexdigest()
+        max_long_edge = _normalize_reference_max_long_edge(kwargs.get("最长边", 1024))
+        allow_upscale = bool(kwargs.get("允许小图放大", False))
+        return f"{digest.hexdigest()}:{max_long_edge}:{allow_upscale}"
 
     @classmethod
-    def VALIDATE_INPUTS(cls, image, upscale_method="nearest-exact", scale_by=1.0):
+    def VALIDATE_INPUTS(cls, image, **kwargs):
         import folder_paths
 
         if not folder_paths.exists_annotated_filepath(image):

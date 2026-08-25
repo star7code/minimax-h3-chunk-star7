@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added the SM75-only `hybrid_sm75_ck_sla_all_int8` attention scheduling mode.
+  It keeps CK in the first and
+  last guard regions and reuses the existing experimental SM75 All-INT8 SLA
+  only in the middle region. The mode is explicitly approximate and has not
+  been presented as a quality-validated replacement for FP16-PV. The previous
+  FP16-PV Hybrid option was removed; only the tested All-INT8 Hybrid remains.
+- Bumped the package version to `2.10.3`.
+
 - Removed the duplicated automatic SM75 FP16 Exact implementation. Chunk now
   preserves an external FP16 Exact MLP callable per tile, never changes model
   compute dtype, and only warns on SM75 when the companion is absent.
