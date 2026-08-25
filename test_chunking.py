@@ -3,7 +3,7 @@ import hashlib
 import json
 import pathlib
 import sys
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import torch
 
@@ -63,34 +63,6 @@ def test_mlp_chunk_matches_full_forward(device=torch.device("cpu")):
     # Splitting a GEMM can select a different kernel tile, so float32 reduction
     # order may differ in the last bit even though every row's math is unchanged.
     torch.testing.assert_close(actual, expected, rtol=1e-4, atol=2e-7)
-
-
-def test_star7_fp16_mlp_chunk_matches_full_formula(device=torch.device("cpu")):
-    from comfy.ldm.minimax import model as h3_model
-
-    torch.manual_seed(789)
-    mlp = h3_model.MLP(hidden=16, ffn=24, operations=torch.nn).to(device=device, dtype=torch.float16)
-    x = torch.randn(519, 16, dtype=torch.float16, device=device)
-    projected = mlp.fc1(x)
-    gate, up = projected.chunk(2, dim=-1)
-    activated = torch.nn.functional.silu(gate.float()).mul_(up.float())
-    expected = mlp.fc2((activated / 256.0).half()).float().mul_(256.0)
-
-    chunk_nodes._CONFIG.update(mlp_chunk_tokens=256, auto_halve_on_oom=False, verbose=False)
-    actual = chunk_nodes._run_chunked_h3_mlp(mlp, x, star7_fp16=True)
-    torch.testing.assert_close(actual, expected, rtol=2e-3, atol=2e-3)
-
-
-def test_auto_fp16_out_proj_uses_exact_scaling(device=torch.device("cpu")):
-    linear = torch.nn.Linear(4, 4, bias=False, device=device, dtype=torch.float16)
-    with torch.no_grad():
-        linear.weight.fill_(4.0)
-    value = torch.full((2, 4), 20000.0, device=device, dtype=torch.float16)
-    expected = value.float().matmul(linear.weight.float().t())
-    assert not torch.isfinite(linear(value)).all()
-    actual = chunk_nodes._fp16_exact_out_proj(linear, value)
-    assert torch.isfinite(actual).all()
-    torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
 
 
 def test_qkv_chunk_writes_backend_dtype_without_full_cast(device=torch.device("cpu")):
@@ -166,45 +138,6 @@ def test_sm75_convrot_qkv_projection_is_bitwise_chunk_invariant():
     assert torch.equal(actual, expected)
 
 
-def test_star7_resident_weight_path_matches_formula(device=torch.device("cpu")):
-    import comfy.ops
-
-    torch.manual_seed(790)
-    operations = comfy.ops.mixed_precision_ops(compute_dtype=torch.float16)
-
-    class TinyMLP(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.fc1 = operations.Linear(16, 48, bias=False, device=device)
-            self.fc2 = operations.Linear(24, 16, bias=False, device=device)
-            self.fc1.weight = torch.nn.Parameter(
-                torch.randn(48, 16, dtype=torch.float16, device=device) * 0.02,
-                requires_grad=False,
-            )
-            self.fc2.weight = torch.nn.Parameter(
-                torch.randn(16, 24, dtype=torch.float16, device=device) * 0.02,
-                requires_grad=False,
-            )
-
-    mlp = TinyMLP()
-    x = torch.randn(519, 16, dtype=torch.float16, device=device)
-    projected = torch.nn.functional.linear(x, mlp.fc1.weight)
-    gate, up = projected.chunk(2, dim=-1)
-    activated = torch.nn.functional.silu(gate.float()).mul_(up.float())
-    expected = torch.nn.functional.linear(
-        (activated / 256.0).half(), mlp.fc2.weight
-    ).float().mul_(256.0)
-
-    chunk_nodes._CONFIG.update(
-        mlp_chunk_tokens=256,
-        auto_halve_on_oom=False,
-        verbose=False,
-        reuse_mlp_weights=True,
-    )
-    actual = chunk_nodes._run_chunked_h3_mlp(mlp, x, star7_fp16=True)
-    torch.testing.assert_close(actual, expected, rtol=2e-3, atol=2e-3)
-
-
 def test_patched_qkv_resident_snapshot_matches_streamed_chunks(
     device=torch.device("cpu"),
 ):
@@ -231,8 +164,7 @@ def test_patched_qkv_resident_snapshot_matches_streamed_chunks(
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
-def test_weight_only_quantized_resident_path_stays_quantized(device=torch.device("cpu")):
-    import contextlib
+def test_weight_only_quantized_qkv_resident_path_stays_quantized(device=torch.device("cpu")):
     import comfy.ops
 
     class TinyQuantLinear(torch.nn.Module):
@@ -272,11 +204,7 @@ def test_weight_only_quantized_resident_path_stays_quantized(device=torch.device
             self.fc2 = TinyQuantLinear(256, 256)
 
     mlp = TinyMLP()
-    x = torch.zeros(4, 256, dtype=torch.float16, device=device)
     assert chunk_nodes._linear_quantization_mode(mlp.fc1) == "weight-only"
-    with contextlib.ExitStack() as stack:
-        _fc1, _fc2, backend = chunk_nodes._resident_mlp_callers(mlp, x, stack)
-        assert backend == "quantized"
     if device.type == "cuda":
         qkv_input = torch.randn(257, 256, dtype=torch.float16, device=device)
         resident_call, qkv_backend = chunk_nodes._resident_qkv_caller(
@@ -297,19 +225,6 @@ def test_weight_only_quantized_resident_path_stays_quantized(device=torch.device
         ])
         assert qkv_backend == "quantized"
         assert torch.equal(actual_qkv, expected_qkv)
-
-        chunk_nodes._CONFIG.update(
-            mlp_chunk_tokens=256,
-            auto_halve_on_oom=False,
-            verbose=False,
-            reuse_mlp_weights=True,
-        )
-        actual = chunk_nodes._run_chunked_h3_mlp(
-            mlp,
-            torch.zeros(257, 256, dtype=torch.float16, device=device),
-            star7_fp16=True,
-        )
-        assert actual.count_nonzero().item() == 0
 
 
 def test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse():
@@ -340,86 +255,29 @@ def test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse():
     assert chunk_nodes._linear_can_reuse_weights(patched) is True
 
 
-def test_fused_residual_matches_materialized_mlp(device=torch.device("cpu")):
-    from comfy.ldm.minimax import model as h3_model
+def test_chunked_mlp_preserves_external_precision_callable(device=torch.device("cpu")):
+    calls = []
 
-    torch.manual_seed(791)
-    mlp = h3_model.MLP(hidden=16, ffn=24, operations=torch.nn).to(
-        device=device, dtype=torch.float16
-    )
-    x = torch.randn(519, 16, dtype=torch.float16, device=device)
-    residual = torch.randn(519, 16, dtype=torch.float32, device=device)
-    gate = torch.randn(3, 16, dtype=torch.float16, device=device)
-    segments = [(0, 123, 0), (123, 400, 1), (400, 519, 2)]
+    class TinyMLP:
+        pass
 
+    def external_fp16_exact(value):
+        calls.append(value.shape[0])
+        return value.to(torch.float32).mul(2.0)
+
+    value = torch.randn(519, 16, dtype=torch.float16, device=device)
     chunk_nodes._CONFIG.update(
         mlp_chunk_tokens=256,
+        effective_mlp_chunk_tokens=256,
         auto_halve_on_oom=False,
         verbose=False,
-        reuse_mlp_weights=False,
     )
-    materialized = chunk_nodes._run_chunked_h3_mlp(
-        mlp, x, star7_fp16=True
-    )
-    expected = h3_model._mod_gate(residual.clone(), gate, materialized, segments)
     actual = chunk_nodes._run_chunked_h3_mlp(
-        mlp,
-        x,
-        star7_fp16=True,
-        residual=residual.clone(),
-        gate=gate,
-        segments=segments,
+        TinyMLP(), value, upstream_forward=external_fp16_exact
     )
-    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-
-
-def test_fp16_block_patch_matches_materialized_formula(device=torch.device("cpu")):
-    from comfy.ldm.minimax import model as h3_model
-
-    torch.manual_seed(792)
-    block = h3_model.DiTBlock(
-        hidden=16,
-        heads=2,
-        head_dim=8,
-        ffn=24,
-        t_dim=8,
-        eps=1e-6,
-        qk_eps=1e-6,
-        operations=torch.nn,
-    ).to(device=device, dtype=torch.float16)
-
-    class TinyAttention(torch.nn.Module):
-        def forward(self, value, rope_freqs=None, transformer_options={}):
-            return value.mul(0.5)
-
-    block.attn = TinyAttention()
-    x = torch.randn(519, 16, dtype=torch.float32, device=device)
-    t_emb = torch.randn(1, 8, dtype=torch.float16, device=device)
-    segments = [(0, 200, 0), (200, 400, 1), (400, 519, 2)]
-
-    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.adaln_proj(t_emb)
-    h = h3_model._mod_scale_shift(
-        block.norm1(x), shift_msa, scale_msa, segments
-    ).half()
-    expected = h3_model._mod_gate(
-        x.clone(), gate_msa, block.attn(h, rope_freqs=None).float(), segments
-    )
-    h = h3_model._mod_scale_shift(
-        block.norm2(expected), shift_mlp, scale_mlp, segments
-    ).half()
-    mlp = chunk_nodes._run_chunked_h3_mlp(block.mlp, h, star7_fp16=True)
-    expected = h3_model._mod_gate(expected, gate_mlp, mlp, segments)
-
-    patched_forward = chunk_nodes._make_chunked_h3_block_forward(True, h3_model)
-    actual = patched_forward(
-        block,
-        x.clone(),
-        t_emb,
-        segments,
-        None,
-        transformer_options={},
-    )
-    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert calls == [256, 256, 7]
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, value.float().mul(2.0), rtol=0, atol=0)
 
 
 def test_h3_output_guard_identifies_audio_before_vae():
@@ -437,31 +295,66 @@ def test_h3_output_guard_identifies_audio_before_vae():
         raise AssertionError("invalid H3 audio reached VAE decode")
 
 
-def test_sm75_fp16_fix_isolated_from_sm80_through_sm120():
-    sm75_backends = (
-        "comfy_kitchen_int8",
-        "sla_sm75_qk_int8_pv_fp16",
-        "sla_sm75_all_int8_experimental",
+def test_star7_finite_wrapper_is_idempotent_and_unwraps_legacy_shape():
+    def original_forward(*_args, **_kwargs):
+        return [torch.zeros(1), torch.zeros(1)]
+
+    first = chunk_nodes._h3_output_finite_passthrough(original_forward)
+    second = chunk_nodes._h3_output_finite_passthrough(
+        chunk_nodes._star7_wrapper_original(first, "h3-output-finite")
     )
-    for backend in sm75_backends:
-        assert chunk_nodes._should_enable_sm75_auto_fp16_exact(
-            (7, 5), False, backend
-        )
-        assert not chunk_nodes._should_enable_sm75_auto_fp16_exact(
-            (7, 5), True, backend
-        )
-    assert not chunk_nodes._should_enable_sm75_auto_fp16_exact(
-        (7, 5), False, "existing"
-    )
-    for capability in ((8, 0), (8, 6), (8, 9), (12, 0)):
-        for backend in (
-            *sm75_backends,
-            "sla_sm80+_qk_int8_pv_fp16",
-            "existing",
-        ):
-            assert not chunk_nodes._should_enable_sm75_auto_fp16_exact(
-                capability, False, backend
-            )
+    assert second._star7_original_forward is original_forward
+
+    # Simulate the untagged v2.9.3 closure retained by a cloned ModelPatcher.
+    del first._star7_wrapper_kind
+    del first._star7_original_forward
+    assert chunk_nodes._star7_wrapper_original(
+        first, "h3-output-finite"
+    ) is original_forward
+
+
+def test_sla_failure_structure_reports_chunk_rows_and_heads():
+    hidden = torch.zeros(10, 7)
+    hidden[2:6] = float("nan")
+    summary = chunk_nodes._bad_row_ranges(hidden, row_dim=0)
+    assert summary["bad_rows"] == 4
+    assert summary["first_bad_row"] == 2
+    assert summary["last_bad_row"] == 5
+    assert summary["ranges"] == ((2, 5),)
+
+    headed = torch.zeros(1, 3, 10, 4)
+    headed[:, 1, 7:9] = float("inf")
+    summary = chunk_nodes._bad_row_ranges(headed, row_dim=2)
+    assert summary["ranges"] == ((7, 8),)
+    assert summary["bad_heads"] == (1,)
+
+
+def test_sla_error_precision_text_is_architecture_specific():
+    assert "SM75" in chunk_nodes._sla_architecture_note_for_capability((7, 5))
+    sm120 = chunk_nodes._sla_architecture_note_for_capability((12, 0))
+    assert "SM120" in sm120
+    assert "SM75 FP16 Exact" not in sm120
+
+
+def test_audio_guard_status_distinguishes_sm75_full_from_sm80_routing_only():
+    backend = chunk_nodes._load_sla_backend()
+    ranges = ((436, 1416),)
+    assert backend._audio_guard_status((), ()) == "not-requested"
+    assert backend._audio_guard_status(ranges, ranges) == "full-attention-applied"
+    assert backend._audio_guard_status(ranges, ()) == "routing-priority-only"
+
+
+def test_chunk_contains_no_fp16_exact_repair_implementation():
+    assert not hasattr(chunk_nodes, "_fp16_exact_out_proj")
+    assert not hasattr(chunk_nodes, "_condition_proj_fp32_forward")
+    assert not hasattr(chunk_nodes, "_make_chunked_h3_block_forward")
+    original = chunk_nodes._CONFIG.get("fp16_exact_present")
+    try:
+        chunk_nodes._CONFIG["fp16_exact_present"] = False
+        assert "not detected" in chunk_nodes._sla_architecture_note_for_capability((7, 5))
+        assert "FP16 Exact" not in chunk_nodes._sla_architecture_note_for_capability((12, 0))
+    finally:
+        chunk_nodes._CONFIG["fp16_exact_present"] = original
 
 
 def test_install_preserves_upstream_block_patch():
@@ -487,6 +380,13 @@ def test_install_preserves_upstream_block_patch():
     )
     upstream_block_patch = object()
 
+    def external_mlp_forward(self, value):
+        return value.to(torch.float32)
+
+    external_mlp_patch = MethodType(
+        external_mlp_forward, diffusion_model.blocks[0].mlp
+    )
+
     class FakeModelPatcher:
         def __init__(self):
             self.model_options = {
@@ -496,6 +396,7 @@ def test_install_preserves_upstream_block_patch():
             }
             self.object_patches = {
                 "diffusion_model.blocks.0.forward": upstream_block_patch,
+                "diffusion_model.blocks.0.mlp.forward": external_mlp_patch,
             }
             self.wrappers = {}
 
@@ -529,10 +430,31 @@ def test_install_preserves_upstream_block_patch():
         key = f"diffusion_model.blocks.{index}.mlp.forward"
         assert key in patched.object_patches
         assert patched.object_patches[key].__func__.__name__ == "forward"
+    wrapped_mlp = patched.object_patches[
+        "diffusion_model.blocks.0.mlp.forward"
+    ].__func__
+    assert wrapped_mlp._star7_original_forward is external_mlp_patch
     assert patched.wrappers == {}
 
+    patched = chunk_nodes.install_model_patch(
+        patched,
+        chunk_tokens=8192,
+        auto_halve_on_oom=True,
+        verbose=False,
+        mlp_chunk_tokens=4096,
+        disable_dynamic_prefetch=True,
+        reuse_mlp_weights=True,
+        attention_backend="existing",
+    )
+    guarded = patched.object_patches["diffusion_model.forward"].__func__
+    assert guarded._star7_wrapper_kind == "h3-output-finite"
+    upstream = getattr(
+        guarded._star7_original_forward, "__func__", guarded._star7_original_forward
+    )
+    assert getattr(upstream, "_star7_wrapper_kind", None) is None
 
-def test_sm75_sla_auto_installs_fp16_exact_without_external_node():
+
+def test_sm75_sla_does_not_install_fp16_exact_without_companion():
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
         return
     from comfy.ldm.minimax import model as h3_model
@@ -586,20 +508,20 @@ def test_sm75_sla_auto_installs_fp16_exact_without_external_node():
         reuse_mlp_weights=True,
         attention_backend="sla_sm75_qk_int8_pv_fp16",
     )
-    assert patched.compute_dtype == torch.float16
-    assert patched.model_options["transformer_options"][
-        "star7_h3_sm75_auto_fp16_exact"
-    ] == chunk_nodes.NODE_VERSION
+    assert patched.compute_dtype is None
+    assert "star7_h3_sm75_auto_fp16_exact" not in patched.model_options[
+        "transformer_options"
+    ]
     assert patched.model_options["transformer_options"][
         "star7_h3_output_finite_guard"
     ] == chunk_nodes.NODE_VERSION
-    assert "diffusion_model.condition_proj.forward" in patched.object_patches
+    assert "diffusion_model.condition_proj.forward" not in patched.object_patches
     assert "diffusion_model.forward" in patched.object_patches
     assert "diffusion_model.blocks.0.forward" in patched.object_patches
-    assert diffusion_model.blocks[0].attn._star7_auto_fp16_exact is True
+    assert not hasattr(diffusion_model.blocks[0].attn, "_star7_auto_fp16_exact")
 
 
-def test_sm75_ck_auto_fp16_exact_coexists_with_block_loop_cache():
+def test_sm75_ck_keeps_precision_external_with_block_loop_cache():
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
         return
     import comfy_kitchen
@@ -661,14 +583,14 @@ def test_sm75_ck_auto_fp16_exact_coexists_with_block_loop_cache():
         reuse_mlp_weights=True,
         attention_backend="comfy_kitchen_int8",
     )
-    assert patched.compute_dtype == torch.float16
+    assert patched.compute_dtype is None
     assert patched.model_options["transformer_options"]["patches_replace"][
         "dit"
     ][("block_loop", 0)] is block_cache
     assert "diffusion_model.forward" in patched.object_patches
-    assert "diffusion_model.blocks.0.forward" in patched.object_patches
+    assert "diffusion_model.blocks.0.forward" not in patched.object_patches
     assert "diffusion_model.blocks.0.attn.forward" in patched.object_patches
-    assert diffusion_model.blocks[0].attn._star7_auto_fp16_exact is True
+    assert not hasattr(diffusion_model.blocks[0].attn, "_star7_auto_fp16_exact")
 
 
 def test_rope_oom_value_is_reused_for_k_and_later_calls():
@@ -733,6 +655,11 @@ def test_mlp_oom_value_is_reused_for_later_blocks():
     mlp = SimpleNamespace(fc1=LimitedFC1(), fc2=FC2())
     value = torch.zeros(1024, 2, dtype=torch.float16)
 
+    def upstream_forward(tensor):
+        expanded = mlp.fc1(tensor)
+        gate, up = expanded.chunk(2, dim=-1)
+        return mlp.fc2(torch.nn.functional.silu(gate).mul(up))
+
     try:
         chunk_nodes._CONFIG.update(
             mlp_chunk_tokens=1024,
@@ -742,9 +669,13 @@ def test_mlp_oom_value_is_reused_for_later_blocks():
             reuse_mlp_weights=False,
             node_id=None,
         )
-        chunk_nodes._run_chunked_h3_mlp(mlp, value, star7_fp16=True)
+        chunk_nodes._run_chunked_h3_mlp(
+            mlp, value, upstream_forward=upstream_forward
+        )
         first_call_attempts = attempts.copy()
-        chunk_nodes._run_chunked_h3_mlp(mlp, value, star7_fp16=True)
+        chunk_nodes._run_chunked_h3_mlp(
+            mlp, value, upstream_forward=upstream_forward
+        )
 
         assert first_call_attempts == [1024, 512, 512]
         assert attempts[len(first_call_attempts):] == [512, 512]
@@ -1159,17 +1090,17 @@ if __name__ == "__main__":
     for test_device in devices:
         test_rope_matches_eager_partial_rotary(test_device)
         test_mlp_chunk_matches_full_forward(test_device)
-        test_star7_fp16_mlp_chunk_matches_full_formula(test_device)
-        test_auto_fp16_out_proj_uses_exact_scaling(test_device)
         test_qkv_chunk_writes_backend_dtype_without_full_cast(test_device)
-        test_star7_resident_weight_path_matches_formula(test_device)
         test_patched_qkv_resident_snapshot_matches_streamed_chunks(test_device)
-        test_weight_only_quantized_resident_path_stays_quantized(test_device)
-        test_fused_residual_matches_materialized_mlp(test_device)
-        test_fp16_block_patch_matches_materialized_formula(test_device)
+        test_weight_only_quantized_qkv_resident_path_stays_quantized(test_device)
+        test_chunked_mlp_preserves_external_precision_callable(test_device)
         print(f"MiniMax H3 RoPE/MLP chunk tests passed on {test_device}")
     test_h3_output_guard_identifies_audio_before_vae()
-    test_sm75_fp16_fix_isolated_from_sm80_through_sm120()
+    test_star7_finite_wrapper_is_idempotent_and_unwraps_legacy_shape()
+    test_sla_failure_structure_reports_chunk_rows_and_heads()
+    test_sla_error_precision_text_is_architecture_specific()
+    test_audio_guard_status_distinguishes_sm75_full_from_sm80_routing_only()
+    test_chunk_contains_no_fp16_exact_repair_implementation()
     test_rope_oom_value_is_reused_for_k_and_later_calls()
     test_mlp_oom_value_is_reused_for_later_blocks()
     test_manual_settings_reset_learned_runtime_values()
@@ -1186,8 +1117,8 @@ if __name__ == "__main__":
     test_reference_audio_keeps_source_duration_instead_of_frame_grid_trim()
     test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse()
     test_install_preserves_upstream_block_patch()
-    test_sm75_sla_auto_installs_fp16_exact_without_external_node()
-    test_sm75_ck_auto_fp16_exact_coexists_with_block_loop_cache()
+    test_sm75_sla_does_not_install_fp16_exact_without_companion()
+    test_sm75_ck_keeps_precision_external_with_block_loop_cache()
     test_sm75_convrot_qkv_projection_is_bitwise_chunk_invariant()
     test_comfy_kitchen_int8_attention_forward_cuda()
     test_sla_backend_is_strict_and_architecture_checked()

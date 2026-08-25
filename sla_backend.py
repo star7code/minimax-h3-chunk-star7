@@ -69,6 +69,7 @@ class SLAResult:
     effective_sparsity: float
     implementation: str
     protected_query_blocks: int = 0
+    dense_guard_status: str = "not-requested"
 
 
 _TRITON_IMPORT_ERROR = None
@@ -453,6 +454,7 @@ def build_routing_lut(
     k: torch.Tensor,
     sparsity: float = DEFAULT_SPARSITY,
     query_priority_ranges: tuple[tuple[int, int], ...] = (),
+    debug: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, int, int, int]:
     """Return LightX2V-compatible block routing and the K mean used by quantization."""
     if not 0.0 <= float(sparsity) < 1.0:
@@ -479,6 +481,18 @@ def build_routing_lut(
     key_blocks = scores.shape[-1]
     selected = max(1, min(key_blocks, int((1.0 - float(sparsity)) * key_blocks)))
     lut = torch.topk(scores, selected, dim=-1, sorted=False).indices.to(torch.int32).contiguous()
+    if debug:
+        _log_debug_tensor("routing pooled_q", pooled_q)
+        _log_debug_tensor("routing pooled_k", pooled_k)
+        _log_debug_tensor("routing scores", scores)
+        lut_min = int(lut.min().item()) if lut.numel() else -1
+        lut_max = int(lut.max().item()) if lut.numel() else -1
+        out_of_range = int(((lut < 0) | (lut >= key_blocks)).sum().item())
+        _LOG.info(
+            "[Star7 H3 Chunk] SLA debug | LUT min=%d max=%d "
+            "out-of-range=%d selected=%d",
+            lut_min, lut_max, out_of_range, selected,
+        )
     return lut, k_mean, scores.shape[-2], key_blocks, selected
 
 
@@ -517,12 +531,44 @@ def _quantize(
     return quantized, scale
 
 
+def _log_debug_tensor(stage: str, value: torch.Tensor) -> None:
+    """Synchronizing tensor summary used only by the targeted debug block."""
+    finite = torch.isfinite(value)
+    nan_count = int(torch.isnan(value).sum().item())
+    inf_count = int(torch.isinf(value).sum().item())
+    all_finite = bool(finite.all().item())
+    if all_finite and value.numel():
+        minimum = float(value.min().item())
+        maximum = float(value.max().item())
+        max_abs = float(value.abs().max().item())
+    else:
+        minimum = maximum = max_abs = float("nan")
+    _LOG.info(
+        "[Star7 H3 Chunk] SLA debug | %s | dtype=%s shape=%s "
+        "nan=%d inf=%d min=%.6g max=%.6g max-abs=%.6g",
+        stage, value.dtype, tuple(value.shape), nan_count, inf_count,
+        minimum, maximum, max_abs,
+    )
+
+
+def _audio_guard_status(
+    requested_ranges: tuple[tuple[int, int], ...],
+    applied_ranges: tuple[tuple[int, int], ...],
+) -> str:
+    if not requested_ranges:
+        return "not-requested"
+    if applied_ranges:
+        return "full-attention-applied"
+    return "routing-priority-only"
+
+
 def _run_raw_impl(
     owned_qkv: list[torch.Tensor],
     sparsity: float,
     query_priority_ranges: tuple[tuple[int, int], ...] = (),
     all_int8: bool = False,
     release_inputs: bool = False,
+    debug: bool = False,
 ) -> SLAResult:
     if len(owned_qkv) != 3:
         raise ValueError("SLA requires exactly Q, K, and V tensors")
@@ -531,7 +577,8 @@ def _run_raw_impl(
         owned_qkv.clear()
     _require_environment(q, k, v)
     lut, k_mean, query_blocks, key_blocks, selected = build_routing_lut(
-        q, k, sparsity, query_priority_ranges
+        q, k, sparsity, query_priority_ranges,
+        debug=debug,
     )
     capability = torch.cuda.get_device_capability(q.device)
     applied_priority_ranges: tuple[tuple[int, int], ...] = ()
@@ -569,15 +616,23 @@ def _run_raw_impl(
         )
         if _SM75_TORCH_PREPROCESS:
             implementation += "+torch-preprocess"
+        dense_guard_status = _audio_guard_status(
+            query_priority_ranges, applied_priority_ranges
+        )
     else:
         if all_int8:
             raise SLAUnavailableError(
                 "Experimental All-INT8 SLA is currently available only on SM75"
             )
         q_int8, q_scale = _quantize(
-            q, BLOCK_Q, multiplier=(HEAD_DIM ** -0.5) * _LOG2E
+            q, BLOCK_Q, multiplier=(HEAD_DIM ** -0.5) * _LOG2E,
         )
-        k_int8, k_scale = _quantize(k, BLOCK_K, multiplier=1.0, mean=k_mean)
+        k_int8, k_scale = _quantize(
+            k, BLOCK_K, multiplier=1.0, mean=k_mean,
+        )
+        if debug:
+            _log_debug_tensor("q_scale", q_scale)
+            _log_debug_tensor("k_scale", k_scale)
         output = torch.empty_like(v)
         compute_query_blocks = triton.cdiv(q.shape[-2], 64)
         _sparse_qk_int8_pv_fp16_kernel[(compute_query_blocks, q.shape[0] * q.shape[1])](
@@ -601,6 +656,11 @@ def _run_raw_impl(
             num_stages=3,
         )
         implementation = "triton-sm80plus-int8-dot-fp16-dot"
+        dense_guard_status = _audio_guard_status(
+            query_priority_ranges, applied_priority_ranges
+        )
+        if debug:
+            _log_debug_tensor("raw SLA output", output)
     protected = {
         block_index
         for start, end in applied_priority_ranges
@@ -613,7 +673,7 @@ def _run_raw_impl(
     ) / (query_blocks * key_blocks)
     return SLAResult(
         output, query_blocks, key_blocks, selected, effective_sparsity,
-        implementation, len(protected),
+        implementation, len(protected), dense_guard_status,
     )
 
 
@@ -624,11 +684,12 @@ def _run_raw(
     sparsity: float,
     query_priority_ranges: tuple[tuple[int, int], ...] = (),
     all_int8: bool = False,
+    debug: bool = False,
 ) -> SLAResult:
     """Non-consuming entry point retained for self-tests and external callers."""
     return _run_raw_impl(
         [q, k, v], sparsity, query_priority_ranges, all_int8,
-        release_inputs=False,
+        release_inputs=False, debug=debug,
     )
 
 
@@ -659,6 +720,7 @@ def _reference_from_lut(
 
 
 _SELF_TESTED_DEVICES: set[tuple[str, int | None, bool]] = set()
+_LONG_SELF_TESTED_DEVICES: set[tuple[str, int | None]] = set()
 _SELF_TEST_LOCK = threading.Lock()
 
 
@@ -693,6 +755,58 @@ def ensure_self_test(device: torch.device, all_int8: bool = False) -> None:
                 f"max_abs={error.max().item():.6f}"
             )
         _SELF_TESTED_DEVICES.add(key)
+        capability = torch.cuda.get_device_capability(device)
+        _LOG.info(
+            "[Star7 H3 Chunk] SLA self-test passed | test=S1025/H1/D128 | "
+            "SM%d%d | all-int8=%s | mean-abs=%.6g | max-abs=%.6g",
+            capability[0], capability[1], all_int8,
+            error.mean().item(), error.max().item(),
+        )
+
+
+def ensure_optional_long_shape_test(device: torch.device) -> None:
+    """Opt-in SM100+ diagnostic matching the reported S=16206 route length."""
+    if os.environ.get("STAR7_SLA_LONG_SELF_TEST", "").strip().lower() not in {
+        "1", "true", "yes", "on",
+    }:
+        return
+    if torch.cuda.get_device_capability(device) < (10, 0):
+        return
+    key = (device.type, device.index)
+    if key in _LONG_SELF_TESTED_DEVICES:
+        return
+    with _SELF_TEST_LOCK:
+        if key in _LONG_SELF_TESTED_DEVICES:
+            return
+        generator = torch.Generator(device=device)
+        generator.manual_seed(0x120294)
+        q = torch.randn(
+            (1, 1, 16206, HEAD_DIM), generator=generator,
+            device=device, dtype=torch.float16,
+        ) * 0.1
+        k = torch.randn(q.shape, generator=generator, device=device, dtype=torch.float16) * 0.1
+        v = torch.randn(q.shape, generator=generator, device=device, dtype=torch.float16) * 0.1
+        result = _run_raw(q, k, v, DEFAULT_SPARSITY)
+        lut, _mean, _qb, _kb, selected = build_routing_lut(q, k, DEFAULT_SPARSITY)
+        reference = _reference_from_lut(q, k, v, lut)
+        torch.cuda.synchronize(device)
+        if not torch.isfinite(result.output).all():
+            raise RuntimeError(f"{STRICT_SLA_LABEL} long-shape test produced NaN/Inf")
+        error = (result.output.float() - reference.float()).abs()
+        if error.mean().item() > 0.001 or error.max().item() > 0.02:
+            raise RuntimeError(
+                f"{STRICT_SLA_LABEL} long-shape test failed: "
+                f"mean_abs={error.mean().item():.6f}, max_abs={error.max().item():.6f}"
+            )
+        _LONG_SELF_TESTED_DEVICES.add(key)
+        capability = torch.cuda.get_device_capability(device)
+        _LOG.info(
+            "[Star7 H3 Chunk] SLA long-shape test passed | "
+            "test=S16206/H1/D128 | SM%d%d | selected=%d | "
+            "mean-abs=%.6g | max-abs=%.6g",
+            capability[0], capability[1], selected,
+            error.mean().item(), error.max().item(),
+        )
 
 
 def sparse_attention(
@@ -703,14 +817,17 @@ def sparse_attention(
     run_self_test: bool = True,
     query_priority_ranges: list[tuple[int, int]] | tuple[tuple[int, int], ...] = (),
     all_int8: bool = False,
+    debug: bool = False,
 ) -> SLAResult:
     """Execute strict SLA. No dense or CK fallback is performed."""
     _require_environment(q, k, v)
     if run_self_test:
         ensure_self_test(q.device, all_int8=all_int8)
+        if not all_int8:
+            ensure_optional_long_shape_test(q.device)
     result = _run_raw(
         q, k, v, float(sparsity), tuple(query_priority_ranges),
-        all_int8=all_int8,
+        all_int8=all_int8, debug=debug,
     )
     return result
 
@@ -721,6 +838,7 @@ def sparse_attention_consume(
     run_self_test: bool = True,
     query_priority_ranges: list[tuple[int, int]] | tuple[tuple[int, int], ...] = (),
     all_int8: bool = False,
+    debug: bool = False,
 ) -> SLAResult:
     """Execute strict SLA while consuming Q/K/V to minimize the core peak.
 
@@ -733,7 +851,9 @@ def sparse_attention_consume(
     device = qkv[0].device
     if run_self_test:
         ensure_self_test(device, all_int8=all_int8)
+        if not all_int8:
+            ensure_optional_long_shape_test(device)
     return _run_raw_impl(
         qkv, float(sparsity), tuple(query_priority_ranges), all_int8,
-        release_inputs=True,
+        release_inputs=True, debug=debug,
     )

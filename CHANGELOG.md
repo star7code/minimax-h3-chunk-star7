@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Removed the duplicated automatic SM75 FP16 Exact implementation. Chunk now
+  preserves an external FP16 Exact MLP callable per tile, never changes model
+  compute dtype, and only warns on SM75 when the companion is absent.
+- Corrected SM80+ audio reporting to `routing-priority-only`; only the SM75
+  native path currently reports full-attention audio protection. No Triton/SLA
+  mathematical path was changed for this diagnostic release.
+- Added targeted strict-SLA diagnostics. A failing block is armed for the next
+  run, where QKV conversion, routing/quantization, raw SLA output, `out_proj`,
+  and each MLP chunk are checked without adding normal-path synchronizations.
+  `STAR7_SLA_DEBUG_BLOCK` is supported for remote SM80+/SM120 reproduction.
+- NaN/Inf errors now report bad token rows/ranges and heads, and describe the
+  real architecture precision path instead of mentioning SM75 FP16 Exact on
+  SM80+/SM120. Repeated model/block finite wrappers are collapsed to one layer.
+- Renamed the small startup result to `SLA self-test passed` and separated it
+  from real-shape `SLA runtime` routing data. Startup diagnostics now distinguish
+  model precision from FP16 SLA buffers and identify newer architectures that
+  still require real-device validation.
+
 - Fixed the reported reference-speech regression with a validated SM75 QKV
   quality cap of 4,096 tokens. In a same-seed four-step Turbo-LoRA A/B run,
   QKV 8,192 changed decoded PCM versus 4,096 (20.18 dB difference), while

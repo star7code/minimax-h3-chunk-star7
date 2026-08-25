@@ -1,5 +1,4 @@
 import gc
-import contextlib
 import logging
 import os
 import shutil
@@ -12,7 +11,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.9.3"
+NODE_VERSION = "2.9.4"
 SM75_QKV_QUALITY_CHUNK = 4096
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
@@ -20,9 +19,10 @@ _PATCHED_CK = None
 _LOGGED_ROPE_SHAPES = set()
 _LOGGED_MLP_SHAPES = set()
 _PROFILED_MLP_SHAPES = set()
-_PROFILED_ATTENTION_SHAPES = set()
 _LOGGED_SLA_SHAPES = set()
 _PROFILED_QKV_STAGES = set()
+_LOGGED_SLA_ENVIRONMENTS = set()
+_LAST_FAILED_SLA_BLOCK = None
 _CONFIG = {
     "chunk_tokens": 8192,
     "mlp_chunk_tokens": 8192,
@@ -40,6 +40,7 @@ _CONFIG = {
     "verbose": True,
     "reuse_mlp_weights": True,
     "node_id": None,
+    "fp16_exact_present": False,
 }
 
 
@@ -81,21 +82,6 @@ def _is_cuda_oom(exc: BaseException) -> bool:
         return True
     msg = str(exc).lower()
     return "out of memory" in msg or "would exceed allowed memory" in msg
-
-
-def _should_enable_sm75_auto_fp16_exact(
-    capability, star7_fp16: bool, attention_backend: str,
-) -> bool:
-    """Keep the Turing overflow fix isolated from Ampere and newer GPUs."""
-    return bool(
-        capability == (7, 5)
-        and not star7_fp16
-        and attention_backend in {
-            "comfy_kitchen_int8",
-            "sla_sm75_qk_int8_pv_fp16",
-            "sla_sm75_all_int8_experimental",
-        }
-    )
 
 
 def _clear_cuda_after_oom(device: torch.device) -> None:
@@ -514,325 +500,293 @@ def _resident_qkv_caller(linear, x: torch.Tensor):
     return call, prepared_backend
 
 
-def _resident_mlp_callers(self, x: torch.Tensor, stack: contextlib.ExitStack):
-    """Prepare private fc1/fc2 snapshots and reuse them across token chunks.
-
-    AIMDO/VBAR may return views into a shared cast buffer.  Preparing one layer
-    at a time, cloning its fully patched result, and then releasing the context
-    prevents the next layer from overwriting a weight still used by this MLP.
-    """
-    import comfy.ops
-
-    if not (_linear_can_reuse_weights(self.fc1) and _linear_can_reuse_weights(self.fc2)):
-        raise RuntimeError("MLP Linear implementation does not support resident weight reuse")
-
-    fc1_quant = _linear_quantization_mode(self.fc1)
-    fc2_quant = _linear_quantization_mode(self.fc2)
-
-    # Weight-only INT8/ConvRot must be staged using the quantized weight's
-    # logical dtype. Asking CastBiasWeightContext for x.dtype here dequantizes
-    # the entire matrix before the first token chunk.
-    fc1_stage_dtype = self.fc1.weight.dtype if fc1_quant == "weight-only" else x.dtype
-    fc2_stage_dtype = self.fc2.weight.dtype if fc2_quant == "weight-only" else torch.float16
-    def snapshot(linear, stage_dtype, bias_dtype, compute_dtype, quant_mode):
-        with comfy.ops.CastBiasWeightContext(
-            linear,
-            input=None,
-            dtype=stage_dtype,
-            device=x.device,
-            bias_dtype=bias_dtype,
-            offloadable=True,
-            compute_dtype=compute_dtype,
-            want_requant=quant_mode is not None,
-        ) as (weight, bias):
-            # clone() preserves QuantizedTensor layout/metadata while giving
-            # the resident caller storage independent of AIMDO's cast buffer.
-            private_weight = weight.detach().clone() if weight is not None else None
-            private_bias = bias.detach().clone() if bias is not None else None
-        return private_weight, private_bias
-
-    fc1_weight, fc1_bias = snapshot(
-        self.fc1, fc1_stage_dtype, x.dtype, x.dtype, fc1_quant
-    )
-    fc2_weight, fc2_bias = snapshot(
-        self.fc2, fc2_stage_dtype, torch.float16, torch.float16, fc2_quant
-    )
-
-    # This changes only QuantizedTensor.orig_dtype metadata and keeps its INT8
-    # storage intact. It mirrors MixedPrecisionOps' weight-only forward path.
-    if fc1_quant == "weight-only":
-        fc1_weight = fc1_weight.to(dtype=x.dtype)
-    if fc2_quant == "weight-only":
-        fc2_weight = fc2_weight.to(dtype=torch.float16)
-
-    def fc1_call(value):
-        return _resident_linear_forward(
-            self.fc1, value, fc1_weight, fc1_bias, fc1_quant
-        )
-
-    def fc2_call(value):
-        return _resident_linear_forward(
-            self.fc2, value, fc2_weight, fc2_bias, fc2_quant
-        )
-
-    quantized_cls = comfy.ops.QuantizedTensor
-    prepared_backend = (
-        "quantized"
-        if isinstance(fc1_weight, quantized_cls) and isinstance(fc2_weight, quantized_cls)
-        else "dense"
-    )
-    return fc1_call, fc2_call, prepared_backend
-
-
-def _accumulate_gated_chunk(
-    residual: torch.Tensor,
-    result: torch.Tensor,
-    start: int,
-    end: int,
-    gate: torch.Tensor,
-    segments,
-) -> None:
-    """Apply H3's segment gate directly from one MLP result chunk."""
-    for seg_start, seg_end, row in segments:
-        a = max(start, seg_start)
-        b = min(end, seg_end)
-        if a < b:
-            residual[a:b].addcmul_(
-                result[a - start:b - start], gate[row].to(residual.dtype)
-            )
-
-
-def _mod_scale_shift_chunk(
-    value: torch.Tensor,
-    start: int,
-    end: int,
-    shift: torch.Tensor,
-    scale: torch.Tensor,
-    segments,
-) -> torch.Tensor:
-    """Apply H3 modulation to a token slice using the original segment order."""
-    for seg_start, seg_end, row in segments:
-        a = max(start, seg_start)
-        b = min(end, seg_end)
-        if a < b:
-            local = value[a - start:b - start]
-            local.mul_(1.0 + scale[row].to(value.dtype)).add_(
-                shift[row].to(value.dtype)
-            )
-    return value
-
-
 def _run_chunked_h3_mlp(
     self,
     x: torch.Tensor,
-    star7_fp16: bool = False,
-    residual: Optional[torch.Tensor] = None,
-    gate: Optional[torch.Tensor] = None,
-    segments=None,
-    input_factory=None,
-    input_dtype: Optional[torch.dtype] = None,
+    upstream_forward=None,
 ) -> torch.Tensor:
-    """Run H3's row-independent SwiGLU MLP in token chunks.
-
-    Each token row has independent fc1/SwiGLU/fc2 math. The installed block
-    patch accumulates each result chunk directly into the residual stream, so
-    neither the multi-GiB [S, 2*ffn] expansion nor a full [S, hidden] MLP output
-    is needed. A different GEMM tile can change only the final float32 rounding
-    bit; dtype, formula, weights, and token order remain unchanged.
-    """
+    """Run the native or upstream-patched row-independent MLP in token chunks."""
     configured_chunk = int(_CONFIG["effective_mlp_chunk_tokens"])
     import comfy.ops
 
     if x.ndim != 2:
+        if upstream_forward is not None:
+            return upstream_forward(x)
         return comfy.ops.linear_input_act(self.fc2, self.fc1(x), "swiglu")
 
     seq_len = x.shape[0]
     chunk = seq_len if configured_chunk == 0 else max(256, configured_chunk)
     _set_sequence_status("MLP", seq_len)
-    effective_input_dtype = input_dtype or x.dtype
-    use_star7_fp16 = bool(star7_fp16 and effective_input_dtype == torch.float16)
-    output_dtype = torch.float32 if use_star7_fp16 else x.dtype
-    fuse_residual = residual is not None
-    if fuse_residual and (gate is None or segments is None):
-        raise ValueError("gate and segments are required for fused residual MLP")
-    output = None if fuse_residual else torch.empty(
-        (seq_len, x.shape[1]), dtype=output_dtype, device=x.device,
-    )
+    output = None
     current_chunk = min(chunk, seq_len)
     auto_halve = bool(_CONFIG["auto_halve_on_oom"])
-    mode = "star7-fp16" if use_star7_fp16 else "native"
-    if fuse_residual:
-        mode += "+residual"
+    mode = "upstream-preserved" if upstream_forward is not None else "native"
     shape_key = (
-        seq_len, x.shape[1], current_chunk, effective_input_dtype,
-        x.device.type, mode, input_factory is not None,
+        seq_len, x.shape[1], current_chunk, x.dtype, x.device.type, mode,
     )
-    staging_input = x if input_factory is None else torch.empty(
-        (0, x.shape[1]), dtype=effective_input_dtype, device=x.device
-    )
+    block_index = getattr(self, "_star7_block_index", None)
 
-    def run_chunks(fc1_call, fc2_call):
-        nonlocal current_chunk
-        start = 0
-        calls = 0
-        while start < seq_len:
-            end = min(start + current_chunk, seq_len)
-            expanded = None
-            result = None
-            gate = up = activated = scaled = None
-            chunk_input = None
-            try:
-                chunk_input = (
-                    x[start:end]
-                    if input_factory is None
-                    else input_factory(start, end)
-                )
-                expanded = fc1_call(chunk_input)
-                if use_star7_fp16:
-                    # Match MiniMax H3 FP16 Exact Fix - Star7: FP16 activations,
-                    # FP32 SwiGLU, and exact power-of-two protection before fc2.
-                    gate, up = expanded.chunk(2, dim=-1)
-                    activated = gate.to(torch.float32)
-                    F.silu(activated, inplace=True)
-                    activated.mul_(up)
-                    activated.div_(256.0)
-                    scaled = activated.to(torch.float16)
-                    result = fc2_call(scaled).to(torch.float32).mul_(256.0)
-                else:
-                    # Native mode keeps ComfyUI's fused activation path. Resident
-                    # reuse is deliberately limited to the Star7 FP16 formula.
-                    result = comfy.ops.linear_input_act(self.fc2, expanded, "swiglu")
-                expected = (end - start, x.shape[1])
-                if result.dtype != output_dtype or result.shape != expected:
-                    raise RuntimeError(
-                        "unexpected H3 MLP chunk output: "
-                        f"got shape={tuple(result.shape)} dtype={result.dtype}, "
-                        f"expected shape={expected} dtype={output_dtype}"
-                    )
-                if fuse_residual:
-                    _accumulate_gated_chunk(
-                        residual, result, start, end, gate_residual, segments
-                    )
-                else:
-                    output[start:end].copy_(result)
-                del result, expanded, gate, up, activated, scaled, chunk_input
-                start = end
-                calls += 1
-            except Exception as exc:
-                if not (_is_cuda_oom(exc) and auto_halve and current_chunk > 256):
-                    raise
-                new_chunk = max(256, current_chunk // 2)
-                _remember_effective_chunk("MLP", current_chunk, new_chunk)
-                del result, expanded, gate, up, activated, scaled, chunk_input
-                # The handled exception traceback can otherwise retain fc1 output.
-                exc.__traceback__ = None
-                _clear_cuda_after_oom(x.device)
-                current_chunk = new_chunk
-        return calls
-
-    profile_key = shape_key + (bool(_CONFIG["reuse_mlp_weights"]), fuse_residual)
-    do_profile = bool(_CONFIG["verbose"] and profile_key not in _PROFILED_MLP_SHAPES)
-    profile_start = time.perf_counter()
-    cuda_start = cuda_end = None
-    if do_profile and x.device.type == "cuda":
-        cuda_start = torch.cuda.Event(enable_timing=True)
-        cuda_end = torch.cuda.Event(enable_timing=True)
-        cuda_start.record()
-
-    weight_mode = "streamed"
+    start = 0
     calls = 0
-    gate_residual = gate
-    reuse_weights = bool(
-        _CONFIG["reuse_mlp_weights"]
-        and use_star7_fp16
-        and _linear_can_reuse_weights(self.fc1)
-        and _linear_can_reuse_weights(self.fc2)
-    )
-    if (
-        _CONFIG["reuse_mlp_weights"]
-        and use_star7_fp16
-        and not reuse_weights
-        and _CONFIG["verbose"]
-        and "dynamic-residency" not in _LOGGED_MLP_SHAPES
-    ):
-        _LOGGED_MLP_SHAPES.add("dynamic-residency")
-        _LOG.info(
-            "[Star7 H3 Chunk] Resident MLP reuse disabled automatically: "
-            "dynamic/low-VRAM weight residency detected; using streamed-safe path"
-        )
-    if reuse_weights:
+    while start < seq_len:
+        end = min(start + current_chunk, seq_len)
+        expanded = result = None
         try:
-            with contextlib.ExitStack() as stack:
-                fc1_call, fc2_call, prepared_backend = _resident_mlp_callers(
-                    self, staging_input, stack
+            chunk_input = x[start:end]
+            _debug_sla_tensor(
+                f"MLP input chunk [{start}:{end}]", chunk_input,
+                block_index, row_dim=0, check_fp16_range=True,
+            )
+            if upstream_forward is not None:
+                result = upstream_forward(chunk_input)
+            else:
+                expanded = self.fc1(chunk_input)
+                _debug_sla_tensor(
+                    f"MLP fc1 chunk [{start}:{end}]", expanded,
+                    block_index, row_dim=0, check_fp16_range=True,
                 )
-                weight_mode = f"resident-{prepared_backend}"
-                calls = run_chunks(fc1_call, fc2_call)
+                result = comfy.ops.linear_input_act(self.fc2, expanded, "swiglu")
+            _debug_sla_tensor(
+                f"MLP output chunk [{start}:{end}]", result,
+                block_index, row_dim=0,
+            )
+            expected = (end - start, x.shape[1])
+            if result.shape != expected:
+                raise RuntimeError(
+                    "unexpected H3 MLP chunk output: "
+                    f"got shape={tuple(result.shape)}, expected shape={expected}"
+                )
+            if output is None:
+                output = torch.empty(
+                    (seq_len, x.shape[1]), dtype=result.dtype, device=result.device
+                )
+            elif result.dtype != output.dtype:
+                raise RuntimeError(
+                    f"H3 MLP output dtype changed between chunks: "
+                    f"{output.dtype} -> {result.dtype}"
+                )
+            output[start:end].copy_(result)
+            del result, expanded, chunk_input
+            start = end
+            calls += 1
         except Exception as exc:
-            if not _is_cuda_oom(exc):
+            if not (_is_cuda_oom(exc) and auto_halve and current_chunk > 256):
                 raise
+            new_chunk = max(256, current_chunk // 2)
+            _remember_effective_chunk("MLP", current_chunk, new_chunk)
+            del result, expanded
             exc.__traceback__ = None
             _clear_cuda_after_oom(x.device)
-            current_chunk = min(chunk, seq_len)
-            weight_mode = "streamed-fallback"
-            _LOG.warning(
-                "[Star7 H3 Chunk] Holding fc1/fc2 weights exceeded VRAM; "
-                "falling back to per-chunk streaming"
-            )
-            calls = run_chunks(self.fc1, self.fc2)
-    else:
-        calls = run_chunks(self.fc1, self.fc2)
+            current_chunk = new_chunk
 
+    profile_key = shape_key
+    do_profile = bool(_CONFIG["verbose"] and profile_key not in _PROFILED_MLP_SHAPES)
     if do_profile:
         _PROFILED_MLP_SHAPES.add(profile_key)
-        if cuda_end is not None:
-            cuda_end.record()
-            cuda_end.synchronize()
-            elapsed_ms = cuda_start.elapsed_time(cuda_end)
-        else:
-            elapsed_ms = (time.perf_counter() - profile_start) * 1000.0
-        expansion_mib = (
-            current_chunk * self.fc1.out_features
-            * torch.empty((), dtype=effective_input_dtype).element_size()
-            / (1024 ** 2)
-        )
         _LOG.info(
-            "[Star7 H3 Chunk] First-block MLP | S=%d | chunk=%d x %d | "
-            "mode=%s | weights=%s | temp=%.1fMiB | %.1fms",
-            seq_len, current_chunk, calls, mode, weight_mode,
-            expansion_mib, elapsed_ms,
+            "[Star7 H3 Chunk] First-block MLP | S=%d | chunk=%d x %d | mode=%s",
+            seq_len, current_chunk, calls, mode,
         )
 
-    return residual if fuse_residual else output
+    return output
 
 
 def _chunked_h3_mlp_forward(self, x: torch.Tensor) -> torch.Tensor:
     """Native-dtype entry point kept for direct tests and compatibility."""
-    return _run_chunked_h3_mlp(self, x, star7_fp16=False)
+    return _run_chunked_h3_mlp(self, x)
 
 
-def _make_chunked_h3_mlp_forward(star7_fp16: bool):
+def _make_chunked_h3_mlp_forward(upstream_forward=None):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return _run_chunked_h3_mlp(self, x, star7_fp16=star7_fp16)
+        return _run_chunked_h3_mlp(self, x, upstream_forward=upstream_forward)
+    forward._star7_wrapper_kind = "mlp-chunk-upstream"
+    forward._star7_original_forward = upstream_forward
     return forward
 
 
-def _require_strict_sla_finite(value: torch.Tensor, stage: str) -> None:
+def _sla_debug_block() -> Optional[int]:
+    requested = os.environ.get("STAR7_SLA_DEBUG_BLOCK", "").strip()
+    if requested:
+        try:
+            return int(requested)
+        except ValueError:
+            _LOG.warning(
+                "[Star7 H3 Chunk] Ignoring invalid STAR7_SLA_DEBUG_BLOCK=%r",
+                requested,
+            )
+    return _LAST_FAILED_SLA_BLOCK
+
+
+def _is_sla_debug_block(block_index) -> bool:
+    selected = _sla_debug_block()
+    return selected is not None and block_index is not None and int(block_index) == selected
+
+
+def _complete_automatic_sla_debug(block_index) -> None:
+    global _LAST_FAILED_SLA_BLOCK
+    if os.environ.get("STAR7_SLA_DEBUG_BLOCK", "").strip():
+        return
+    if _LAST_FAILED_SLA_BLOCK is not None and int(block_index) == _LAST_FAILED_SLA_BLOCK:
+        _LOG.info(
+            "[Star7 H3 Chunk] Targeted SLA diagnostics completed cleanly for block %d",
+            block_index,
+        )
+        _LAST_FAILED_SLA_BLOCK = None
+
+
+def _bad_row_ranges(value: torch.Tensor, row_dim: int = 0, limit: int = 6) -> dict:
+    """Compact spatial summary for a failed tensor without dumping its values."""
+    invalid = ~torch.isfinite(value)
+    row_dim %= max(1, value.ndim)
+    reduce_dims = tuple(index for index in range(value.ndim) if index != row_dim)
+    bad_rows_mask = invalid.any(dim=reduce_dims) if reduce_dims else invalid
+    rows = bad_rows_mask.nonzero(as_tuple=False).flatten().tolist()
+    ranges = []
+    for row in rows:
+        if ranges and row == ranges[-1][1] + 1:
+            ranges[-1][1] = row
+        else:
+            ranges.append([row, row])
+    heads = []
+    if value.ndim == 4:
+        # SLA tensors use [B,H,S,D].
+        heads = invalid.any(dim=(0, 2, 3)).nonzero(as_tuple=False).flatten().tolist()
+    return {
+        "bad_rows": len(rows),
+        "first_bad_row": rows[0] if rows else None,
+        "last_bad_row": rows[-1] if rows else None,
+        "ranges": tuple(tuple(item) for item in ranges[:limit]),
+        "bad_heads": tuple(heads[:16]),
+    }
+
+
+def _sla_architecture_note_for_capability(capability) -> str:
+    if capability == (7, 5):
+        companion = (
+            "detected" if _CONFIG.get("fp16_exact_present") else "not detected"
+        )
+        return (
+            f"SM75 used the upstream precision path; the separate FP16 Exact "
+            f"companion was {companion}"
+        )
+    if capability:
+        return (
+            f"SM{capability[0]}{capability[1]} used Triton SLA with FP16 "
+            "Q/K/V buffers and upstream model precision"
+        )
+    return "the active SLA precision path is unknown"
+
+
+def _sla_architecture_note(value: torch.Tensor) -> str:
+    capability = None
+    if value.device.type == "cuda":
+        try:
+            capability = torch.cuda.get_device_capability(value.device)
+        except Exception:
+            pass
+    return _sla_architecture_note_for_capability(capability)
+
+
+def _raise_strict_sla_failure(
+    value: torch.Tensor,
+    stage: str,
+    block_index=None,
+    row_dim: int = 0,
+) -> None:
+    global _LAST_FAILED_SLA_BLOCK
+    nan_count = int(torch.isnan(value).sum().item())
+    inf_count = int(torch.isinf(value).sum().item())
+    structure = _bad_row_ranges(value, row_dim=row_dim)
+    if block_index is not None:
+        _LAST_FAILED_SLA_BLOCK = int(block_index)
+    heads = (
+        f", bad-heads={structure['bad_heads']}" if structure["bad_heads"] else ""
+    )
+    rerun = (
+        f" Detailed diagnostics are armed for block {block_index} on the next run."
+        if block_index is not None else ""
+    )
+    raise RuntimeError(
+        f"Star7 strict SLA detected NaN/Inf after {stage} "
+        f"(nan={nan_count}, inf={inf_count}, bad-rows={structure['bad_rows']}, "
+        f"first={structure['first_bad_row']}, last={structure['last_bad_row']}, "
+        f"ranges={structure['ranges']}{heads}). The task was stopped before VAE "
+        f"decode; {_sla_architecture_note(value)}.{rerun} Report the Star7 version, "
+        "failing stage and model/LoRA/sampler combination. No CK/Sage fallback "
+        "was attempted."
+    )
+
+
+def _require_strict_sla_finite(
+    value: torch.Tensor, stage: str, block_index=None, row_dim: int = 0,
+) -> None:
     """Stop strict SLA jobs at the first observable non-finite model stage."""
     if not str(_CONFIG.get("attention_backend", "")).startswith("sla_"):
         return
     if bool(torch.isfinite(value).all().item()):
         return
+    _raise_strict_sla_failure(
+        value, stage, block_index=block_index, row_dim=row_dim
+    )
+
+
+def _debug_sla_tensor(
+    stage: str,
+    value: torch.Tensor,
+    block_index: int,
+    row_dim: int = 0,
+    check_fp16_range: bool = False,
+) -> None:
+    """Synchronizing checkpoint enabled only for one explicitly armed block."""
+    if not _is_sla_debug_block(block_index):
+        return
+    finite = torch.isfinite(value)
+    is_finite = bool(finite.all().item())
+    max_abs = float(value.abs().max().item()) if is_finite and value.numel() else float("nan")
+    overflow = (
+        int((value.abs() > torch.finfo(torch.float16).max).sum().item())
+        if check_fp16_range else 0
+    )
     nan_count = int(torch.isnan(value).sum().item())
     inf_count = int(torch.isinf(value).sum().item())
-    raise RuntimeError(
-        f"Star7 strict SLA detected NaN/Inf after {stage} "
-        f"(nan={nan_count}, inf={inf_count}). The task was stopped before VAE "
-        "decode to prevent checkerboard/flicker output. SM75 FP16 Exact is "
-        "enabled automatically for Star7 SLA; if this still occurs, report "
-        "the Star7 version, failing block and model/LoRA/sampler combination. "
-        "No CK/Sage fallback was attempted."
+    _LOG.info(
+        "[Star7 H3 Chunk] SLA debug block %d | %s | dtype=%s shape=%s "
+        "max-abs=%.6g fp16-overflow=%d nan=%d inf=%d",
+        block_index, stage, value.dtype, tuple(value.shape), max_abs,
+        overflow, nan_count, inf_count,
     )
+    if not is_finite:
+        _raise_strict_sla_failure(
+            value, stage, block_index=block_index, row_dim=row_dim
+        )
+
+
+def _star7_wrapper_original(value, kind: str):
+    """Return the upstream callable after removing any same-kind Star7 layer."""
+    current = value
+    legacy_qualnames = {
+        "h3-output-finite": "_h3_output_finite_passthrough.<locals>.forward",
+        "sla-segment-block": "_sla_segment_passthrough.<locals>.forward",
+        "mlp-chunk-upstream": "_make_chunked_h3_mlp_forward.<locals>.forward",
+    }
+    while True:
+        function = getattr(current, "__func__", current)
+        if getattr(function, "_star7_wrapper_kind", None) == kind:
+            current = getattr(function, "_star7_original_forward")
+            continue
+        # v2.9.3 wrappers predate the explicit marker. Their exact local
+        # qualname and named closure let upgrades collapse existing layers
+        # without confusing unrelated third-party forwards.
+        if getattr(function, "__qualname__", "") == legacy_qualnames.get(kind):
+            closure = dict(zip(
+                getattr(function.__code__, "co_freevars", ()),
+                function.__closure__ or (),
+            ))
+            original_cell = closure.get("original_forward")
+            if original_cell is not None:
+                current = original_cell.cell_contents
+                continue
+        return current
 
 
 def _h3_output_finite_passthrough(original_forward):
@@ -855,23 +809,9 @@ def _h3_output_finite_passthrough(original_forward):
             )
         return result
 
+    forward._star7_wrapper_kind = "h3-output-finite"
+    forward._star7_original_forward = original_forward
     return forward
-
-
-def _condition_proj_fp32_forward(original_forward):
-    """Keep the SM75 SLA text-conditioning projection in its FP32 island."""
-    def forward(self, tensor):
-        return original_forward(tensor.to(torch.float32))
-    return forward
-
-
-def _fp16_exact_out_proj(linear, tensor: torch.Tensor) -> torch.Tensor:
-    """Power-of-two protected FP16 attention down-projection, consuming input."""
-    if tensor.dtype == torch.float16:
-        scaled = tensor.div_(64.0)
-    else:
-        scaled = tensor.div(64.0).to(torch.float16)
-    return linear(scaled).to(torch.float32).mul_(64.0)
 
 
 def _minimax_ck_int8_attention_forward(self, x, rope_freqs=None, transformer_options={}):
@@ -904,8 +844,6 @@ def _minimax_ck_int8_attention_forward(self, x, rope_freqs=None, transformer_opt
         transformer_options=transformer_options,
     )
     out = out.squeeze(0)
-    if getattr(self, "_star7_auto_fp16_exact", False):
-        return _fp16_exact_out_proj(self.out_proj, out)
     return self.out_proj(out)
 
 
@@ -947,10 +885,16 @@ def _minimax_sla_forward(
 
     sla_backend = _load_sla_backend()
     sequence = x.shape[0]
+    block_index = getattr(self, "_star7_block_index", None)
+    debug_block = _is_sla_debug_block(block_index)
     q, k, v = _prepare_h3_qkv_chunked(
         self, x, rope_freqs, mm, comfy.quant_ops, output_dtype=torch.float16
     )
     del x
+    if debug_block:
+        _debug_sla_tensor("Q after QKV/RoPE", q, block_index, row_dim=2)
+        _debug_sla_tensor("K after QKV/RoPE", k, block_index, row_dim=2)
+        _debug_sla_tensor("V after QKV projection", v, block_index, row_dim=2)
 
     # SLA kernels take strict FP16 inputs. Both architecture paths quantize Q/K
     # for tensor-core QK while keeping V and the PV multiplication in FP16.
@@ -986,30 +930,38 @@ def _minimax_sla_forward(
             _CONFIG.get("attention_backend")
             == "sla_sm75_all_int8_experimental"
         ),
+        debug=debug_block,
     )
     shape_key = (sequence, self.heads, self.head_dim, device_index)
     if _CONFIG["verbose"] and shape_key not in _LOGGED_SLA_SHAPES:
         _LOGGED_SLA_SHAPES.add(shape_key)
         _LOG.info(
-            "[Star7 H3 Chunk] SLA verified | Q-blocks=%d | K-blocks=%d | "
+            "[Star7 H3 Chunk] SLA runtime | Q-blocks=%d | K-blocks=%d | "
             "selected=%d | audio-guard-blocks=%d | effective-sparsity=%.2f%% | "
-            "segments=%d | audio-ranges=%s | backend=%s | implementation=%s",
+            "dense-audio-guard=%s | segments=%d | audio-ranges=%s | "
+            "backend=%s | implementation=%s",
             result.query_blocks, result.key_blocks, result.selected_key_blocks,
             result.protected_query_blocks,
             result.effective_sparsity * 100.0,
+            result.dense_guard_status,
             len(sla_segments), priority_ranges,
             _CONFIG.get("attention_backend"),
             result.implementation,
         )
+    if debug_block:
+        _debug_sla_tensor(
+            "raw SLA output before out_proj", result.output,
+            block_index, row_dim=2,
+        )
     out = result.output.transpose(1, 2).reshape(
         1, sequence, self.heads * self.head_dim
     )
-    if getattr(self, "_star7_auto_fp16_exact", False):
-        # Match the standalone Native FP16 fix. Scaling by an exact power of
-        # two prevents the FP16 attention down-projection from overflowing
-        # without changing the represented result.
-        return _fp16_exact_out_proj(self.out_proj, out.squeeze(0))
-    return self.out_proj(out.squeeze(0))
+    projected = self.out_proj(out.squeeze(0))
+    if debug_block:
+        _debug_sla_tensor(
+            "attention out_proj output", projected, block_index, row_dim=0
+        )
+    return projected
 
 
 _minimax_sla_forward._star7_consumes_input = True
@@ -1033,7 +985,11 @@ def _sla_segment_passthrough(original_forward, block_index=None):
                 if block_index is not None
                 else "transformer block output"
             )
-            _require_strict_sla_finite(result, stage)
+            _require_strict_sla_finite(
+                result, stage, block_index=block_index, row_dim=0
+            )
+            if _is_sla_debug_block(block_index):
+                _complete_automatic_sla_debug(block_index)
             return result
         finally:
             if old_segments is None:
@@ -1041,6 +997,8 @@ def _sla_segment_passthrough(original_forward, block_index=None):
             else:
                 self.attn._star7_sla_mod_segments = old_segments
 
+    forward._star7_wrapper_kind = "sla-segment-block"
+    forward._star7_original_forward = original_forward
     return forward
 
 
@@ -1140,6 +1098,7 @@ def _prepare_h3_qkv_chunked(
     del qkv_buffers
     rope_fn = _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE or quant_ops.ck.rms_rope_split_half_
     start = 0
+    block_index = getattr(self, "_star7_block_index", None)
     while start < sequence:
         end = min(start + chunk, sequence)
         try:
@@ -1153,6 +1112,18 @@ def _prepare_h3_qkv_chunked(
                     time.perf_counter() - qkv_profile_start
                 ) * 1000.0
             q, k, v = qkv_chunk.split(heads * head_dim, dim=-1)
+            _debug_sla_tensor(
+                f"Q projection chunk [{start}:{end}] before norm/cast",
+                q, block_index, row_dim=0, check_fp16_range=True,
+            )
+            _debug_sla_tensor(
+                f"K projection chunk [{start}:{end}] before norm/cast",
+                k, block_index, row_dim=0, check_fp16_range=True,
+            )
+            _debug_sla_tensor(
+                f"V projection chunk [{start}:{end}] before FP16 cast",
+                v, block_index, row_dim=0, check_fp16_range=True,
+            )
             v = v.view(end - start, heads, head_dim)
             if rope_freqs is not None:
                 q = q.view(1, end - start, heads, head_dim)
@@ -1164,6 +1135,14 @@ def _prepare_h3_qkv_chunked(
                 profile_rope = bool(profile_total and start == 0)
                 rope_profile_start = time.perf_counter() if profile_rope else None
                 rope_fn(q, k, freq_chunk, qw, kw, epsilon=self.q_norm.eps, rot_dim=rot)
+                _debug_sla_tensor(
+                    f"Q norm+RoPE chunk [{start}:{end}]",
+                    q, block_index, row_dim=1, check_fp16_range=True,
+                )
+                _debug_sla_tensor(
+                    f"K norm+RoPE chunk [{start}:{end}]",
+                    k, block_index, row_dim=1, check_fp16_range=True,
+                )
                 if profile_rope:
                     if x.device.type == "cuda":
                         torch.cuda.synchronize(x.device)
@@ -1175,6 +1154,14 @@ def _prepare_h3_qkv_chunked(
             else:
                 q_norm = self.q_norm(q.view(end - start, heads, head_dim))
                 k_norm = self.k_norm(k.view(end - start, heads, head_dim))
+                _debug_sla_tensor(
+                    f"Q norm chunk [{start}:{end}]", q_norm,
+                    block_index, row_dim=0, check_fp16_range=True,
+                )
+                _debug_sla_tensor(
+                    f"K norm chunk [{start}:{end}]", k_norm,
+                    block_index, row_dim=0, check_fp16_range=True,
+                )
                 q_out[:, :, start:end, :].copy_(q_norm.permute(1, 0, 2).unsqueeze(0))
                 k_out[:, :, start:end, :].copy_(k_norm.permute(1, 0, 2).unsqueeze(0))
             v_out[:, :, start:end, :].copy_(v.permute(1, 0, 2).unsqueeze(0))
@@ -1218,112 +1205,6 @@ def _prepare_h3_qkv_chunked(
             allocated, reserved,
         )
     return q_out, k_out, v_out
-
-
-def _make_chunked_h3_block_forward(star7_fp16: bool, h3_model):
-    """Fuse the chunked MLP result into H3's residual stream chunk by chunk."""
-    def forward(self, x, t_emb, mod_segments, rope_freqs, transformer_options={}):
-        if star7_fp16 and x.dtype != torch.float32:
-            x = x.to(torch.float32)
-
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(t_emb)
-
-        h = h3_model._mod_scale_shift(
-            self.norm1(x), shift_msa, scale_msa, mod_segments
-        )
-        if star7_fp16:
-            h = h.to(torch.float16)
-        attn_forward = self.attn.forward
-        attn_func = getattr(attn_forward, "__func__", attn_forward)
-        attn_name = getattr(attn_func, "__name__", type(self.attn).__name__)
-        consumes_list = bool(
-            getattr(attn_func, "_uses_optimized_attention", False)
-            or getattr(attn_func, "_star7_consumes_input", False)
-            or attn_name == "minimax_sageattn_forward"
-        )
-        attn_key = (h.shape[0], h.shape[1], h.dtype, h.device.type, attn_name)
-        profile_attention = bool(
-            _CONFIG["verbose"] and attn_key not in _PROFILED_ATTENTION_SHAPES
-        )
-        attn_start = attn_end = None
-        if profile_attention and h.device.type == "cuda":
-            attn_start = torch.cuda.Event(enable_timing=True)
-            attn_end = torch.cuda.Event(enable_timing=True)
-            attn_start.record()
-
-        attention_input = [h] if consumes_list else h
-        attention_kwargs = {
-            "rope_freqs": rope_freqs,
-            "transformer_options": transformer_options,
-        }
-        if _CONFIG.get("attention_backend", "existing").startswith("sla_"):
-            attention_kwargs["star7_sla_mod_segments"] = mod_segments
-        old_attn_segments = getattr(self.attn, "_star7_sla_mod_segments", None)
-        if _CONFIG.get("attention_backend", "existing").startswith("sla_"):
-            self.attn._star7_sla_mod_segments = mod_segments
-        try:
-            attention = self.attn(attention_input, **attention_kwargs)
-        finally:
-            if _CONFIG.get("attention_backend", "existing").startswith("sla_"):
-                if old_attn_segments is None:
-                    delattr(self.attn, "_star7_sla_mod_segments")
-                else:
-                    self.attn._star7_sla_mod_segments = old_attn_segments
-        if consumes_list:
-            h = None
-        if profile_attention:
-            _PROFILED_ATTENTION_SHAPES.add(attn_key)
-            if attn_end is not None:
-                attn_end.record()
-                attn_end.synchronize()
-                elapsed_ms = attn_start.elapsed_time(attn_end)
-            else:
-                elapsed_ms = 0.0
-            _LOG.info(
-                "[Star7 H3 Chunk] Attention profile (one block) | %.1f ms | "
-                "forward=%s | consumable-input=%s",
-                elapsed_ms,
-                attn_name,
-                consumes_list,
-            )
-        if star7_fp16:
-            attention = attention.to(torch.float32)
-        x = h3_model._mod_gate(x, gate_msa, attention, mod_segments)
-
-        mlp_input_dtype = torch.float16 if star7_fp16 else x.dtype
-
-        def make_mlp_input(start, end):
-            value = self.norm2(x[start:end])
-            value = _mod_scale_shift_chunk(
-                value,
-                start,
-                end,
-                shift_mlp,
-                scale_mlp,
-                mod_segments,
-            )
-            return value.to(mlp_input_dtype)
-
-        result = _run_chunked_h3_mlp(
-            self.mlp,
-            x,
-            star7_fp16=star7_fp16,
-            residual=x,
-            gate=gate_mlp,
-            segments=mod_segments,
-            input_factory=make_mlp_input,
-            input_dtype=mlp_input_dtype,
-        )
-        block_index = getattr(self, "_star7_block_index", None)
-        stage = (
-            f"transformer block {block_index} output"
-            if block_index is not None
-            else "transformer block output"
-        )
-        _require_strict_sla_finite(result, stage)
-        return result
-
-    return forward
 
 
 def install_patch(
@@ -1392,6 +1273,8 @@ def install_model_patch(
 
     transformer_options = patched.model_options.setdefault("transformer_options", {})
     star7_fp16 = bool(transformer_options.get("star7_minimax_h3_fp16_exact_fix"))
+    _CONFIG["fp16_exact_present"] = star7_fp16
+    transformer_options.pop("star7_h3_sm75_auto_fp16_exact", None)
     dit_replacements = transformer_options.get("patches_replace", {}).get("dit", {})
     block_loop_cache = ("block_loop", 0) in dit_replacements
     first_attn_patch = patched.object_patches.get(
@@ -1408,7 +1291,6 @@ def install_model_patch(
 
     ck_attention = False
     sla_attention = False
-    auto_sm75_fp16_exact = False
     strict_sla_backends = {
         "sla_sm75_qk_int8_pv_fp16",
         "sla_sm75_all_int8_experimental",
@@ -1426,53 +1308,38 @@ def install_model_patch(
             requested_backend=attention_backend
         )
 
-    # Both Star7 SLA and CK execute the same H3 residual/MLP stack. Turing has
-    # no native BF16 arithmetic, so either attention backend needs the same
-    # overflow-safe FP16 branches and FP32 residual/SwiGLU formula. Keep unknown
-    # incoming `existing` attention patches untouched.
-    auto_sm75_fp16_exact = _should_enable_sm75_auto_fp16_exact(
-        capability, star7_fp16, attention_backend,
-    )
-    if auto_sm75_fp16_exact:
-        patched.set_model_compute_dtype(torch.float16)
-        is_quantized = any(
-            getattr(module, "layout_type", None) is not None
-            for module in diffusion_model.modules()
+    if capability == (7, 5) and not star7_fp16:
+        _LOG.warning(
+            "[Star7 H3 Chunk] SM75: separate MiniMax H3 FP16 Exact companion "
+            "was not detected. Chunk keeps upstream precision unchanged and "
+            "will only report numerical failures; pairing the two nodes is recommended."
         )
-        if is_quantized:
-            patched.force_cast_weights = False
-        condition_proj = diffusion_model.condition_proj
-        patched.add_object_patch(
-            "diffusion_model.condition_proj.forward",
-            MethodType(
-                _condition_proj_fp32_forward(condition_proj.forward),
-                condition_proj,
-            ),
-        )
-        transformer_options["star7_h3_sm75_auto_fp16_exact"] = NODE_VERSION
 
     # This guard covers CK, SLA and preserved attention alike. It is deliberately
     # placed at the joint model output rather than in VideoHelperSuite: FFmpeg can
     # only report corrupt PCM, whereas here the failing video/audio stream and
     # selected attention backend are still known.
-    if transformer_options.get("star7_h3_output_finite_guard") != NODE_VERSION:
-        model_forward_path = "diffusion_model.forward"
-        upstream_model_forward = patched.object_patches.get(
-            model_forward_path, diffusion_model.forward
-        )
-        patched.add_object_patch(
-            model_forward_path,
-            MethodType(
-                _h3_output_finite_passthrough(upstream_model_forward),
-                diffusion_model,
-            ),
-        )
-        transformer_options["star7_h3_output_finite_guard"] = NODE_VERSION
+    model_forward_path = "diffusion_model.forward"
+    current_model_forward = patched.object_patches.get(
+        model_forward_path, diffusion_model.forward
+    )
+    upstream_model_forward = _star7_wrapper_original(
+        current_model_forward, "h3-output-finite"
+    )
+    patched.add_object_patch(
+        model_forward_path,
+        MethodType(
+            _h3_output_finite_passthrough(upstream_model_forward),
+            diffusion_model,
+        ),
+    )
+    transformer_options["star7_h3_output_finite_guard"] = NODE_VERSION
 
     if attention_backend in strict_sla_backends:
         for index, block in enumerate(diffusion_model.blocks):
             block._star7_block_index = index
-            block.attn._star7_auto_fp16_exact = auto_sm75_fp16_exact
+            block.attn._star7_block_index = index
+            block.mlp._star7_block_index = index
             patched.add_object_patch(
                 f"diffusion_model.blocks.{index}.attn.forward",
                 MethodType(_minimax_sla_forward, block.attn),
@@ -1481,22 +1348,17 @@ def install_model_patch(
             upstream_block_forward = patched.object_patches.get(
                 block_path, block.forward
             )
-            if auto_sm75_fp16_exact:
-                patched.add_object_patch(
-                    block_path,
-                    MethodType(
-                        _make_chunked_h3_block_forward(True, h3_model), block
-                    ),
-                )
-            else:
-                patched.add_object_patch(
-                    block_path,
-                    MethodType(
-                        _sla_segment_passthrough(
-                            upstream_block_forward, block_index=index
-                        ), block
-                    ),
-                )
+            upstream_block_forward = _star7_wrapper_original(
+                upstream_block_forward, "sla-segment-block"
+            )
+            patched.add_object_patch(
+                block_path,
+                MethodType(
+                    _sla_segment_passthrough(
+                        upstream_block_forward, block_index=index
+                    ), block
+                ),
+            )
         attention_patch_name = attention_backend
         sage_attention = False
         sla_attention = True
@@ -1519,19 +1381,10 @@ def install_model_patch(
                 )
         if ck_available:
             for index, block in enumerate(diffusion_model.blocks):
-                block.attn._star7_auto_fp16_exact = auto_sm75_fp16_exact
                 patched.add_object_patch(
                     f"diffusion_model.blocks.{index}.attn.forward",
                     MethodType(_minimax_ck_int8_attention_forward, block.attn),
                 )
-                if auto_sm75_fp16_exact:
-                    patched.add_object_patch(
-                        f"diffusion_model.blocks.{index}.forward",
-                        MethodType(
-                            _make_chunked_h3_block_forward(True, h3_model),
-                            block,
-                        ),
-                    )
             attention_patch_name = "star7_comfy_kitchen_int8"
             sage_attention = False
             ck_attention = True
@@ -1543,16 +1396,20 @@ def install_model_patch(
     elif attention_backend != "existing":
         raise ValueError(f"unknown attention backend: {attention_backend}")
 
-    # Outside the self-contained SM75 FP16 Exact path, patch only the MLP so an
-    # upstream loader or third-party block patch keeps residual ownership. The
-    # auto SM75 path intentionally owns the block because FP32 residuals and
-    # FP16 branches are part of its overflow-safety contract.
-    fp16_exact_active = star7_fp16 or auto_sm75_fp16_exact
+    # Chunk only controls token tiling. If another node already patched the MLP
+    # (including FP16 Exact), invoke that exact upstream callable per tile rather
+    # than copying its precision formula into this project.
     if int(mlp_chunk_tokens) != 0:
-        mlp_forward = _make_chunked_h3_mlp_forward(fp16_exact_active)
         for index, block in enumerate(diffusion_model.blocks):
+            mlp_path = f"diffusion_model.blocks.{index}.mlp.forward"
+            upstream_mlp = patched.object_patches.get(mlp_path)
+            if upstream_mlp is not None:
+                upstream_mlp = _star7_wrapper_original(
+                    upstream_mlp, "mlp-chunk-upstream"
+                )
+            mlp_forward = _make_chunked_h3_mlp_forward(upstream_mlp)
             patched.add_object_patch(
-                f"diffusion_model.blocks.{index}.mlp.forward",
+                mlp_path,
                 MethodType(mlp_forward, block.mlp),
             )
 
@@ -1565,9 +1422,8 @@ def install_model_patch(
         architecture = (
             f"SM{capability[0]}{capability[1]}" if capability else "unknown-GPU"
         )
-        precision = (
-            "SM75 FP16 Exact (automatic)" if auto_sm75_fp16_exact
-            else "FP16 Exact (upstream)" if star7_fp16
+        model_precision = (
+            "FP16 Exact (external companion)" if star7_fp16
             else "upstream"
         )
         selected_attention = (
@@ -1576,15 +1432,55 @@ def install_model_patch(
             else "sage-qk-int8" if sage_attention
             else attention_patch_name
         )
+        precision_suffix = (
+            " | sla-input=fp16 | qk=int8 | pv=fp16" if sla_attention else ""
+        )
         _LOG.info(
-            "[Star7 H3 Chunk] Ready v%s | %s | attention=%s | precision=%s | "
+            "[Star7 H3 Chunk] Ready v%s | %s | attention=%s | "
+            "model-precision=%s%s | "
             "chunks(RoPE/MLP/QKV)=%d/%d/%d | chunk-weight-reuse=%s | "
             "block-cache=%s | finite-guard=model-output%s",
-            NODE_VERSION, architecture, selected_attention, precision,
+            NODE_VERSION, architecture, selected_attention, model_precision,
+            precision_suffix,
             int(chunk_tokens), int(mlp_chunk_tokens), int(qkv_chunk_tokens),
             bool(reuse_mlp_weights), "external" if block_loop_cache else "none",
             "+SLA-block" if sla_attention else "",
         )
+        if sla_attention and capability:
+            environment_key = (capability, torch.__version__, torch.version.cuda)
+            if environment_key not in _LOGGED_SLA_ENVIRONMENTS:
+                _LOGGED_SLA_ENVIRONMENTS.add(environment_key)
+                triton_version = getattr(
+                    getattr(sla_backend, "triton", None), "__version__", "unavailable"
+                )
+                try:
+                    driver_version = torch._C._cuda_getDriverVersion()
+                except Exception:
+                    driver_version = "unknown"
+                validation = (
+                    "newer-architecture-needs-device-validation"
+                    if capability >= (10, 0) else "established-SM80+-path"
+                )
+                _LOG.info(
+                    "[Star7 H3 Chunk] SLA environment | gpu=%s | SM%d%d | "
+                    "torch=%s | cuda-runtime=%s | triton=%s | driver=%s | %s",
+                    torch.cuda.get_device_name(), capability[0], capability[1],
+                    torch.__version__, torch.version.cuda, triton_version,
+                    driver_version, validation,
+                )
+                if capability >= (10, 0):
+                    _LOG.warning(
+                        "[Star7 H3 Chunk] SM%d%d uses the SM80+ Triton path but "
+                        "requires real-device validation; strict finite checks "
+                        "remain enabled and no fallback is allowed.",
+                        capability[0], capability[1],
+                    )
+        selected_debug_block = _sla_debug_block() if sla_attention else None
+        if selected_debug_block is not None:
+            _LOG.info(
+                "[Star7 H3 Chunk] Targeted SLA diagnostics armed for block %d",
+                selected_debug_block,
+            )
     return patched
 
 

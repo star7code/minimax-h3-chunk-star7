@@ -33,16 +33,18 @@ SLA 建议配合 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Min
 | `sla_sm80+_qk_int8_pv_fp16` | SM80+ | QK INT8、PV FP16；Triton |
 
 SLA 按 LightX2V 契约使用 `Q=128`、`K=64` 动态块路由，视频查询约保留 15% 的 K 块；
-softmax 状态和最终累积保持 FP32。目标音频查询使用完整注意力保护。
+softmax 状态和最终累积保持 FP32。SM75 原生内核对目标音频查询执行完整注意力；
+SM80+ 当前仅使用音频优先路由，日志明确显示 `routing-priority-only`。
 
 注意事项：
 
 - SM75 Windows x64：预编译 CUDA 13 静态运行时内核，要求支持 CUDA 13 的 580+ NVIDIA 驱动。
 - SM75 Linux x86_64：预编译 CUDA 12.6 静态运行时内核，兼容 Ubuntu 20.04 / glibc 2.31 及更新系统，要求 NVIDIA 驱动 525.60.13+；不依赖 PyTorch C++ ABI 或 SageAttention。若 Turing Triton 不可用，路由与量化会自动改用有界显存 PyTorch 预处理，SLA 核心仍由 `.so` 执行。
-- SM75 的 SLA 与 CK 自动使用 FP16 分支、FP32 残差/SwiGLU 和 `out_proj/fc2` 二次幂防溢出，无需外接后置 FP16 修复节点；SM80+ 不注入该架构专用改写。
+- Chunk 不注入 FP16 Exact 或改变模型 compute dtype。SM75 未检测到独立 FP16 Exact 节点时只提示并继续运行；SM80+ 无需该修复且不会显示提示。
 - SM80+ 使用 Triton，首次运行会编译并缓存内核。
+- SM100/SM120 继续使用 SM80+ Triton 路径，但启动日志会明确标记为需要对应实机验证的新架构。
 - SLA 不会静默回退；环境、自检或计算失败会直接中止，需手动改选 CK 或 `existing`。
-- NaN/Inf 检查是上述修复之后的最后防线，不是用报错代替修复。严格 SLA 会在每个完整 Transformer block 后检查并报告首个故障 block；所有注意力模式还会在 H3 的视频/音频模型输出处统一检查。只有保护后仍产生异常才会停止，避免输出棋格闪烁或把无效音频拖到 FFmpeg 合成时才报错。
+- NaN/Inf 检查只负责检测，不替代 FP16 修复。严格 SLA 会在每个完整 Transformer block 后检查并报告首个故障 block；下次运行只对该 block 启用 QKV、SLA、`out_proj` 和 MLP 分段诊断。所有注意力模式还会在 H3 的视频/音频模型输出处统一检查。
 - 外部 TE-Speed 等 block-loop 缓存可以接在本节点之前；完整步与缓存前缀仍会经过 Star7 block/attention 补丁。
 - All-INT8 量化误差高于 FP16-PV，因此保留为实验选项。
 
@@ -132,8 +134,7 @@ MiniMax H3 Native FP16 Loader - Star7 -> LoRA
     -> Activation Chunk - Star7 -> Guider / Scheduler / Sampler
 ```
 
-以上外部 Loader 仍适用于 CK 或 `existing` 注意力；选择任一 SM75 SLA 模式时，
-本节点会自动安装同一套 FP16 Exact 防溢出公式，可以直接使用普通 H3 Loader。
+FP16 Exact 与 Chunk 是两个独立节点；SM75 建议按上图组合，SM80+ 可仅使用 Chunk。
 
 20 系示例依赖另一个项目：
 
@@ -323,12 +324,15 @@ attention_backend = existing
 节点只对首个同形状 block 输出紧凑信息，例如：
 
 ```text
-[Star7 H3 Chunk] Ready v2.9.2 | ... | chunks(RoPE/MLP/QKV)=8192/8192/4096 | ...
+[Star7 H3 Chunk] Ready v2.9.4 | ... | chunks(RoPE/MLP/QKV)=8192/8192/4096 | ...
 [Star7 H3 Chunk] First-block QKV | ... | weights=resident-quantized | ...
-[Star7 H3 Chunk] First-block MLP | ... | weights=resident-quantized | ...
+[Star7 H3 Chunk] First-block MLP | ... | mode=upstream-preserved | ...
 ```
 
-`weights=resident-*` 表示独立权重快照已启用；`weights=streamed` 表示快照失败、OOM 或手动关闭后使用安全流式路径。
+QKV 日志中的 `weights=resident-*` 表示独立权重快照已启用；`weights=streamed` 表示使用安全流式路径。
+严格 SLA 若首次在 block N 失败，进程内下一次运行会自动只诊断该 block；远程复现可设置
+`STAR7_SLA_DEBUG_BLOCK=N`。SM100/SM120 还可按需设置 `STAR7_SLA_LONG_SELF_TEST=1`
+执行一次 `S=16206/H=1` 长序列内核检查，默认不运行。
 
 ## License
 
