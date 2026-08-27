@@ -1,6 +1,6 @@
 {
   "abi_version": 7,
-  "backend": "cuda-sm75-sla-and-sol-sparse-fp16-pv-and-experimental-all-int8",
+  "backend": "cuda-sm75-sla-and-sol-sparse-fp16-pv-and-all-int8",
   "compute_capability": "7.5",
   "cuda_toolkit": "13.0.88",
   "linux_cuda_toolkit": "12.6.3 (Ubuntu 20.04 / glibc 2.31)",
@@ -11,8 +11,8 @@
   },
   "linux_x86_64": {
     "file": "linux_x86_64/star7_sla_sm75_v7.so",
-    "sha256": "722befbd654ee502dea319e583d74c87d84a22859345794b08a3f8256b0cb35e",
-    "size": 1303088
+    "sha256": "b899b6dc00f883558972fae96bb5201c2c6216115ed3b948628e113c3f56fe0f",
+    "size": 1679512
   },
   "kernel": {
     "head_dim": 128,
@@ -24,7 +24,7 @@
       "all_int8": 191
     },
     "qk": "per-16-row Q / per-64-row K signed INT8 Tensor Core IMMA with INT32 accumulation",
-    "pv": "Recommended FP16 probability x FP16 V, or experimental U8 probability x INT8 V; both use FP32 accumulation",
+    "pv": "FP16 probability x FP16 V, or U8 probability x INT8 V; both use FP32 accumulation",
     "softmax": "FP32 online softmax",
     "source": "Star7 SLA Q128/K64 and threshold-routed Sol Q64/K64 over Apache-2.0 SageAttention SM75 and Comfy Kitchen primitives",
     "sol_query_block": 64,
