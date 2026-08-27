@@ -83,6 +83,24 @@ def test_hybrid_attention_dispatch_reuses_existing_paths():
         assert chunk_nodes._minimax_hybrid_attention_forward(object(), None, transformer_options=options) == "sla"
         sla.assert_called_once()
 
+    original = chunk_nodes._CONFIG.get("attention_backend")
+    try:
+        chunk_nodes._CONFIG["attention_backend"] = (
+            chunk_nodes.HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME
+        )
+        options["sigmas"] = torch.tensor([0.7])
+        with (
+            mock.patch.object(chunk_nodes, "_minimax_sla_forward", return_value="sla") as sla,
+            mock.patch.object(chunk_nodes, "_minimax_sol_forward", return_value="sol") as sol,
+        ):
+            assert chunk_nodes._minimax_hybrid_attention_forward(
+                object(), None, transformer_options=options,
+            ) == "sol"
+            sol.assert_called_once()
+            sla.assert_not_called()
+    finally:
+        chunk_nodes._CONFIG["attention_backend"] = original
+
 
 def test_hybrid_sampler_context_requires_real_comfy_sigma_metadata():
     try:
@@ -135,9 +153,67 @@ def test_hybrid_all_int8_selects_existing_all_int8_sla_path():
         ):
             chunk_nodes._CONFIG["attention_backend"] = chunk_nodes.HYBRID_ALL_INT8_BACKEND_NAME
             chunk_nodes._minimax_sla_forward(attention, input_tokens)
+            chunk_nodes._CONFIG["attention_backend"] = chunk_nodes.HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME
+            chunk_nodes._minimax_sla_forward(attention, input_tokens)
+            chunk_nodes._CONFIG["attention_backend"] = chunk_nodes.HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME
+            chunk_nodes._minimax_sla_forward(attention, input_tokens)
             chunk_nodes._CONFIG["attention_backend"] = "sla_sm75_qk_int8_pv_fp16"
             chunk_nodes._minimax_sla_forward(attention, input_tokens)
-        assert captured == [True, False]
+        assert captured == [True, True, False, False]
+    finally:
+        chunk_nodes._CONFIG["attention_backend"] = original_backend
+        chunk_nodes._CONFIG["verbose"] = original_verbose
+
+
+def test_sla_restores_upstream_dtype_before_out_proj():
+    sequence = 17
+    qkv = tuple(
+        torch.zeros((1, 1, sequence, 128), dtype=torch.float16)
+        for _ in range(3)
+    )
+    projected_dtypes = []
+
+    def sparse_attention_consume(_owned, **_kwargs):
+        return SimpleNamespace(
+            output=torch.full(qkv[0].shape, 500.0, dtype=torch.float16),
+            query_blocks=1,
+            key_blocks=1,
+            selected_key_blocks=1,
+            protected_query_blocks=0,
+            effective_sparsity=0.0,
+            dense_guard_status="test",
+            implementation="test",
+        )
+
+    def out_proj(value):
+        projected_dtypes.append(value.dtype)
+        return value
+
+    attention = SimpleNamespace(
+        heads=1, head_dim=128, out_proj=out_proj, _star7_block_index=0,
+    )
+    original_backend = chunk_nodes._CONFIG.get("attention_backend")
+    original_verbose = chunk_nodes._CONFIG.get("verbose")
+    try:
+        chunk_nodes._CONFIG["attention_backend"] = chunk_nodes.SM86PLUS_BACKEND_NAME
+        chunk_nodes._CONFIG["verbose"] = False
+        with (
+            mock.patch.object(
+                chunk_nodes, "_load_sla_backend",
+                return_value=SimpleNamespace(
+                    sparse_attention_consume=sparse_attention_consume,
+                ),
+            ),
+            mock.patch.object(
+                chunk_nodes, "_prepare_h3_qkv_chunked", return_value=qkv,
+            ),
+        ):
+            output = chunk_nodes._minimax_sla_forward(
+                attention,
+                torch.zeros((sequence, 128), dtype=torch.bfloat16),
+            )
+        assert projected_dtypes == [torch.bfloat16]
+        assert output.dtype == torch.bfloat16
     finally:
         chunk_nodes._CONFIG["attention_backend"] = original_backend
         chunk_nodes._CONFIG["verbose"] = original_verbose
@@ -1085,8 +1161,11 @@ def test_comfy_kitchen_int8_attention_forward_cuda():
 
 def test_sla_backend_is_strict_and_architecture_checked():
     backend = chunk_nodes._load_sla_backend()
+    sol = chunk_nodes._load_sol_backend()
     assert backend.SM75_BACKEND_NAME == "sla_sm75_qk_int8_pv_fp16"
-    assert backend.SM75_ALL_INT8_BACKEND_NAME == "sla_sm75_all_int8_experimental"
+    assert backend.SM75_ALL_INT8_BACKEND_NAME == "sla_sm75_all_int8"
+    assert backend.SM86PLUS_BACKEND_NAME == "sla_sm80+_qk_int8_pv_bf16"
+    assert backend.SM86PLUS_ALL_INT8_BACKEND_NAME == "sla_sm80+_all_int8"
     assert backend.SM80PLUS_BACKEND_NAME == "sla_sm80+_qk_int8_pv_fp16"
     assert backend.BLOCK_Q == 128
     assert backend.BLOCK_K == 64
@@ -1096,15 +1175,32 @@ def test_sla_backend_is_strict_and_architecture_checked():
     ][0]
     assert chunk_nodes.HYBRID_ALL_INT8_BACKEND_NAME == "hybrid_sm75_ck_sla_all_int8"
     assert chunk_nodes.HYBRID_ALL_INT8_BACKEND_NAME in choices
-    assert choices[2:6] == [
+    expected_sm75 = [
         backend.SM75_BACKEND_NAME,
         backend.SM75_ALL_INT8_BACKEND_NAME,
+        sol.SOL_SM75_ALL_INT8_BACKEND_NAME,
         chunk_nodes.HYBRID_ALL_INT8_BACKEND_NAME,
-        backend.SM80PLUS_BACKEND_NAME,
+        chunk_nodes.HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
+    ]
+    expected_sm80plus = [
+        backend.SM86PLUS_BACKEND_NAME,
+        backend.SM86PLUS_ALL_INT8_BACKEND_NAME,
+        sol.SOL_SM86PLUS_BACKEND_NAME,
+        sol.SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
+        chunk_nodes.HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME,
+        chunk_nodes.HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
+    ]
+    assert choices == [
+        "existing", "comfy_kitchen_int8", *expected_sm75, *expected_sm80plus,
     ]
     assert backend.SM75_BACKEND_NAME in choices
-    assert backend.SM75_ALL_INT8_BACKEND_NAME in choices
-    assert backend.SM80PLUS_BACKEND_NAME in choices
+    assert backend.SM86PLUS_BACKEND_NAME in choices
+    assert sol.SOL_SM86PLUS_BACKEND_NAME in choices
+    assert chunk_nodes.HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME not in choices
+    assert chunk_nodes.HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME not in choices
+    assert sol.SOL_SM75_BACKEND_NAME not in choices
+    assert sol.SOL_SM75_ALL_INT8_BACKEND_NAME == "sol_sm75_all_int8"
+    assert sol.SOL_SM86PLUS_ALL_INT8_BACKEND_NAME == "sol_sm80+_all_int8"
 
     original_available = backend.torch.cuda.is_available
     original_capability = backend.torch.cuda.get_device_capability
@@ -1160,6 +1256,9 @@ def test_sla_backend_is_strict_and_architecture_checked():
             assert "requires exactly SM75" in str(exc)
         else:
             raise AssertionError("SM75 Hybrid SLA incorrectly accepted SM80")
+        assert backend.check_runtime_support(
+            requested_backend=backend.SM86PLUS_BACKEND_NAME
+        ) == (8, 0)
         for capability in ((8, 0), (8, 6), (8, 9), (12, 0)):
             backend.torch.cuda.get_device_capability = (
                 lambda _device=None, cap=capability: cap
@@ -1167,14 +1266,114 @@ def test_sla_backend_is_strict_and_architecture_checked():
             assert backend.check_runtime_support(
                 requested_backend=backend.SM80PLUS_BACKEND_NAME
             ) == capability
-            assert backend.backend_name_for_capability(capability) == (
-                backend.SM80PLUS_BACKEND_NAME
-            )
+            assert backend.backend_name_for_capability(capability) == backend.SM86PLUS_BACKEND_NAME
+            assert backend.check_runtime_support(
+                requested_backend=backend.SM86PLUS_BACKEND_NAME
+            ) == capability
+            assert backend.check_runtime_support(
+                requested_backend=backend.SM86PLUS_ALL_INT8_BACKEND_NAME
+            ) == capability
     finally:
         backend.torch.cuda.is_available = original_available
         backend.torch.cuda.get_device_capability = original_capability
         backend.triton = original_triton
         backend._load_sm75_backend = original_native_loader
+
+
+def test_sol_q64k64_routing_has_variable_row_counts():
+    sol = chunk_nodes._load_sol_backend()
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(0x501)
+    q = torch.randn((1, 2, 1025, 128), generator=generator, dtype=torch.float16)
+    k = torch.randn(q.shape, generator=generator, dtype=torch.float16)
+    row_count, lut, density = sol.build_custom_routing(
+        q, k, tau=0.25, topk_blocks=4,
+    )
+    assert row_count.shape == (1, 2, 17)
+    assert lut.shape[:3] == row_count.shape
+    assert row_count.dtype == torch.int32
+    assert lut.dtype == torch.int32
+    assert int(row_count.min()) < int(row_count.max())
+    assert 0.0 < density <= 1.0
+    for row, packed in zip(row_count.flatten(), lut.reshape(-1, lut.shape[-1])):
+        selected = packed[: int(row)]
+        assert bool((selected[1:] >= selected[:-1]).all())
+        assert int(selected.min()) >= 0
+        assert int(selected.max()) < 17
+
+
+def test_bundled_official_sol_dispatch_is_self_contained():
+    sol = chunk_nodes._load_sol_backend()
+    official = sol._official_module()
+    assert "vendor" in pathlib.Path(official.__file__).parts
+    assert official._backend_for_arch((8, 0), cute_available=False) == "triton"
+    assert official._backend_for_arch((8, 6), cute_available=False) == "triton"
+    assert official._backend_for_arch((8, 9), cute_available=False) == "triton"
+    assert official._backend_for_arch((8, 9), cute_available=True) == "cute_sm89"
+    assert official._backend_for_arch((9, 0), cute_available=True) == "cute_sm90"
+    assert official._backend_for_arch((10, 0), cute_available=True) == "cute_sm100"
+    assert official._backend_for_arch((12, 0), cute_available=True) == "cute_sm120"
+
+
+def test_sol_sm75_native_cuda_matches_exact_plus_centroid_reference():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
+        return
+    sol = chunk_nodes._load_sol_backend()
+    available, _reason = sol._load_sm75_backend().availability()
+    if not available:
+        return
+    generator = torch.Generator(device="cuda")
+    generator.manual_seed(0x507)
+    q = torch.randn((1, 1, 1025, 128), generator=generator, device="cuda", dtype=torch.float16) * 0.2
+    k = torch.randn(q.shape, generator=generator, device="cuda", dtype=torch.float16) * 0.2
+    v = torch.randn(q.shape, generator=generator, device="cuda", dtype=torch.float16) * 0.2
+    native_routing = sol._load_sm75_backend().prepare(q, k, v, tau=0.25)
+    row_count = native_routing["row_count"]
+    exact_mask = native_routing["exact_mask"]
+    exact_approx_parts = []
+    scale = 128 ** -0.5
+    k_centroid = sol._block_mean_fp32(k)
+    v_centroid = sol._block_mean_fp32(v)
+    for query_block in range(row_count.shape[-1]):
+        blocks = torch.nonzero(
+            exact_mask[0, 0, query_block], as_tuple=False,
+        ).flatten().tolist()
+        indices = torch.cat([
+            torch.arange(
+                block * 64, min((block + 1) * 64, q.shape[-2]), device="cuda",
+            )
+            for block in blocks
+        ])
+        q_part = q[:, :, query_block * 64 : min((query_block + 1) * 64, q.shape[-2])].float()
+        k_part = k.index_select(-2, indices).float()
+        v_part = v.index_select(-2, indices).float()
+        unselected = [block for block in range(row_count.shape[-1]) if block not in blocks]
+        approximate_k = []
+        approximate_v = []
+        for block in unselected:
+            block_length = min(64, q.shape[-2] - block * 64)
+            approximate_k.append(k_centroid[:, :, block:block + 1].expand(-1, -1, block_length, -1))
+            approximate_v.append(v_centroid[:, :, block:block + 1].expand(-1, -1, block_length, -1))
+        if approximate_k:
+            k_part = torch.cat([k_part, *approximate_k], dim=-2)
+            v_part = torch.cat([v_part, *approximate_v], dim=-2)
+        exact_approx_parts.append(
+            (torch.softmax(q_part @ k_part.transpose(-1, -2) * scale, dim=-1) @ v_part).half()
+        )
+    exact_approx_reference = torch.cat(exact_approx_parts, dim=-2)
+    fp16_pv = sol.run_custom_consume(
+        [q.clone(), k.clone(), v.clone()], all_int8=False,
+        tau=0.25,
+    ).output
+    all_int8 = sol.run_custom_consume(
+        [q.clone(), k.clone(), v.clone()], all_int8=True,
+        tau=0.25,
+    ).output
+    torch.cuda.synchronize()
+    assert bool(torch.isfinite(fp16_pv).all())
+    assert bool(torch.isfinite(all_int8).all())
+    assert float((fp16_pv - exact_approx_reference).abs().float().mean()) < 2.0e-4
+    assert float((all_int8 - exact_approx_reference).abs().float().mean()) < 1.0e-3
 
 
 def test_sm75_binary_manifest_payloads():
@@ -1295,6 +1494,7 @@ if __name__ == "__main__":
     test_hybrid_attention_dispatch_reuses_existing_paths()
     test_hybrid_sampler_context_requires_real_comfy_sigma_metadata()
     test_hybrid_all_int8_selects_existing_all_int8_sla_path()
+    test_sla_restores_upstream_dtype_before_out_proj()
     devices = [torch.device("cpu")]
     if torch.cuda.is_available():
         devices.append(torch.device("cuda"))
@@ -1334,6 +1534,9 @@ if __name__ == "__main__":
     test_sm75_convrot_qkv_projection_is_bitwise_chunk_invariant()
     test_comfy_kitchen_int8_attention_forward_cuda()
     test_sla_backend_is_strict_and_architecture_checked()
+    test_sol_q64k64_routing_has_variable_row_counts()
+    test_bundled_official_sol_dispatch_is_self_contained()
+    test_sol_sm75_native_cuda_matches_exact_plus_centroid_reference()
     test_sm75_binary_manifest_payloads()
     test_sm75_torch_preprocess_matches_triton()
     test_sla_sm75_native_cuda_self_test()

@@ -21,7 +21,7 @@ This document records one local Windows/ComfyUI case. It is evidence for configu
 | Audio VAE | MiniMax H3 audio VAE FP32 |
 | LoRA | MiniMax H3 FL2V Turbo 4-step v1.0 768p, strength 1.0 |
 | Sampling | Euler, simple scheduler, 4 steps, denoise 1.0 |
-| Chunking | RoPE 8192; MLP 4096; prefetch removed; automatic MLP weight strategy |
+| Chunking | RoPE 8192; MLP 4096; QKV 4096; automatic QKV/MLP weight strategy; prefetch removed |
 | Attention | Comfy Kitchen INT8 |
 | Output | RTX Video Super Resolution 2× Ultra; NVENC H.264 at 35Mbps |
 
@@ -30,12 +30,11 @@ This document records one local Windows/ComfyUI case. It is evidence for configu
 | Attention path | Observed sampling time |
 |---|---:|
 | KJNodes custom SM75 SageAttention 2 path | approximately 170 seconds/step |
-| KJNodes Low VRAM Attention, `head_chunks=4` | approximately 177 seconds/step |
 | Comfy Kitchen INT8 | approximately 120 seconds/step |
 | Star7 SLA SM75 QK INT8 / PV FP16 + audio guard | **96.68 seconds/step** |
-| Star7 SLA SM75 All-INT8 experimental + audio guard | **60.83 seconds/step** |
+| Star7 SLA SM75 All-INT8 + audio guard | **60.83 seconds/step** |
 
-Compared with the observed [KJNodes](https://github.com/kijai/ComfyUI-KJNodes) custom SM75 SageAttention 2 path, CK INT8 reduced step time by approximately `50s`, or `29.4%`, and raised step throughput by approximately `1.42×`. Compared with Low VRAM Attention it reduced step time by approximately `57s`, or `32.2%`, for approximately `1.48×` throughput. This is a Turing/SM75 result for the recorded local software stack, not a claim that CK is faster than Sage on every GPU architecture.
+Compared with the observed [KJNodes](https://github.com/kijai/ComfyUI-KJNodes) custom SM75 SageAttention 2 path, CK INT8 reduced step time by approximately `50s`, or `29.4%`, and raised step throughput by approximately `1.42×`. This is a Turing/SM75 result for the recorded local software stack, not a claim that CK is faster than Sage on every GPU architecture.
 
 The current bundled SM75 kernel was validated in the attached 1.0MP, 10-second,
 four-step workflow. Its real packed sequence was 75,872 tokens with 56 heads.
@@ -48,19 +47,19 @@ approximately 1.22×. No CK or Sage failure fallback was used.
 
 The earlier 59.18-second result belonged to the first pure-INT8 PV kernel and was
 removed because it had accumulated visual/audio error. ABI v7 reintroduces a
-separate All-INT8 experiment while retaining per-16-row Q scaling, corrected
+separate All-INT8 path while retaining per-16-row Q scaling, corrected
 mapping, and the native dense audio-query guard. It completed the same workflow
 at 60.83 seconds/step and 325.51 seconds total. The 8.5–10.1 second tail measured
 -72.49/-72.57 dB RMS across the two channels, without the old right-channel burst.
-It remains experimental because one successful seed cannot establish general
-quality equivalence to FP16-PV.
+One successful seed cannot establish general quality equivalence to FP16-PV,
+so the mode still requires prompt-level visual and speech validation.
 
 ### SM75 attention microbenchmark
 
 The development benchmark includes SLA routing, Q/K/V quantization, the sparse
 attention core, and output allocation. Medians on the same RTX 2080 Ti were:
 
-| Sequence length | FP16-PV | All-INT8 experimental | CK INT8 |
+| Sequence length | FP16-PV | All-INT8 | CK INT8 |
 |---:|---:|---:|---:|
 | 4,096 | 4.735 ms | 2.627 ms | 7.407 ms |
 | 16,384 | 56.303 ms | 17.158 ms | 80.859 ms |
@@ -104,16 +103,21 @@ Activation chunking does not reduce theoretical FLOPs. If a workload already fit
 |---|---|
 | eager split-half RoPE | reduce `chunk_tokens` |
 | `fc1`/SwiGLU/`fc2` activation | reduce `mlp_chunk_tokens` |
-| next-block prefetch | Removed; runtime always keeps it disabled |
-| QKV/attention | change or chunk the attention backend |
+| QKV projection temporary tensors | reduce `qkv_chunk_tokens` |
+| attention kernel | change the attention backend or reduce sequence/reference tokens; activation chunks do not shrink the attention core |
 | model loading | loader, quantization, or offload policy; chunk values do not apply yet |
 
-| Dedicated VRAM | RoPE start | MLP start | Prefetch |
-|---:|---:|---:|---|
-| 20–24GB | 8192 | 4096 | enabled first; disable after OOM |
-| 16–20GB | 8192 | 2048–4096 | enabled; lower MLP first |
-| 12–16GB | 8192 | 1024–2048 | enabled; lower RoPE only on RoPE OOM |
-| below 12GB | 4096–8192 | 512–1024 | enabled; long-video success is not guaranteed |
+| Dedicated VRAM | RoPE start | MLP start | QKV start |
+|---:|---:|---:|---:|
+| 20–24GB | 8192 | 4096 | 4096 |
+| 16–20GB | 8192 | 2048–4096 | 2048–4096 |
+| 12–16GB | 8192 | 1024–2048 | 1024–2048 |
+| below 12GB | 4096–8192 | 512–1024 | 512–1024 |
+
+These are initial tuning ranges rather than capacity guarantees. SM75 applies a
+speech-stability ceiling of 4096 to QKV; SM80+ does not apply that ceiling.
+Next-block prefetch has been removed and is always disabled, so it is no longer
+a tuning control.
 
 ## Memory observation
 
@@ -134,10 +138,11 @@ The “keep models resident in VRAM” option reduces model swapping. It does no
 ```text
 chunk_tokens = 8192
 mlp_chunk_tokens = 4096
+qkv_chunk_tokens = 4096
 auto_halve_on_oom = true
 disable_dynamic_prefetch = "实验功能已移除"  # Legacy compatibility field; runtime always disabled
 reuse_mlp_weights = true  # auto-detects resident vs streamed safely
-attention_backend = sla_sm75_qk_int8_pv_fp16  # strict SM75 SLA
+attention_backend = sla_sm75_qk_int8_pv_fp16  # strict SM75 SLA quality path
 ```
 
 ## Fixed-token-budget duration estimate

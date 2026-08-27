@@ -73,7 +73,9 @@ __global__ void qk_int_sv_i8_attn_kernel(
     const uint32_t stride_d_v, const uint32_t stride_bz_o,
     const uint32_t stride_seq_o, const uint32_t stride_h_o, float sm_scale,
     const int32_t *__restrict__ SparseLut, const uint32_t selected_blocks,
-    const uint32_t q_block_base) {
+    const uint32_t q_block_base,
+    const int32_t *__restrict__ RowCount = nullptr,
+    const uint32_t lut_stride = 0) {
   // compile time check
   static_assert(DTypeQK == DataType::kInt8 || DTypeQK == DataType::kInt4,
                 "DTypeQK must be int8 or int4");
@@ -136,9 +138,16 @@ __global__ void qk_int_sv_i8_attn_kernel(
   const uint32_t bx = q_block_base + local_bx;
   const uint32_t num_qo_heads = gridDim.y;
   const uint32_t head_id = blockIdx.y;
-  const uint64_t sparse_lut_base =
-      (static_cast<uint64_t>(batch_id) * num_qo_heads * gridDim.x +
-       static_cast<uint64_t>(head_id) * gridDim.x + local_bx) * selected_blocks;
+  const uint32_t num_q_blocks = div_ceil(qo_len, CTA_Q);
+  const uint64_t route_row =
+      (static_cast<uint64_t>(batch_id) * num_qo_heads + head_id) *
+          num_q_blocks + bx;
+  const uint64_t sparse_lut_base = RowCount
+      ? route_row * lut_stride
+      : (static_cast<uint64_t>(batch_id) * num_qo_heads * gridDim.x +
+         static_cast<uint64_t>(head_id) * gridDim.x + local_bx) * selected_blocks;
+  const uint32_t active_selected_blocks = RowCount
+      ? static_cast<uint32_t>(RowCount[route_row]) : selected_blocks;
   const uint32_t first_key_block =
       static_cast<uint32_t>(SparseLut[sparse_lut_base]);
 
@@ -336,7 +345,7 @@ __global__ void qk_int_sv_i8_attn_kernel(
       first_key_block * CTA_K + CTA_K / num_warps * warp_id +
       lane_id / global_to_shared_line_lanes_QK;
 
-  const uint32_t num_iterations = selected_blocks;
+  const uint32_t num_iterations = active_selected_blocks;
 
   // load Q with predicate
   load_global_to_share<global_to_shared_line_lanes_QK,

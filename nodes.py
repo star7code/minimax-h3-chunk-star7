@@ -13,10 +13,58 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.10.3"
+NODE_VERSION = "2.12.0"
 SM75_QKV_QUALITY_CHUNK = 4096
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
+SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
+LEGACY_SM86PLUS_FP16_BACKEND_NAME = "sla_sm80+_qk_int8_pv_fp16"
+SM75_ALL_INT8_BACKEND_NAME = "sla_sm75_all_int8"
+LEGACY_SM75_ALL_INT8_BACKEND_NAME = "sla_sm75_all_int8_experimental"
+SM86PLUS_ALL_INT8_BACKEND_NAME = "sla_sm80+_all_int8"
+LEGACY_SM86PLUS_ALL_INT8_BACKEND_NAME = "sla_sm80+_all_int8_experimental"
+HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME = "hybrid_sm80+_ck_sla_all_int8"
+HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME = "hybrid_sm80+_ck_sla_qk_int8_pv_bf16"
+LEGACY_HYBRID_SM86PLUS_CK_SLA_FP16_BACKEND_NAME = "hybrid_sm80+_ck_sla_qk_int8_pv_fp16"
+SOL_SM75_BACKEND_NAME = "sol_sm75_qk_int8_pv_fp16"
+SOL_SM75_ALL_INT8_BACKEND_NAME = "sol_sm75_all_int8"
+LEGACY_SOL_SM75_ALL_INT8_BACKEND_NAME = "sol_sm75_all_int8_experimental"
+SOL_SM86PLUS_BACKEND_NAME = "sol_sm80+_bf16_official"
+SOL_SM86PLUS_ALL_INT8_BACKEND_NAME = "sol_sm80+_all_int8"
+LEGACY_SOL_SM86PLUS_ALL_INT8_BACKEND_NAME = "sol_sm80+_all_int8_experimental"
+HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sol_all_int8"
+HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME = "hybrid_sm80+_ck_sol_all_int8"
+HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME = "hybrid_sm80+_ck_sol_bf16_official"
+LEGACY_SM80PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_fp16"
+HYBRID_BACKEND_NAMES = {
+    HYBRID_ALL_INT8_BACKEND_NAME,
+    HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME,
+    HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME,
+    LEGACY_HYBRID_SM86PLUS_CK_SLA_FP16_BACKEND_NAME,
+    HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
+    HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
+    HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
+}
 HYBRID_GUARD_RATIO = Fraction(1, 6)
+
+
+def _attention_backend_choices():
+    common = ["existing", "comfy_kitchen_int8"]
+    sm75 = [
+        "sla_sm75_qk_int8_pv_fp16",
+        SM75_ALL_INT8_BACKEND_NAME,
+        SOL_SM75_ALL_INT8_BACKEND_NAME,
+        HYBRID_ALL_INT8_BACKEND_NAME,
+        HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
+    ]
+    sm80plus = [
+        SM86PLUS_BACKEND_NAME,
+        SM86PLUS_ALL_INT8_BACKEND_NAME,
+        SOL_SM86PLUS_BACKEND_NAME,
+        SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
+        HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME,
+        HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
+    ]
+    return common + sm75 + sm80plus
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -24,6 +72,7 @@ _LOGGED_ROPE_SHAPES = set()
 _LOGGED_MLP_SHAPES = set()
 _PROFILED_MLP_SHAPES = set()
 _LOGGED_SLA_SHAPES = set()
+_LOGGED_SOL_SHAPES = set()
 _PROFILED_QKV_STAGES = set()
 _LOGGED_SLA_ENVIRONMENTS = set()
 _LAST_FAILED_SLA_BLOCK = None
@@ -48,6 +97,28 @@ _CONFIG = {
     "fp16_exact_present": False,
     "hybrid_sla_backend": None,
 }
+
+
+def _h3_memory_debug_enabled() -> bool:
+    return os.environ.get("STAR7_H3_MEMORY_DEBUG", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _log_h3_cuda_memory(stage: str, device, block_index=None) -> None:
+    if (
+        not _h3_memory_debug_enabled()
+        or device.type != "cuda"
+        or (block_index is not None and int(block_index) != 0)
+    ):
+        return
+    allocated = torch.cuda.memory_allocated(device) / 1024**3
+    reserved = torch.cuda.memory_reserved(device) / 1024**3
+    _LOG.info(
+        "[Star7 H3 Memory] %s | block=%s | allocated=%.2fGiB | reserved=%.2fGiB",
+        stage, block_index if block_index is not None else "n/a",
+        allocated, reserved,
+    )
 
 
 def _weak_callable(value):
@@ -627,6 +698,8 @@ def _run_chunked_h3_mlp(
             seq_len, current_chunk, calls, mode,
         )
 
+    _log_h3_cuda_memory("after-mlp", x.device, block_index=block_index)
+
     return output
 
 
@@ -763,51 +836,85 @@ def _hybrid_sampling_context(transformer_options: dict) -> tuple[int, int, str]:
     return step_index, total_steps, backend
 
 
-def _hybrid_step_timing_start(
-    transformer_options: dict,
-    x: torch.Tensor,
-    step_index: int,
-    total_steps: int,
-    backend: str,
-) -> None:
-    """Start one full H3 block-loop timer for the selected hybrid backend."""
+def _sampling_step_context(transformer_options: dict):
+    """Resolve a sampler step without requiring Hybrid attention."""
+    sample_sigmas = transformer_options.get("sample_sigmas")
+    current_sigma = transformer_options.get("sigmas")
+    if not torch.is_tensor(sample_sigmas) or not torch.is_tensor(current_sigma):
+        return None
+
+    schedule = sample_sigmas.detach().flatten()
+    current = current_sigma.detach().flatten()
+    if schedule.numel() < 2 or current.numel() < 1:
+        return None
+
+    current_value = current[0].to(schedule.device, dtype=schedule.dtype)
+    active_schedule = schedule[:-1]
+    matches = torch.isclose(active_schedule, current_value, rtol=1e-4, atol=1e-6)
+    matching_steps = torch.nonzero(matches, as_tuple=False).flatten()
+    if matching_steps.numel() == 0:
+        return None
+    return int(matching_steps[0].item()), int(schedule.numel() - 1)
+
+
+def _step_backend_label(transformer_options: dict):
+    configured = _CONFIG.get("attention_backend", "existing")
+    if configured in HYBRID_BACKEND_NAMES:
+        try:
+            _, _, backend = _hybrid_sampling_context(transformer_options)
+            if backend == "SLA" and configured in {
+                HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
+                HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
+                HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
+            }:
+                backend = "Sol"
+        except (RuntimeError, ValueError):
+            backend = "Hybrid"
+    elif configured == "comfy_kitchen_int8":
+        backend = "CK"
+    elif configured.startswith("sla_"):
+        backend = "SLA"
+    else:
+        backend = configured
+    return configured, backend
+
+
+def _step_timing_start(transformer_options: dict, x, step_index: int, total_steps: int):
+    if x is None or not torch.is_tensor(x):
+        return
     if x.device.type == "cuda":
         event = torch.cuda.Event(enable_timing=True)
         event.record(torch.cuda.current_stream(x.device))
-        transformer_options["_star7_hybrid_step_timing"] = {
+        transformer_options["_star7_step_timing"] = {
             "step": step_index,
             "total": total_steps,
-            "backend": backend,
             "start_event": event,
             "start_time": None,
         }
     else:
-        transformer_options["_star7_hybrid_step_timing"] = {
+        transformer_options["_star7_step_timing"] = {
             "step": step_index,
             "total": total_steps,
-            "backend": backend,
             "start_event": None,
             "start_time": time.perf_counter(),
         }
 
 
-def _hybrid_step_timing_finish(
+def _step_timing_finish(
     transformer_options: dict,
-    x: torch.Tensor,
+    device,
     step_index: int,
     total_steps: int,
-    backend: str,
-    block_count: int,
+    model,
 ) -> None:
-    """Finish and log one backend-specific H3 block-loop duration."""
-    timing = transformer_options.get("_star7_hybrid_step_timing")
+    timing = transformer_options.pop("_star7_step_timing", None)
     if not isinstance(timing, dict) or timing.get("step") != step_index:
         return
 
     start_event = timing.get("start_event")
-    if start_event is not None and x.device.type == "cuda":
+    if start_event is not None and device.type == "cuda":
         end_event = torch.cuda.Event(enable_timing=True)
-        end_event.record(torch.cuda.current_stream(x.device))
+        end_event.record(torch.cuda.current_stream(device))
         end_event.synchronize()
         elapsed_seconds = start_event.elapsed_time(end_event) / 1000.0
     else:
@@ -816,11 +923,15 @@ def _hybrid_step_timing_finish(
             return
         elapsed_seconds = time.perf_counter() - start_time
 
+    configured, backend = _step_backend_label(transformer_options)
+    extra = f" | mode={configured}"
+    if configured in HYBRID_BACKEND_NAMES:
+        extra += f" | guard_ratio={float(HYBRID_GUARD_RATIO):.4f}"
     _LOG.info(
-        "[Star7 H3 Hybrid] step %d/%d -> %-3s | %7.2fs/it | blocks=%d",
-        step_index + 1, total_steps, backend, elapsed_seconds, block_count,
+        "[Star7 H3] step %d/%d -> %-8s | %7.2fs/it | blocks=%d%s",
+        step_index + 1, total_steps, backend, elapsed_seconds,
+        len(getattr(model, "blocks", ())), extra,
     )
-    transformer_options.pop("_star7_hybrid_step_timing", None)
 
 
 def _complete_automatic_sla_debug(block_index) -> None:
@@ -862,6 +973,17 @@ def _bad_row_ranges(value: torch.Tensor, row_dim: int = 0, limit: int = 6) -> di
 
 
 def _sla_architecture_note_for_capability(capability) -> str:
+    selected = str(_CONFIG.get("attention_backend", ""))
+    if "sol" in selected:
+        if capability == (7, 5):
+            return "SM75 used the Star7 Q64/K64 Sol exact-plus-centroid CUDA path"
+        if capability:
+            mode = (
+                "NVIDIA official BF16 exact+approx Sol"
+                if selected == SOL_SM86PLUS_BACKEND_NAME
+                else "Star7 Q64/K64 exact-plus-centroid All-INT8 Sol"
+            )
+            return f"SM{capability[0]}{capability[1]} used {mode}"
     if capability == (7, 5):
         companion = (
             "detected" if _CONFIG.get("fp16_exact_present") else "not detected"
@@ -911,7 +1033,7 @@ def _raise_strict_sla_failure(
             if block_index is not None else ""
         )
     raise RuntimeError(
-        f"Star7 strict SLA detected NaN/Inf after {stage} "
+        f"Star7 strict sparse attention detected NaN/Inf after {stage} "
         f"(nan={nan_count}, inf={inf_count}, bad-rows={structure['bad_rows']}, "
         f"first={structure['first_bad_row']}, last={structure['last_bad_row']}, "
         f"ranges={structure['ranges']}{heads}). The task was stopped before VAE "
@@ -927,7 +1049,7 @@ def _require_strict_sla_finite(
 ) -> None:
     """Stop strict SLA jobs at the first observable non-finite model stage."""
     selected_backend = str(_CONFIG.get("attention_backend", ""))
-    if selected_backend == HYBRID_ALL_INT8_BACKEND_NAME:
+    if selected_backend in HYBRID_BACKEND_NAMES:
         hybrid_selection = (
             transformer_options.get("_star7_hybrid_selection")
             if transformer_options else None
@@ -936,7 +1058,10 @@ def _require_strict_sla_finite(
             hybrid_selection[2], hybrid_selection[1]
         ) != "SLA":
             return
-    elif not selected_backend.startswith("sla_"):
+    elif not (
+        selected_backend.startswith("sla_")
+        or selected_backend.startswith("sol_")
+    ):
         return
     if bool(torch.isfinite(value).all().item()):
         return
@@ -1017,7 +1142,41 @@ def _h3_output_finite_passthrough(original_forward):
     original_forward = _weak_callable(original_forward)
 
     def forward(self, *args, **kwargs):
-        result = original_forward(*args, **kwargs)
+        transformer_options = kwargs.get("transformer_options")
+        if not isinstance(transformer_options, dict) and len(args) > 3:
+            candidate = args[3]
+            transformer_options = candidate if isinstance(candidate, dict) else None
+
+        step_context = (
+            _sampling_step_context(transformer_options)
+            if transformer_options is not None else None
+        )
+        timing_device = None
+        if step_context is not None:
+            input_value = args[0] if args else kwargs.get("x")
+            if isinstance(input_value, (list, tuple)):
+                input_value = next(
+                    (value for value in input_value if torch.is_tensor(value)), None
+                )
+            if torch.is_tensor(input_value):
+                timing_device = input_value.device
+                step_index, total_steps = step_context
+                _step_timing_start(
+                    transformer_options, input_value, step_index, total_steps,
+                )
+
+        try:
+            result = original_forward(*args, **kwargs)
+        except Exception:
+            if transformer_options is not None:
+                transformer_options.pop("_star7_step_timing", None)
+            raise
+
+        if step_context is not None and timing_device is not None:
+            _step_timing_finish(
+                transformer_options, timing_device,
+                step_context[0], step_context[1], self,
+            )
         labels = ("video model output", "audio model output")
         for label, value in zip(labels, result):
             if bool(torch.isfinite(value).all().item()):
@@ -1055,6 +1214,10 @@ def _minimax_ck_int8_attention_forward(self, x, rope_freqs=None, transformer_opt
     q, k, v = _prepare_h3_qkv_chunked(
         self, x, rope_freqs, mm, comfy.quant_ops, output_dtype=x.dtype
     )
+    _log_h3_cuda_memory(
+        "after-attention-qkv", x.device,
+        block_index=getattr(self, "_star7_block_index", None),
+    )
     del x
 
     # Stop V sharing the fused QKV storage. CK consumes Q/K after
@@ -1069,7 +1232,12 @@ def _minimax_ck_int8_attention_forward(self, x, rope_freqs=None, transformer_opt
         transformer_options=transformer_options,
     )
     out = out.squeeze(0)
-    return self.out_proj(out)
+    projected = self.out_proj(out)
+    _log_h3_cuda_memory(
+        "after-attention", projected.device,
+        block_index=getattr(self, "_star7_block_index", None),
+    )
+    return projected
 
 
 _minimax_ck_int8_attention_forward._star7_consumes_input = True
@@ -1097,6 +1265,27 @@ def _load_sla_backend():
     return sla_backend
 
 
+def _load_sol_backend():
+    try:
+        from . import sol_backend
+    except ImportError:
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        path = Path(__file__).with_name("sol_backend.py")
+        module_name = "star7_sol_backend"
+        if module_name in sys.modules:
+            return sys.modules[module_name]
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Unable to load Star7 Sol backend from {path}")
+        sol_backend = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = sol_backend
+        spec.loader.exec_module(sol_backend)
+    return sol_backend
+
+
 def _minimax_sla_forward(
     self, x, rope_freqs=None, transformer_options={},
     star7_sla_mod_segments=(),
@@ -1105,6 +1294,11 @@ def _minimax_sla_forward(
     if isinstance(x, list):
         x = x.pop()
 
+    # SM75 and legacy newer-GPU paths use FP16 working buffers. The visible
+    # SM80+ SLA path stays BF16 through QKV and PV, then restores the upstream
+    # interface dtype before out_proj when necessary.
+    upstream_dtype = x.dtype
+
     import comfy.model_management as mm
     import comfy.quant_ops
 
@@ -1112,8 +1306,18 @@ def _minimax_sla_forward(
     sequence = x.shape[0]
     block_index = getattr(self, "_star7_block_index", None)
     debug_block = _is_sla_debug_block(block_index)
+    configured = str(_CONFIG.get("attention_backend", ""))
+    sla_bf16 = configured in {
+        SM86PLUS_BACKEND_NAME,
+        HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME,
+    }
     q, k, v = _prepare_h3_qkv_chunked(
-        self, x, rope_freqs, mm, comfy.quant_ops, output_dtype=torch.float16
+        self, x, rope_freqs, mm, comfy.quant_ops,
+        output_dtype=torch.bfloat16 if sla_bf16 else torch.float16,
+    )
+    _log_h3_cuda_memory(
+        "after-attention-qkv", x.device,
+        block_index=getattr(self, "_star7_block_index", None),
     )
     del x
     if debug_block:
@@ -1121,10 +1325,9 @@ def _minimax_sla_forward(
         _debug_sla_tensor("K after QKV/RoPE", k, block_index, row_dim=2)
         _debug_sla_tensor("V after QKV projection", v, block_index, row_dim=2)
 
-    # SLA kernels take strict FP16 inputs. Both architecture paths quantize Q/K
-    # for tensor-core QK while keeping V and the PV multiplication in FP16.
-    # The chunk helper writes FP16 directly, avoiding a second full Q/K/V copy
-    # when the upstream H3 projection computes in FP32.
+    # Both paths quantize Q/K for tensor-core QK. SM75 keeps V/PV in FP16;
+    # visible SM80+ keeps V/PV in BF16. The chunk helper writes the selected
+    # dtype directly, avoiding a second full Q/K/V conversion.
 
     sla_segments = star7_sla_mod_segments or getattr(
         self, "_star7_sla_mod_segments", ()
@@ -1152,8 +1355,10 @@ def _minimax_sla_forward(
     result = sla_backend.sparse_attention_consume(
         owned_qkv, query_priority_ranges=priority_ranges,
         all_int8=_CONFIG.get("attention_backend") in {
-            "sla_sm75_all_int8_experimental",
+            SM75_ALL_INT8_BACKEND_NAME,
             HYBRID_ALL_INT8_BACKEND_NAME,
+            SM86PLUS_ALL_INT8_BACKEND_NAME,
+            HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME,
         },
         debug=debug_block,
     )
@@ -1180,8 +1385,14 @@ def _minimax_sla_forward(
         )
     out = result.output.transpose(1, 2).reshape(
         1, sequence, self.heads * self.head_dim
+    ).squeeze(0)
+    if out.dtype != upstream_dtype:
+        out = out.to(dtype=upstream_dtype)
+    projected = self.out_proj(out)
+    _log_h3_cuda_memory(
+        "after-attention", projected.device,
+        block_index=block_index,
     )
-    projected = self.out_proj(out.squeeze(0))
     if debug_block:
         _debug_sla_tensor(
             "attention out_proj output", projected, block_index, row_dim=0
@@ -1192,25 +1403,124 @@ def _minimax_sla_forward(
 _minimax_sla_forward._star7_consumes_input = True
 
 
+def _minimax_sol_forward(
+    self, x, rope_freqs=None, transformer_options={},
+    star7_sla_mod_segments=(),
+):
+    """Run architecture-specific Sol without a silent fallback."""
+    if isinstance(x, list):
+        x = x.pop()
+    upstream_dtype = x.dtype
+    sequence = x.shape[0]
+    block_index = getattr(self, "_star7_block_index", None)
+    configured = str(_CONFIG.get("attention_backend", ""))
+    official = configured in {
+        SOL_SM86PLUS_BACKEND_NAME,
+        HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
+    }
+    all_int8 = configured in {
+        SOL_SM75_ALL_INT8_BACKEND_NAME,
+        LEGACY_SOL_SM75_ALL_INT8_BACKEND_NAME,
+        SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
+        HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
+        HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
+    }
+
+    import comfy.model_management as mm
+    import comfy.quant_ops
+
+    sol_backend = _load_sol_backend()
+    q, k, v = _prepare_h3_qkv_chunked(
+        self,
+        x,
+        rope_freqs,
+        mm,
+        comfy.quant_ops,
+        output_dtype=torch.bfloat16 if official else torch.float16,
+        output_layout="BTHD" if official else "BHLD",
+    )
+    del x
+    segments = star7_sla_mod_segments or getattr(
+        self, "_star7_sla_mod_segments", ()
+    )
+    sink_start = None
+    sink_tokens = 0
+    if len(segments) >= 2:
+        audio_segment = segments[-2]
+        sink_start = int(audio_segment[0])
+        sink_tokens = max(0, int(audio_segment[1]) - sink_start)
+
+    if official:
+        result = sol_backend.run_official(
+            q, k, v,
+            tau=sol_backend.DEFAULT_TAU,
+            sink_tokens=sink_tokens,
+            sink_start=sink_start,
+        )
+        out = result.output.reshape(
+            1, sequence, self.heads * self.head_dim
+        ).squeeze(0)
+    else:
+        owned_qkv = [q, k, v]
+        del q, k, v
+        result = sol_backend.run_custom_consume(
+            owned_qkv,
+            all_int8=all_int8,
+            tau=sol_backend.DEFAULT_TAU,
+            topk_blocks=sol_backend.DEFAULT_TOPK_BLOCKS,
+            sink_tokens=sink_tokens,
+            sink_start=sink_start,
+        )
+        out = result.output.transpose(1, 2).reshape(
+            1, sequence, self.heads * self.head_dim
+        ).squeeze(0)
+    if out.dtype != upstream_dtype:
+        out = out.to(dtype=upstream_dtype)
+    projected = self.out_proj(out)
+
+    shape_key = (configured, sequence, self.heads, self.head_dim, projected.device.index)
+    if _CONFIG["verbose"] and shape_key not in _LOGGED_SOL_SHAPES:
+        _LOGGED_SOL_SHAPES.add(shape_key)
+        density = (
+            "official-runtime"
+            if result.mean_density != result.mean_density
+            else f"{result.mean_density * 100.0:.2f}%"
+        )
+        _LOG.info(
+            "[Star7 H3 Chunk] Sol runtime | backend=%s | Q64/K64 | "
+            "Q-blocks=%d | K-blocks=%d | selected=%d..%d | density=%s | "
+            "tau=%.2f | audio-sink=%s:%d | implementation=%s",
+            configured, result.query_blocks, result.key_blocks,
+            result.min_selected_blocks, result.max_selected_blocks, density,
+            result.routing_tau, sink_start, sink_tokens, result.implementation,
+        )
+    return projected
+
+
+_minimax_sol_forward._star7_consumes_input = True
+
+
 def _minimax_hybrid_attention_forward(
     self, x, rope_freqs=None, transformer_options={},
 ):
     """Dispatch whole H3 attention calls between the existing CK and SLA paths."""
     step_index, total_steps, backend = _hybrid_sampling_context(transformer_options)
-    if transformer_options.get("_star7_hybrid_logged_step") != step_index:
-        transformer_options["_star7_hybrid_logged_step"] = step_index
-        _LOG.info(
-            "[Star7 H3 Hybrid] step %d/%d -> %s | backend=%s | guard_ratio=%.4f",
-            step_index + 1, total_steps, backend, HYBRID_ALL_INT8_BACKEND_NAME,
-            float(HYBRID_GUARD_RATIO),
-        )
 
     if backend == "CK":
         return _minimax_ck_int8_attention_forward(
             self, x, rope_freqs=rope_freqs,
             transformer_options=transformer_options,
         )
-    return _minimax_sla_forward(
+    sparse_forward = (
+        _minimax_sol_forward
+        if _CONFIG.get("attention_backend") in {
+            HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
+            HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
+            HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
+        }
+        else _minimax_sla_forward
+    )
+    return sparse_forward(
         self, x, rope_freqs=rope_freqs,
         transformer_options=transformer_options,
     )
@@ -1220,8 +1530,7 @@ _minimax_hybrid_attention_forward._star7_consumes_input = True
 
 
 def _sla_segment_passthrough(
-    original_forward, block_index=None, last_block_index=None,
-    hybrid_timing=False,
+    original_forward, block_index=None,
 ):
     """Expose H3 packed segments to SLA while preserving the upstream block."""
     original_forward = _weak_callable(original_forward)
@@ -1230,13 +1539,6 @@ def _sla_segment_passthrough(
         old_segments = getattr(self.attn, "_star7_sla_mod_segments", None)
         self.attn._star7_sla_mod_segments = mod_segments
         try:
-            timing_context = None
-            if hybrid_timing:
-                timing_context = _hybrid_sampling_context(transformer_options)
-                if block_index == 0:
-                    _hybrid_step_timing_start(
-                        transformer_options, x, *timing_context,
-                    )
             result = original_forward(
                 x, t_emb, mod_segments, rope_freqs,
                 transformer_options=transformer_options,
@@ -1255,11 +1557,6 @@ def _sla_segment_passthrough(
             )
             if _is_sla_debug_block(block_index):
                 _complete_automatic_sla_debug(block_index)
-            if hybrid_timing and block_index == last_block_index:
-                _hybrid_step_timing_finish(
-                    transformer_options, result, *timing_context,
-                    last_block_index + 1,
-                )
             return result
         finally:
             if old_segments is None:
@@ -1274,11 +1571,12 @@ def _sla_segment_passthrough(
 
 def _prepare_h3_qkv_chunked(
     self, x, rope_freqs, mm, quant_ops, output_dtype: Optional[torch.dtype] = None,
+    output_layout: str = "BHLD",
 ):
     """Prepare contiguous backend-layout Q/K/V in token chunks.
 
-    Buffers are allocated directly as [1, H, S, D], so CK/SLA do not create a
-    second full-size transpose/contiguous copy after projection.
+    Buffers are allocated directly in the consuming backend's layout. CK/SLA
+    use [1,H,S,D]; NVIDIA Sol uses contiguous [1,S,H,D].
     """
     sequence = int(x.shape[0])
     heads, head_dim = self.heads, self.head_dim
@@ -1288,6 +1586,8 @@ def _prepare_h3_qkv_chunked(
         sequence, max(256, configured_chunk)
     )
     output_dtype = output_dtype or x.dtype
+    if output_layout not in {"BHLD", "BTHD"}:
+        raise ValueError(f"unsupported QKV output layout: {output_layout}")
     qkv_weight = getattr(self.qkv_proj, "weight", None)
     qkv_quantized = (
         getattr(self.qkv_proj, "layout_type", None) is not None
@@ -1337,7 +1637,9 @@ def _prepare_h3_qkv_chunked(
         try:
             qkv_buffers = [
                 torch.empty(
-                    (1, heads, sequence, head_dim),
+                    (1, heads, sequence, head_dim)
+                    if output_layout == "BHLD"
+                    else (1, sequence, heads, head_dim),
                     dtype=output_dtype,
                     device=x.device,
                 )
@@ -1419,8 +1721,12 @@ def _prepare_h3_qkv_chunked(
                     first_rope_ms = (
                         time.perf_counter() - rope_profile_start
                     ) * 1000.0
-                q_out[:, :, start:end, :].copy_(q.permute(0, 2, 1, 3))
-                k_out[:, :, start:end, :].copy_(k.permute(0, 2, 1, 3))
+                if output_layout == "BHLD":
+                    q_out[:, :, start:end, :].copy_(q.permute(0, 2, 1, 3))
+                    k_out[:, :, start:end, :].copy_(k.permute(0, 2, 1, 3))
+                else:
+                    q_out[:, start:end, :, :].copy_(q)
+                    k_out[:, start:end, :, :].copy_(k)
             else:
                 q_norm = self.q_norm(q.view(end - start, heads, head_dim))
                 k_norm = self.k_norm(k.view(end - start, heads, head_dim))
@@ -1432,9 +1738,16 @@ def _prepare_h3_qkv_chunked(
                     f"K norm chunk [{start}:{end}]", k_norm,
                     block_index, row_dim=0, check_fp16_range=True,
                 )
-                q_out[:, :, start:end, :].copy_(q_norm.permute(1, 0, 2).unsqueeze(0))
-                k_out[:, :, start:end, :].copy_(k_norm.permute(1, 0, 2).unsqueeze(0))
-            v_out[:, :, start:end, :].copy_(v.permute(1, 0, 2).unsqueeze(0))
+                if output_layout == "BHLD":
+                    q_out[:, :, start:end, :].copy_(q_norm.permute(1, 0, 2).unsqueeze(0))
+                    k_out[:, :, start:end, :].copy_(k_norm.permute(1, 0, 2).unsqueeze(0))
+                else:
+                    q_out[:, start:end, :, :].copy_(q_norm.unsqueeze(0))
+                    k_out[:, start:end, :, :].copy_(k_norm.unsqueeze(0))
+            if output_layout == "BHLD":
+                v_out[:, :, start:end, :].copy_(v.permute(1, 0, 2).unsqueeze(0))
+            else:
+                v_out[:, start:end, :, :].copy_(v.unsqueeze(0))
             start = end
             del qkv_chunk, q, k, v
         except Exception as exc:
@@ -1534,6 +1847,12 @@ def install_model_patch(
     node_id=None,
     qkv_chunk_tokens: int = 8192,
 ):
+    attention_backend = {
+        LEGACY_SM75_ALL_INT8_BACKEND_NAME: SM75_ALL_INT8_BACKEND_NAME,
+        LEGACY_SOL_SM75_ALL_INT8_BACKEND_NAME: SOL_SM75_ALL_INT8_BACKEND_NAME,
+        LEGACY_SM86PLUS_ALL_INT8_BACKEND_NAME: SM86PLUS_ALL_INT8_BACKEND_NAME,
+        LEGACY_SOL_SM86PLUS_ALL_INT8_BACKEND_NAME: SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
+    }.get(attention_backend, attention_backend)
     install_patch(
         chunk_tokens=chunk_tokens,
         auto_halve_on_oom=auto_halve_on_oom,
@@ -1572,33 +1891,73 @@ def install_model_patch(
 
     ck_attention = False
     sla_attention = False
+    sol_attention = False
     strict_sla_backends = {
         "sla_sm75_qk_int8_pv_fp16",
-        "sla_sm75_all_int8_experimental",
-        "sla_sm80+_qk_int8_pv_fp16",
+        SM75_ALL_INT8_BACKEND_NAME,
+        SM86PLUS_BACKEND_NAME,
+        LEGACY_SM86PLUS_FP16_BACKEND_NAME,
+        SM86PLUS_ALL_INT8_BACKEND_NAME,
+        LEGACY_SM80PLUS_BACKEND_NAME,
     }
-    hybrid_attention = attention_backend == HYBRID_ALL_INT8_BACKEND_NAME
-    sla_or_hybrid_backends = strict_sla_backends | {
-        HYBRID_ALL_INT8_BACKEND_NAME,
+    strict_sol_backends = {
+        SOL_SM75_BACKEND_NAME,
+        SOL_SM75_ALL_INT8_BACKEND_NAME,
+        SOL_SM86PLUS_BACKEND_NAME,
+        SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
     }
+    hybrid_attention = attention_backend in HYBRID_BACKEND_NAMES
+    hybrid_sol_attention = attention_backend in {
+        HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
+        HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
+        HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
+    }
+    sparse_backends = strict_sla_backends | strict_sol_backends | HYBRID_BACKEND_NAMES
     sla_backend = None
+    sol_backend = None
     _CONFIG["hybrid_sla_backend"] = None
     capability = (
         torch.cuda.get_device_capability() if torch.cuda.is_available() else None
     )
-    if attention_backend in strict_sla_backends or hybrid_attention:
+    if attention_backend in strict_sla_backends or (
+        hybrid_attention and not hybrid_sol_attention
+    ):
         sla_backend = _load_sla_backend()
-        requested_sla_backend = (
-            sla_backend.SM75_ALL_INT8_BACKEND_NAME
-            if hybrid_attention else attention_backend
-        )
-        # Strict preflight: this Hybrid is deliberately SM75-only. Do not
-        # resolve it to the SM80+ backend until that path has been validated.
+        if attention_backend in {
+            SM75_ALL_INT8_BACKEND_NAME,
+            HYBRID_ALL_INT8_BACKEND_NAME,
+        }:
+            requested_sla_backend = sla_backend.SM75_ALL_INT8_BACKEND_NAME
+        elif attention_backend in {
+            SM86PLUS_ALL_INT8_BACKEND_NAME,
+            HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME,
+        }:
+            requested_sla_backend = sla_backend.SM86PLUS_ALL_INT8_BACKEND_NAME
+        elif attention_backend == HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME:
+            requested_sla_backend = sla_backend.SM86PLUS_BACKEND_NAME
+        elif attention_backend == LEGACY_HYBRID_SM86PLUS_CK_SLA_FP16_BACKEND_NAME:
+            requested_sla_backend = sla_backend.LEGACY_SM86PLUS_FP16_BACKEND_NAME
+        else:
+            requested_sla_backend = attention_backend
+        # Strict preflight: every Hybrid resolves to its architecture-specific
+        # SLA backend. A selected SLA step never silently falls back to CK.
         capability = sla_backend.check_runtime_support(
             requested_backend=requested_sla_backend
         )
         if hybrid_attention:
             _CONFIG["hybrid_sla_backend"] = requested_sla_backend
+
+    if attention_backend in strict_sol_backends or hybrid_sol_attention:
+        sol_backend = _load_sol_backend()
+        if attention_backend == HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME:
+            requested_sol_backend = sol_backend.SOL_SM75_ALL_INT8_BACKEND_NAME
+        elif attention_backend == HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME:
+            requested_sol_backend = sol_backend.SOL_SM86PLUS_ALL_INT8_BACKEND_NAME
+        elif attention_backend == HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME:
+            requested_sol_backend = sol_backend.SOL_SM86PLUS_BACKEND_NAME
+        else:
+            requested_sol_backend = attention_backend
+        capability = sol_backend.check_runtime_support(requested_sol_backend)
 
     if hybrid_attention:
         try:
@@ -1642,8 +2001,7 @@ def install_model_patch(
     )
     transformer_options["star7_h3_output_finite_guard"] = NODE_VERSION
 
-    if attention_backend in sla_or_hybrid_backends:
-        last_block_index = len(diffusion_model.blocks) - 1
+    if attention_backend in sparse_backends:
         for index, block in enumerate(diffusion_model.blocks):
             block._star7_block_index = index
             block.attn._star7_block_index = index
@@ -1653,7 +2011,9 @@ def install_model_patch(
                 _weak_method(
                     block.attn,
                     _minimax_hybrid_attention_forward
-                    if hybrid_attention else _minimax_sla_forward,
+                    if hybrid_attention else
+                    _minimax_sol_forward if attention_backend in strict_sol_backends
+                    else _minimax_sla_forward,
                 ),
             )
             block_path = f"diffusion_model.blocks.{index}.forward"
@@ -1667,26 +2027,17 @@ def install_model_patch(
                 block_path,
                 _weak_method(
                     block,
-                    _sla_segment_passthrough(
-                        upstream_block_forward,
-                        block_index=index,
-                        last_block_index=last_block_index,
-                        hybrid_timing=hybrid_attention,
-                    ),
+                _sla_segment_passthrough(
+                    upstream_block_forward,
+                    block_index=index,
+                ),
                 ),
             )
         attention_patch_name = attention_backend
         sage_attention = False
         sla_attention = True
+        sol_attention = attention_backend in strict_sol_backends or hybrid_sol_attention
         _CONFIG["auto_sla_probe"] = _auto_sla_probe_for_capability(capability)
-        if verbose and attention_backend in {
-            "sla_sm75_all_int8_experimental",
-            HYBRID_ALL_INT8_BACKEND_NAME,
-        }:
-            _LOG.warning(
-                "[Star7 H3 Chunk] All-INT8 SLA also approximates audio; use "
-                "sla_sm75_qk_int8_pv_fp16 for the quality-control path"
-            )
     elif attention_backend == "comfy_kitchen_int8":
         try:
             import comfy_kitchen
@@ -1753,8 +2104,36 @@ def install_model_patch(
             else "sage-qk-int8" if sage_attention
             else attention_patch_name
         )
+        all_int8_attention = attention_backend in {
+            SM75_ALL_INT8_BACKEND_NAME,
+            HYBRID_ALL_INT8_BACKEND_NAME,
+            SM86PLUS_ALL_INT8_BACKEND_NAME,
+            HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME,
+            SOL_SM75_ALL_INT8_BACKEND_NAME,
+            SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
+            HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
+            HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
+        }
+        bf16_sla_attention = attention_backend in {
+            SM86PLUS_BACKEND_NAME,
+            HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME,
+        }
         precision_suffix = (
-            " | sla-input=fp16 | qk=int8 | pv=fp16" if sla_attention else ""
+            " | sol-input=bf16 | exact+approx=nvidia-official"
+            if attention_backend in {
+                SOL_SM86PLUS_BACKEND_NAME,
+                HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
+            } else
+            " | sol-input=fp16 | exact+centroid | qk=int8 | pv=int8 | softmax/accum=fp32"
+            if sol_attention and all_int8_attention else
+            " | sol-input=fp16 | exact+centroid | qk=int8 | pv=fp16 | softmax/accum=fp32"
+            if sol_attention else
+            " | sla-input=fp16 | qk=int8 | pv=int8 | softmax/accum=fp32"
+            if sla_attention and all_int8_attention else
+            " | sla-input=bf16 | qk=int8 | pv=bf16 | softmax/accum=fp32"
+            if sla_attention and bf16_sla_attention else
+            " | sla-input=fp16 | qk=int8 | pv=fp16 | softmax/accum=fp32"
+            if sla_attention else ""
         )
         _LOG.info(
             "[Star7 H3 Chunk] Ready v%s | %s | attention=%s | "
@@ -1765,42 +2144,55 @@ def install_model_patch(
             precision_suffix,
             int(chunk_tokens), int(mlp_chunk_tokens), int(qkv_chunk_tokens),
             bool(reuse_mlp_weights), "external" if block_loop_cache else "none",
-            "+SLA-block" if sla_attention else "",
+            "+sparse-block" if sla_attention else "",
         )
         if sla_attention and capability:
             environment_key = (capability, torch.__version__, torch.version.cuda)
             if environment_key not in _LOGGED_SLA_ENVIRONMENTS:
                 _LOGGED_SLA_ENVIRONMENTS.add(environment_key)
+                runtime_backend_module = sol_backend if sol_attention else sla_backend
                 triton_version = getattr(
-                    getattr(sla_backend, "triton", None), "__version__", "unavailable"
+                    getattr(runtime_backend_module, "triton", None),
+                    "__version__", "unavailable",
                 )
                 try:
                     driver_version = torch._C._cuda_getDriverVersion()
                 except Exception:
                     driver_version = "unknown"
                 validation = (
+                    "SM75-native-CUDA-path"
+                    if capability == (7, 5) else
                     "newer-architecture-needs-device-validation"
-                    if capability >= (10, 0) else "established-SM80+-path"
+                    if capability >= (10, 0) else
+                    "SM80+-path"
                 )
                 _LOG.info(
-                    "[Star7 H3 Chunk] SLA environment | gpu=%s | SM%d%d | "
+                    "[Star7 H3 Chunk] Sparse attention environment | gpu=%s | SM%d%d | "
                     "torch=%s | cuda-runtime=%s | triton=%s | driver=%s | %s",
                     torch.cuda.get_device_name(), capability[0], capability[1],
                     torch.__version__, torch.version.cuda, triton_version,
                     driver_version, validation,
                 )
                 if capability >= (10, 0):
+                    implementation_family = (
+                        "the NVIDIA official Sol dispatcher"
+                        if attention_backend in {
+                            SOL_SM86PLUS_BACKEND_NAME,
+                            HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
+                        }
+                        else "the SM80+ Triton path"
+                    )
                     _LOG.warning(
-                        "[Star7 H3 Chunk] SM%d%d uses the SM80+ Triton path but "
+                        "[Star7 H3 Chunk] SM%d%d uses %s and "
                         "requires real-device validation; strict finite checks "
                         "remain enabled and no fallback is allowed.",
-                        capability[0], capability[1],
+                        capability[0], capability[1], implementation_family,
                     )
         selected_debug_block = _sla_debug_block() if sla_attention else None
         if _CONFIG.get("auto_sla_probe"):
             _LOG.info(
-                "[Star7 H3 Chunk] Automatic SLA stage diagnostics enabled for "
-                "SM%d%d; the first non-finite QKV/SLA/out_proj/MLP stage will "
+                "[Star7 H3 Chunk] Automatic sparse-attention diagnostics enabled for "
+                "SM%d%d; the first non-finite QKV/attention/out_proj/MLP stage will "
                 "be reported in this run.",
                 capability[0], capability[1],
             )
@@ -1881,28 +2273,20 @@ class MiniMaxH3ActivationChunkStar7:
                     },
                 ),
                 "attention_backend": (
-                    [
-                        "existing",
-                        "comfy_kitchen_int8",
-                        "sla_sm75_qk_int8_pv_fp16",
-                        "sla_sm75_all_int8_experimental",
-                        HYBRID_ALL_INT8_BACKEND_NAME,
-                        "sla_sm80+_qk_int8_pv_fp16",
-                    ],
+                    _attention_backend_choices(),
                     {
                         "default": "comfy_kitchen_int8",
                         "tooltip": (
                             "existing keeps the incoming attention patch (for example KJ Sage). "
                             "comfy_kitchen_int8 selects ComfyUI's native INT8 attention and "
-                            "overrides an earlier MiniMax Sage patch. Strict SLA targets 85% "
-                            "dynamic video-block sparsity, protects target-audio queries, and "
-                            "never falls back after failure. Choose "
-                            "hybrid_sm75_ck_sla_all_int8 for the faster but more approximate "
-                            "SM75 All-INT8 SLA middle region. Choose "
-                            "sla_sm75_qk_int8_pv_fp16 for the recommended SM75 path, "
-                            "sla_sm75_all_int8_experimental for the faster but lower-precision "
-                            "SM75 experiment, or "
-                            "sla_sm80+_qk_int8_pv_fp16 for SM80+."
+                            "overrides an earlier MiniMax Sage patch. SLA uses fixed Top-K "
+                            "Q128/K64 routing. Sol uses Q64/K64 threshold routing; the SM80+ "
+                            "recommended Sol mode directly calls NVIDIA official BF16 "
+                            "exact+approx Sol-Attn. SM75 exposes the native All-INT8 Sol path; "
+                            "it keeps exact selected blocks and centroid contributions for "
+                            "unselected blocks while quantizing PV. Hybrid modes schedule "
+                            "CK/SLA/CK or CK/Sol/CK by complete sampling step. Strict sparse "
+                            "modes never silently fall back."
                         ),
                     },
                 ),
@@ -1915,18 +2299,12 @@ class MiniMaxH3ActivationChunkStar7:
     FUNCTION = "patch"
     CATEGORY = "Star7/MiniMax H3"
     DESCRIPTION = (
-        "Low-VRAM MiniMax H3 patch. Chunks QKV projection, fused split-half RoPE, and "
-        "the large MLP expansion activation; preserves INT8/ConvRot weights and the upstream "
-        "DiT block path for FP16/BF16, Sage, LoRA, and third-party compatibility. "
-        "Can safely retry without AIMDO prefetch. "
-        "Compatible with FP16 Exact Fix - Star7. The default Comfy Kitchen INT8 "
-        "attention mode is approximate; select existing to preserve upstream attention math. "
-        "The experimental hybrid_sm75_ck_sla_all_int8 mode is SM75-only and schedules whole "
-        "sampling steps as CK/SLA/CK using ComfyUI's real sigma context; it uses the existing "
-        "experimental SM75 All-INT8 SLA only in the middle region and never falls back from a "
-        "selected SLA step. "
-        "Strict SLA is dependency-free from Sage, includes a native target-audio guard, "
-        "and errors instead of silently falling back."
+        "MiniMax H3 model patch with independent QKV, split-half RoPE, and MLP activation "
+        "chunking. It preserves INT8/ConvRot weights and the upstream DiT block structure "
+        "for FP16/BF16, Sage, LoRA, and third-party compatibility. Attention can preserve "
+        "the incoming backend or select CK INT8, architecture-specific SLA/Sol, and "
+        "step-level CK/Sparse/CK Hybrid paths. Strict sparse modes report failures without "
+        "substituting another backend. Compatible with the separate FP16 Exact Fix - Star7."
     )
 
     def patch(

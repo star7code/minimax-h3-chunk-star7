@@ -2,8 +2,9 @@
 
 The routing contract follows ModelTC/LightX2V's ``dynamic_sparse_attn``
 operator: smooth K for routing, mean-pool Q/K blocks, and retain the top key
-blocks for every query block. The attention kernel is Star7-specific. Both
-SM75 and SM80+ use INT8 QK, FP16 PV, and FP32 online-softmax state.
+blocks for every query block. The attention kernel is Star7-specific. The
+recommended SM75 and SM80+ paths use INT8 QK, FP16 PV, and FP32 online-softmax
+state; each architecture also has an explicitly experimental All-INT8 path.
 
 This module deliberately has no SageAttention dependency and no fallback.
 Callers selecting it explicitly either execute this kernel or receive an
@@ -46,8 +47,15 @@ _configure_triton_cache()
 
 
 SM75_BACKEND_NAME = "sla_sm75_qk_int8_pv_fp16"
-SM75_ALL_INT8_BACKEND_NAME = "sla_sm75_all_int8_experimental"
-SM80PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_fp16"
+SM75_ALL_INT8_BACKEND_NAME = "sla_sm75_all_int8"
+LEGACY_SM75_ALL_INT8_BACKEND_NAME = "sla_sm75_all_int8_experimental"
+SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
+LEGACY_SM86PLUS_FP16_BACKEND_NAME = "sla_sm80+_qk_int8_pv_fp16"
+SM86PLUS_ALL_INT8_BACKEND_NAME = "sla_sm80+_all_int8"
+LEGACY_SM86PLUS_ALL_INT8_BACKEND_NAME = "sla_sm80+_all_int8_experimental"
+LEGACY_SM80PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_fp16"
+# Public compatibility symbol for callers that imported the old constant.
+SM80PLUS_BACKEND_NAME = LEGACY_SM80PLUS_BACKEND_NAME
 STRICT_SLA_LABEL = "Star7 strict SLA"
 BLOCK_Q = 128
 BLOCK_K = 64
@@ -165,7 +173,7 @@ if triton is not None:
 
 
     @triton.jit
-    def _sparse_qk_int8_pv_fp16_kernel(
+    def _sparse_qk_int8_pv_16_kernel(
         Q,
         K,
         V,
@@ -182,6 +190,7 @@ if triton is not None:
         route_block_q: tl.constexpr,
         compute_block_q: tl.constexpr,
         block_k: tl.constexpr,
+        pv_bf16: tl.constexpr,
     ):
         compute_query_block = tl.program_id(0)
         query_block = compute_query_block * compute_block_q // route_block_q
@@ -223,8 +232,96 @@ if triton is not None:
             accumulator *= correction[:, None]
 
             v_ptr = V + base + key_token_offsets[:, None] * head_dim + dim_offsets[None, :]
-            value = tl.load(v_ptr, mask=key_valid[:, None], other=0.0).to(tl.float16)
-            accumulator += tl.dot(probability.to(tl.float16), value, out_dtype=tl.float32)
+            value = tl.load(v_ptr, mask=key_valid[:, None], other=0.0)
+            if pv_bf16:
+                value = value.to(tl.bfloat16)
+                probability_16 = probability.to(tl.bfloat16)
+            else:
+                value = value.to(tl.float16)
+                probability_16 = probability.to(tl.float16)
+            accumulator += tl.dot(probability_16, value, out_dtype=tl.float32)
+            row_sum = row_sum * correction + local_sum
+            row_max = new_max
+
+        accumulator /= row_sum[:, None]
+        out_ptr = OUT + base + query_offsets[:, None] * head_dim + dim_offsets[None, :]
+        tl.store(out_ptr, accumulator.to(OUT.type.element_ty), mask=query_offsets[:, None] < length)
+
+
+    @triton.jit
+    def _sparse_qk_int8_pv_int8_kernel(
+        Q,
+        K,
+        V,
+        Q_SCALE,
+        K_SCALE,
+        V_SCALE,
+        LUT,
+        OUT,
+        length: tl.constexpr,
+        query_blocks: tl.constexpr,
+        compute_query_blocks: tl.constexpr,
+        key_blocks: tl.constexpr,
+        selected_blocks: tl.constexpr,
+        head_dim: tl.constexpr,
+        route_block_q: tl.constexpr,
+        compute_block_q: tl.constexpr,
+        block_k: tl.constexpr,
+    ):
+        compute_query_block = tl.program_id(0)
+        query_block = compute_query_block * compute_block_q // route_block_q
+        bh_index = tl.program_id(1).to(tl.int64)
+        query_offsets = compute_query_block * compute_block_q + tl.arange(0, compute_block_q)
+        key_offsets = tl.arange(0, block_k)
+        dim_offsets = tl.arange(0, head_dim)
+        base = bh_index * length * head_dim
+
+        q_ptr = Q + base + query_offsets[:, None] * head_dim + dim_offsets[None, :]
+        q = tl.load(q_ptr, mask=query_offsets[:, None] < length, other=0).to(tl.int8)
+        q_scale = tl.load(Q_SCALE + bh_index * query_blocks + query_block)
+        lut_base = (bh_index * query_blocks + query_block) * selected_blocks
+
+        row_max = tl.full([compute_block_q], -float("inf"), tl.float32)
+        row_sum = tl.zeros([compute_block_q], tl.float32)
+        accumulator = tl.zeros([compute_block_q, head_dim], tl.float32)
+
+        for selected_index in tl.range(selected_blocks):
+            key_block = tl.load(LUT + lut_base + selected_index)
+            key_token_offsets = key_block * block_k + key_offsets
+            key_valid = key_token_offsets < length
+            k_ptr = K + base + key_token_offsets[None, :] * head_dim + dim_offsets[:, None]
+            k = tl.load(k_ptr, mask=key_valid[None, :], other=0).to(tl.int8)
+            k_scale = tl.load(K_SCALE + bh_index * key_blocks + key_block)
+
+            score = tl.dot(q, k).to(tl.float32)
+            score *= q_scale * k_scale
+            score = tl.where(key_valid[None, :], score, -float("inf"))
+
+            local_max = tl.max(score, axis=1)
+            new_max = tl.maximum(row_max, local_max)
+            probability = tl.math.exp2(score - new_max[:, None])
+            local_sum = tl.sum(probability, axis=1)
+            correction = tl.math.exp2(row_max - new_max)
+            accumulator *= correction[:, None]
+
+            # Quantize each query row's current probability tile independently.
+            # Softmax state and the accumulated result remain FP32.
+            probability_scale = tl.maximum(
+                tl.max(probability, axis=1) / 127.0, 1.0e-8
+            )
+            probability_int8 = probability / probability_scale[:, None]
+            probability_int8 += 0.5
+            probability_int8 = tl.minimum(probability_int8, 127.0).to(tl.int8)
+
+            v_ptr = V + base + key_token_offsets[:, None] * head_dim + dim_offsets[None, :]
+            value = tl.load(v_ptr, mask=key_valid[:, None], other=0).to(tl.int8)
+            value_scale = tl.load(V_SCALE + bh_index * key_blocks + key_block)
+            pv_int32 = tl.dot(probability_int8, value)
+            accumulator += (
+                pv_int32.to(tl.float32)
+                * probability_scale[:, None]
+                * value_scale
+            )
             row_sum = row_sum * correction + local_sum
             row_max = new_max
 
@@ -238,9 +335,15 @@ def _require_environment(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> N
         raise SLAUnavailableError(f"{STRICT_SLA_LABEL} requires an NVIDIA CUDA tensor")
     if q.device != k.device or q.device != v.device:
         raise SLAUnavailableError("SLA Q/K/V must be on the same CUDA device")
-    if q.dtype is not torch.float16 or k.dtype is not torch.float16 or v.dtype is not torch.float16:
+    capability = torch.cuda.get_device_capability(q.device)
+    allowed_dtypes = {torch.float16}
+    if capability >= (8, 0):
+        allowed_dtypes.add(torch.bfloat16)
+    if q.dtype not in allowed_dtypes or k.dtype != q.dtype or v.dtype != q.dtype:
         raise SLAUnavailableError(
-            f"{STRICT_SLA_LABEL} requires FP16 input; got q={q.dtype}, k={k.dtype}, v={v.dtype}"
+            f"{STRICT_SLA_LABEL} requires matching FP16 Q/K/V on SM75 or "
+            f"matching FP16/BF16 Q/K/V on SM80+; got "
+            f"q={q.dtype}, k={k.dtype}, v={v.dtype}"
         )
     if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
         raise SLAUnavailableError("SLA expects contiguous [B,H,L,D] Q/K/V tensors")
@@ -250,10 +353,9 @@ def _require_environment(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> N
         raise SLAUnavailableError(f"SLA currently supports batch=1; got batch={q.shape[0]}")
     if q.shape[-1] != HEAD_DIM:
         raise SLAUnavailableError(f"SLA requires head_dim={HEAD_DIM}; got {q.shape[-1]}")
-    capability = torch.cuda.get_device_capability(q.device)
     if triton is None and capability != (7, 5):
         raise SLAUnavailableError(
-            f"{STRICT_SLA_LABEL} SM80+ requires Triton; import failed: "
+            f"{STRICT_SLA_LABEL} newer-architecture path requires Triton; import failed: "
             f"{_TRITON_IMPORT_ERROR}"
         )
     applied_priority_ranges: tuple[tuple[int, int], ...] = ()
@@ -274,7 +376,11 @@ def _require_environment(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> N
 
 
 def backend_name_for_capability(capability: tuple[int, int]) -> str:
-    return SM75_BACKEND_NAME if capability == (7, 5) else SM80PLUS_BACKEND_NAME
+    if capability == (7, 5):
+        return SM75_BACKEND_NAME
+    if capability >= (8, 0):
+        return SM86PLUS_BACKEND_NAME
+    return LEGACY_SM80PLUS_BACKEND_NAME
 
 
 def check_runtime_support(
@@ -285,27 +391,48 @@ def check_runtime_support(
     if not torch.cuda.is_available():
         raise SLAUnavailableError(f"{STRICT_SLA_LABEL} requires NVIDIA CUDA")
     capability = torch.cuda.get_device_capability(device)
-    if triton is None and capability != (7, 5):
-        raise SLAUnavailableError(
-            f"{STRICT_SLA_LABEL} SM80+ requires Triton; import failed: "
-            f"{_TRITON_IMPORT_ERROR}"
-        )
     if requested_backend is None:
         requested_backend = backend_name_for_capability(capability)
     valid_names = {
-        SM75_BACKEND_NAME, SM75_ALL_INT8_BACKEND_NAME, SM80PLUS_BACKEND_NAME
+        SM75_BACKEND_NAME,
+        SM75_ALL_INT8_BACKEND_NAME,
+        LEGACY_SM75_ALL_INT8_BACKEND_NAME,
+        SM86PLUS_BACKEND_NAME,
+        LEGACY_SM86PLUS_FP16_BACKEND_NAME,
+        SM86PLUS_ALL_INT8_BACKEND_NAME,
+        LEGACY_SM86PLUS_ALL_INT8_BACKEND_NAME,
+        LEGACY_SM80PLUS_BACKEND_NAME,
     }
     if requested_backend not in valid_names:
         raise SLAUnavailableError(f"unknown strict SLA backend: {requested_backend}")
-    if requested_backend in {SM75_BACKEND_NAME, SM75_ALL_INT8_BACKEND_NAME} and capability != (7, 5):
+    if requested_backend in {
+        SM75_BACKEND_NAME,
+        SM75_ALL_INT8_BACKEND_NAME,
+        LEGACY_SM75_ALL_INT8_BACKEND_NAME,
+    } and capability != (7, 5):
         raise SLAUnavailableError(
             f"{SM75_BACKEND_NAME} requires exactly SM75; this GPU is "
             f"SM{capability[0]}{capability[1]}. No fallback was attempted."
         )
-    if requested_backend == SM80PLUS_BACKEND_NAME and capability < (8, 0):
+    if requested_backend in {
+        SM86PLUS_BACKEND_NAME,
+        LEGACY_SM86PLUS_FP16_BACKEND_NAME,
+        SM86PLUS_ALL_INT8_BACKEND_NAME,
+        LEGACY_SM86PLUS_ALL_INT8_BACKEND_NAME,
+    } and capability < (8, 0):
         raise SLAUnavailableError(
-            f"{SM80PLUS_BACKEND_NAME} requires SM80 or newer; this GPU is "
+            f"{requested_backend} requires SM80 or newer; this GPU is "
             f"SM{capability[0]}{capability[1]}. No fallback was attempted."
+        )
+    if requested_backend == LEGACY_SM80PLUS_BACKEND_NAME and capability < (8, 0):
+        raise SLAUnavailableError(
+            f"legacy {LEGACY_SM80PLUS_BACKEND_NAME} requires SM80 or newer; this GPU is "
+            f"SM{capability[0]}{capability[1]}. No fallback was attempted."
+        )
+    if triton is None and capability != (7, 5):
+        raise SLAUnavailableError(
+            f"{STRICT_SLA_LABEL} newer-architecture path requires Triton; import failed: "
+            f"{_TRITON_IMPORT_ERROR}"
         )
     if capability == (7, 5):
         available, reason = _load_sm75_backend().availability()
@@ -581,6 +708,7 @@ def _run_raw_impl(
         debug=debug,
     )
     capability = torch.cuda.get_device_capability(q.device)
+    length = q.shape[-2]
     applied_priority_ranges: tuple[tuple[int, int], ...] = ()
     if capability == (7, 5):
         # Match the query warp consumed by the SM75 kernel. Per-16-row scales
@@ -625,10 +753,6 @@ def _run_raw_impl(
             query_priority_ranges, applied_priority_ranges
         )
     else:
-        if all_int8:
-            raise SLAUnavailableError(
-                "Experimental All-INT8 SLA is currently available only on SM75"
-            )
         # Keep the full-sequence preprocessing peak bounded: after each source
         # is quantized, its FP16 storage is no longer needed by the Triton
         # attention kernel.
@@ -643,29 +767,63 @@ def _run_raw_impl(
         if debug:
             _log_debug_tensor("q_scale", q_scale)
             _log_debug_tensor("k_scale", k_scale)
-        output = torch.empty_like(v)
         compute_query_blocks = triton.cdiv(q_int8.shape[-2], 64)
-        _sparse_qk_int8_pv_fp16_kernel[(compute_query_blocks, q_int8.shape[0] * q_int8.shape[1])](
-            q_int8,
-            k_int8,
-            v,
-            q_scale,
-            k_scale,
-            lut,
-            output,
-            q.shape[-2],
-            query_blocks,
-            compute_query_blocks,
-            key_blocks,
-            selected,
-            HEAD_DIM,
-            BLOCK_Q,
-            64,
-            BLOCK_K,
-            num_warps=4,
-            num_stages=3,
-        )
-        implementation = "triton-sm80plus-int8-dot-fp16-dot"
+        grid = (compute_query_blocks, q_int8.shape[0] * q_int8.shape[1])
+        architecture_label = "sm80plus"
+        if all_int8:
+            v_int8, v_scale = _quantize(v, BLOCK_K, multiplier=1.0)
+            del v
+            output = torch.empty_like(v_int8, dtype=torch.float16)
+            if debug:
+                _log_debug_tensor("v_scale", v_scale)
+            _sparse_qk_int8_pv_int8_kernel[grid](
+                q_int8,
+                k_int8,
+                v_int8,
+                q_scale,
+                k_scale,
+                v_scale,
+                lut,
+                output,
+                length,
+                query_blocks,
+                compute_query_blocks,
+                key_blocks,
+                selected,
+                HEAD_DIM,
+                BLOCK_Q,
+                64,
+                BLOCK_K,
+                num_warps=4,
+                num_stages=3,
+            )
+            implementation = f"triton-{architecture_label}-all-int8-dot"
+        else:
+            output = torch.empty_like(v)
+            pv_bf16 = v.dtype == torch.bfloat16
+            _sparse_qk_int8_pv_16_kernel[grid](
+                q_int8,
+                k_int8,
+                v,
+                q_scale,
+                k_scale,
+                lut,
+                output,
+                length,
+                query_blocks,
+                compute_query_blocks,
+                key_blocks,
+                selected,
+                HEAD_DIM,
+                BLOCK_Q,
+                64,
+                BLOCK_K,
+                pv_bf16,
+                num_warps=4,
+                num_stages=3,
+            )
+            pv_label = "bf16" if pv_bf16 else "fp16"
+            implementation = f"triton-{architecture_label}-int8-dot-{pv_label}-dot"
         dense_guard_status = _audio_guard_status(
             query_priority_ranges, applied_priority_ranges
         )
@@ -729,13 +887,17 @@ def _reference_from_lut(
     return output
 
 
-_SELF_TESTED_DEVICES: set[tuple[str, int | None, bool]] = set()
-_LONG_SELF_TESTED_DEVICES: set[tuple[str, int | None]] = set()
+_SELF_TESTED_DEVICES: set[tuple[str, int | None, bool, torch.dtype]] = set()
+_LONG_SELF_TESTED_DEVICES: set[tuple[str, int | None, torch.dtype]] = set()
 _SELF_TEST_LOCK = threading.Lock()
 
 
-def ensure_self_test(device: torch.device, all_int8: bool = False) -> None:
-    key = (device.type, device.index, all_int8)
+def ensure_self_test(
+    device: torch.device,
+    all_int8: bool = False,
+    input_dtype: torch.dtype = torch.float16,
+) -> None:
+    key = (device.type, device.index, all_int8, input_dtype)
     if key in _SELF_TESTED_DEVICES:
         return
     with _SELF_TEST_LOCK:
@@ -744,9 +906,9 @@ def ensure_self_test(device: torch.device, all_int8: bool = False) -> None:
         generator = torch.Generator(device=device)
         generator.manual_seed(0x57A7)
         # 1025 exercises multiple selected K blocks plus both Q/K tail masks.
-        q = torch.randn((1, 1, 1025, HEAD_DIM), generator=generator, device=device, dtype=torch.float16) * 0.25
-        k = torch.randn(q.shape, generator=generator, device=device, dtype=torch.float16) * 0.25
-        v = torch.randn(q.shape, generator=generator, device=device, dtype=torch.float16) * 0.25
+        q = torch.randn((1, 1, 1025, HEAD_DIM), generator=generator, device=device, dtype=input_dtype) * 0.25
+        k = torch.randn(q.shape, generator=generator, device=device, dtype=input_dtype) * 0.25
+        v = torch.randn(q.shape, generator=generator, device=device, dtype=input_dtype) * 0.25
         result = _run_raw(
             q.contiguous(), k.contiguous(), v.contiguous(), DEFAULT_SPARSITY,
             all_int8=all_int8,
@@ -768,13 +930,16 @@ def ensure_self_test(device: torch.device, all_int8: bool = False) -> None:
         capability = torch.cuda.get_device_capability(device)
         _LOG.info(
             "[Star7 H3 Chunk] SLA self-test passed | test=S1025/H1/D128 | "
-            "SM%d%d | all-int8=%s | mean-abs=%.6g | max-abs=%.6g",
-            capability[0], capability[1], all_int8,
+            "SM%d%d | input=%s | all-int8=%s | mean-abs=%.6g | max-abs=%.6g",
+            capability[0], capability[1], input_dtype, all_int8,
             error.mean().item(), error.max().item(),
         )
 
 
-def ensure_optional_long_shape_test(device: torch.device) -> None:
+def ensure_optional_long_shape_test(
+    device: torch.device,
+    input_dtype: torch.dtype = torch.float16,
+) -> None:
     """Opt-in SM100+ diagnostic matching the reported S=16206 route length."""
     if os.environ.get("STAR7_SLA_LONG_SELF_TEST", "").strip().lower() not in {
         "1", "true", "yes", "on",
@@ -782,7 +947,7 @@ def ensure_optional_long_shape_test(device: torch.device) -> None:
         return
     if torch.cuda.get_device_capability(device) < (10, 0):
         return
-    key = (device.type, device.index)
+    key = (device.type, device.index, input_dtype)
     if key in _LONG_SELF_TESTED_DEVICES:
         return
     with _SELF_TEST_LOCK:
@@ -792,10 +957,10 @@ def ensure_optional_long_shape_test(device: torch.device) -> None:
         generator.manual_seed(0x120294)
         q = torch.randn(
             (1, 1, 16206, HEAD_DIM), generator=generator,
-            device=device, dtype=torch.float16,
+            device=device, dtype=input_dtype,
         ) * 0.1
-        k = torch.randn(q.shape, generator=generator, device=device, dtype=torch.float16) * 0.1
-        v = torch.randn(q.shape, generator=generator, device=device, dtype=torch.float16) * 0.1
+        k = torch.randn(q.shape, generator=generator, device=device, dtype=input_dtype) * 0.1
+        v = torch.randn(q.shape, generator=generator, device=device, dtype=input_dtype) * 0.1
         result = _run_raw(q, k, v, DEFAULT_SPARSITY)
         lut, _mean, _qb, _kb, selected = build_routing_lut(q, k, DEFAULT_SPARSITY)
         reference = _reference_from_lut(q, k, v, lut)
@@ -832,9 +997,9 @@ def sparse_attention(
     """Execute strict SLA. No dense or CK fallback is performed."""
     _require_environment(q, k, v)
     if run_self_test:
-        ensure_self_test(q.device, all_int8=all_int8)
+        ensure_self_test(q.device, all_int8=all_int8, input_dtype=q.dtype)
         if not all_int8:
-            ensure_optional_long_shape_test(q.device)
+            ensure_optional_long_shape_test(q.device, input_dtype=q.dtype)
     result = _run_raw(
         q, k, v, float(sparsity), tuple(query_priority_ranges),
         all_int8=all_int8, debug=debug,
@@ -860,9 +1025,9 @@ def sparse_attention_consume(
     _require_environment(qkv[0], qkv[1], qkv[2])
     device = qkv[0].device
     if run_self_test:
-        ensure_self_test(device, all_int8=all_int8)
+        ensure_self_test(device, all_int8=all_int8, input_dtype=qkv[0].dtype)
         if not all_int8:
-            ensure_optional_long_shape_test(device)
+            ensure_optional_long_shape_test(device, input_dtype=qkv[0].dtype)
     return _run_raw_impl(
         qkv, float(sparsity), tuple(query_priority_ranges), all_int8,
         release_inputs=True, debug=debug,

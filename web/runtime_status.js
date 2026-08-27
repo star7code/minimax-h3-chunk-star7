@@ -43,7 +43,7 @@ const TEXT = {
             qkv_chunk_tokens: "On SM75, 0 or values above 4096 run at the speech-stable 4096 quality cap. SM80+ follows the requested value. A QKV projection VRAM error can still reduce only this stage further.",
             disable_dynamic_prefetch: "Legacy workflow field only. This experimental feature has been removed and is always disabled.",
             reuse_mlp_weights: "Reuses isolated QKV/MLP weight snapshots across token chunks. Falls back safely if a snapshot runs out of VRAM.",
-            attention_backend: "Strict SLA never falls back. The SM75 All-INT8 option is experimental and may reduce quality; the FP16-PV option remains recommended.",
+            attention_backend: "Select the incoming backend, CK INT8, or the matching SM75/SM80+ SLA, Sol, or Hybrid path. Architecture-specific sparse modes stop on failure instead of substituting another backend. All-INT8 prioritizes throughput and should be quality-tested for the target workflow.",
         },
         current: (label, value) => `${label} in use: ${value} (configured)`,
         limited: (label, value, configured) => `${label} in use: ${value} (set ${configured}, limited by video size)`,
@@ -75,7 +75,7 @@ const TEXT = {
             qkv_chunk_tokens: "SM75 上，0 或高于 4096 的设定会按语音稳定值 4096 运行；SM80+ 按设定值运行。QKV 投影显存不足时仍只会继续降低这一阶段。",
             disable_dynamic_prefetch: "仅为兼容旧工作流保留，不再参与计算，功能始终关闭。",
             reuse_mlp_weights: "在 token 块之间复用独立 QKV/MLP 权重快照；快照显存不足时自动切换安全流式路径。",
-            attention_backend: "严格 SLA 绝不回退。SM75 All-INT8 是可能降低质量的实验模式，仍推荐使用 FP16-PV 模式。",
+            attention_backend: "可选择传入模型已有后端、CK INT8，或与显卡架构对应的 SM75/SM80+ SLA、Sol、Hybrid 路径。架构专用稀疏模式失败时终止，不替换为其他后端；All-INT8 侧重吞吐，建议按目标工作流验证质量。",
         },
         current: (label, value) => `${label} 实际使用：${value}（设定值）`,
         limited: (label, value, configured) => `${label} 实际使用：${value}（设定 ${configured}，视频规模只需要这么多）`,
@@ -286,7 +286,25 @@ function validSavedValue(name, value) {
         return value === "existing"
             || value === "comfy_kitchen_int8"
             || value === "sla_sm75_qk_int8_pv_fp16"
+            || value === "sla_sm75_all_int8"
             || value === "sla_sm75_all_int8_experimental"
+            || value === "sol_sm75_qk_int8_pv_fp16"
+            || value === "sol_sm75_all_int8"
+            || value === "sol_sm75_all_int8_experimental"
+            || value === "hybrid_sm75_ck_sla_all_int8"
+            || value === "hybrid_sm75_ck_sol_all_int8"
+            || value === "sla_sm80+_qk_int8_pv_fp16"
+            || value === "sla_sm80+_qk_int8_pv_bf16"
+            || value === "sla_sm80+_all_int8"
+            || value === "sla_sm80+_all_int8_experimental"
+            || value === "sol_sm80+_bf16_official"
+            || value === "sol_sm80+_all_int8"
+            || value === "sol_sm80+_all_int8_experimental"
+            || value === "hybrid_sm80+_ck_sla_all_int8"
+            || value === "hybrid_sm80+_ck_sol_all_int8"
+            || value === "hybrid_sm80+_ck_sla_qk_int8_pv_fp16"
+            || value === "hybrid_sm80+_ck_sla_qk_int8_pv_bf16"
+            || value === "hybrid_sm80+_ck_sol_bf16_official"
             || value === "sla_sm80+_qk_int8_pv_fp16";
     }
     if (name === "disable_dynamic_prefetch") {

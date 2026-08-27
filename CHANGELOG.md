@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+- Reorganized the release documentation around the current feature set:
+  independent QKV/RoPE/MLP chunking followed by selectable CK, SLA, Sol, and
+  Hybrid attention. Removed obsolete prefetch guidance and corrected SM80+
+  Hybrid, audio-protection, QKV tuning, distribution, and licensing details.
+- Added the compact `提示词载入 - Star7` helper. It imports prompt metadata from
+  selected or dropped image, video, and workflow files, prioritizes the longest
+  viable positive-text candidate, and provides a candidate picker for review.
+- Added the combined reference-image upload and long-edge scaling helper.
+
+- Reorganized the attention selector with explicit SM75 and SM80+ names. Both
+  architecture families remain visible so workflows can be prepared or shared
+  without the menu changing according to the machine that opened them.
+- Restored the SM75 SLA QK-INT8/PV-FP16 quality path to the visible SM75 list.
+- Bundled the NVlabs/Sana Sol-Attn source used by the SM80+ official BF16 mode.
+  SM80/SM86 and systems without CuTe use its official Triton backend; supported
+  SM89/SM90/SM100/SM120 systems use the matching CuTe backend when available.
+- The selector now always shows both architecture families. SM80+ exposes
+  BF16-PV SLA, official BF16 Sol, and the two All-INT8 comparison paths.
+  Its visible hybrids now pair CK with BF16-PV SLA or official BF16 Sol rather
+  than forcing All-INT8 in the sparse middle steps.
+- Added a real SM80+ SLA BF16 path: Q/K remain INT8, V and PV use BF16 Tensor
+  Core operands, and online softmax/final accumulation remain FP32. The former
+  FP16-PV names stay loadable for existing workflows but are hidden.
+- Promoted the SM75 visible sparse names to `sla_sm75_all_int8` and
+  `sol_sm75_all_int8`, while retaining former `*_experimental` values as
+  load-time aliases. SM80+ aliases are also preserved for saved workflows.
+
+- Added Q64/K64 Sol attention modes for SM75 and SM80+. The SM80+ recommended
+  mode calls NVIDIA's official contiguous-BTHD BF16 `sol_attn()` interface;
+  SM75 FP16-PV combines exact selected blocks with K/V-centroid contributions
+  for unselected blocks in the same online softmax. Both Star7 All-INT8 modes
+  now preserve those complete Sol semantics and change only PV quantization.
+- Moved SM75 Sol centroid reduction, diagonal-threshold routing, LUT packing,
+  and Q/K quantization to native CUDA. The normal and All-INT8 kernels now both
+  execute exact blocks plus centroid approximations without a PyTorch hot path.
+- Kept official Sol routing at `tau=1.0`. Full H3 traces showed that increasing
+  the threshold only traded routing precision for enough speed to approach CK;
+  the SM75 FP16-PV mode is therefore hidden from new-node menus while its
+  implementation remains readable by existing workflows. SM75 All-INT8 is the
+  visible standard Sol mode.
+- Added variable per-query-block Sol routing counts and compact LUTs. The SM75
+  native FP16-PV and All-INT8 kernels use Q64/K64, four warps, and skip LUT
+  padding rather than computing fake blocks.
+- Added architecture-specific CK/Sol/CK Hybrid modes. Attention choices are
+  ordered as SLA FP16, SLA All-INT8, Sol recommended, Sol All-INT8, CK-SLA,
+  and CK-Sol for SM75 first and SM80+ second.
+- Bumped the package version to `2.12.0`.
+
+- Unified the newer-architecture menu names at SM80+, matching the actual
+  lower bound of both the SLA Triton path and NVIDIA's official Sol interface:
+  `sla_sm80+_*`, `sol_sm80+_*`, and their CK Hybrid modes.
+- Fixed newer-GPU SLA and Hybrid overflow by restoring the upstream H3 dtype
+  (normally BF16) after the FP16 SLA kernel and before `out_proj`. QKV routing,
+  sparse attention, and the existing FP16-PV Triton kernel are unchanged.
+- Added a separate SM80+ experimental Triton All-INT8 PV kernel. Q/K/V and the
+  per-tile softmax probabilities use INT8 tensor-core products, while online
+  softmax state and final accumulation remain FP32. It never silently falls
+  back to FP16-PV or CK.
+- Bumped the package version to `2.11.0`.
+
 - Added the SM75-only `hybrid_sm75_ck_sla_all_int8` attention scheduling mode.
   It keeps CK in the first and
   last guard regions and reuses the existing experimental SM75 All-INT8 SLA

@@ -28,15 +28,23 @@ for path in (str(NODE_ROOT), str(COMFY_ROOT), str(PYTHON_ROOT)):
         sys.path.insert(0, path)
 
 
-def _load_backend():
-    path = NODE_ROOT / "sla_backend.py"
-    spec = importlib.util.spec_from_file_location("star7_bench_sla_backend", path)
+def _load_module(filename: str, module_name: str):
+    path = NODE_ROOT / filename
+    spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load SLA backend from {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _load_backend():
+    return _load_module("sla_backend.py", "star7_bench_sla_backend")
+
+
+def _load_sol_backend():
+    return _load_module("sol_backend.py", "star7_bench_sol_backend")
 
 
 def _events(count: int) -> list[torch.cuda.Event]:
@@ -88,6 +96,9 @@ def _sla_once(backend, q, k, v, sparsity: float, all_int8: bool) -> dict[str, fl
 def _ck_once(q, k, v) -> float:
     import comfy_kitchen
 
+    if not hasattr(comfy_kitchen, "int8_attention"):
+        return float("nan")
+
     start, end = _events(2)
     start.record()
     output = comfy_kitchen.int8_attention(q, k, v)
@@ -96,11 +107,33 @@ def _ck_once(q, k, v) -> float:
     return start.elapsed_time(end)
 
 
+def _sol_once(
+    sol, _sla, q, k, v, all_int8: bool,
+    sink_start: int | None = None, sink_tokens: int = 0, tau: float = 1.0,
+) -> dict[str, float]:
+    marks = _events(2)
+    marks[0].record()
+    result = sol.run_custom_consume(
+        [q.clone(), k.clone(), v.clone()], all_int8=all_int8,
+        sink_start=sink_start, sink_tokens=sink_tokens, tau=tau,
+    )
+    marks[1].record()
+    result.output.sum().item()
+    return {
+        "total": marks[0].elapsed_time(marks[1]),
+        "density": result.mean_density,
+    }
+
+
 def _median(rows: list[dict[str, float]], key: str) -> float:
     return statistics.median(row[key] for row in rows)
 
 
-def benchmark(backend, length: int, heads: int, repeats: int, sparsity: float) -> None:
+def benchmark(
+    backend, length: int, heads: int, repeats: int, sparsity: float,
+    sink_start: int | None, sink_tokens: int, sol_only: bool, sol_tau: float,
+) -> None:
+    sol = _load_sol_backend()
     generator = torch.Generator(device="cuda")
     generator.manual_seed(0x57A7 + length)
     shape = (1, heads, length, backend.HEAD_DIM)
@@ -108,26 +141,48 @@ def benchmark(backend, length: int, heads: int, repeats: int, sparsity: float) -
     k = torch.randn(shape, generator=generator, device="cuda", dtype=torch.float16) * 0.25
     v = torch.randn(shape, generator=generator, device="cuda", dtype=torch.float16) * 0.25
 
-    _sla_once(backend, q, k, v, sparsity, False)
-    _sla_once(backend, q, k, v, sparsity, True)
+    if not sol_only:
+        _sla_once(backend, q, k, v, sparsity, False)
+        _sla_once(backend, q, k, v, sparsity, True)
     _ck_once(q, k, v)
     torch.cuda.synchronize()
 
     ck = [_ck_once(q, k, v) for _ in range(repeats)]
     ck_median = statistics.median(ck)
+    if not sol_only:
+        for all_int8 in (False, True):
+            rows = [
+                _sla_once(backend, q, k, v, sparsity, all_int8)
+                for _ in range(repeats)
+            ]
+            torch.cuda.synchronize()
+            keys = ("route", "quant_q", "quant_k", "core", "sla_total")
+            values = " ".join(f"{key}={_median(rows, key):.3f}ms" for key in keys)
+            ratio = _median(rows, "sla_total") / ck_median
+            mode = "all-int8" if all_int8 else "fp16-pv"
+            print(
+                f"L={length} H={heads} mode={mode} {values} "
+                f"ck={ck_median:.3f}ms ratio={ratio:.3f}x"
+            )
     for all_int8 in (False, True):
+        _sol_once(
+            sol, backend, q, k, v, all_int8,
+            sink_start, sink_tokens, sol_tau,
+        )
         rows = [
-            _sla_once(backend, q, k, v, sparsity, all_int8)
+            _sol_once(
+                sol, backend, q, k, v, all_int8,
+                sink_start, sink_tokens, sol_tau,
+            )
             for _ in range(repeats)
         ]
         torch.cuda.synchronize()
-        keys = ("route", "quant_q", "quant_k", "core", "sla_total")
-        values = " ".join(f"{key}={_median(rows, key):.3f}ms" for key in keys)
-        ratio = _median(rows, "sla_total") / ck_median
+        values = f"total={_median(rows, 'total'):.3f}ms"
         mode = "all-int8" if all_int8 else "fp16-pv"
         print(
-            f"L={length} H={heads} mode={mode} {values} "
-            f"ck={ck_median:.3f}ms ratio={ratio:.3f}x"
+            f"L={length} H={heads} mode=sol-{mode} {values} "
+            f"density={statistics.median(row['density'] for row in rows):.3f} "
+            f"ck={ck_median:.3f}ms ratio={_median(rows, 'total') / ck_median:.3f}x"
         )
 
 
@@ -137,6 +192,10 @@ def main() -> None:
     parser.add_argument("--heads", type=int, default=56)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--sparsity", type=float, default=0.85)
+    parser.add_argument("--sink-start", type=int)
+    parser.add_argument("--sink-tokens", type=int, default=0)
+    parser.add_argument("--sol-only", action="store_true")
+    parser.add_argument("--sol-tau", type=float, default=1.0)
     parser.add_argument(
         "--sm75-library", type=Path,
         help="Development-only SM75 DLL/.so override for A/B kernel benchmarks.",
@@ -164,7 +223,10 @@ def main() -> None:
         f"cuda={torch.version.cuda} sparsity={args.sparsity:.3f}"
     )
     for length in args.lengths:
-        benchmark(backend, length, args.heads, args.repeats, args.sparsity)
+        benchmark(
+            backend, length, args.heads, args.repeats, args.sparsity,
+            args.sink_start, args.sink_tokens, args.sol_only, args.sol_tau,
+        )
 
 
 if __name__ == "__main__":

@@ -1,13 +1,13 @@
 {
   "abi_version": 7,
-  "backend": "cuda-sm75-sparse-fp16-pv-and-experimental-all-int8",
+  "backend": "cuda-sm75-sla-and-sol-sparse-fp16-pv-and-experimental-all-int8",
   "compute_capability": "7.5",
   "cuda_toolkit": "13.0.88",
   "linux_cuda_toolkit": "12.6.3 (Ubuntu 20.04 / glibc 2.31)",
   "windows_x64": {
-    "file": "win_amd64/star7_sla_sm75_v7.dll",
-    "sha256": "e740dd476a349661ebf5bbbf09b4f3467e28bb23b928de6e32feaccdd5a58dd4",
-    "size": 833024
+    "file": "win_amd64/star7_sla_sm75_v7_sol_complete.dll",
+    "sha256": "d82af8c040f7290c24b9c6fdf1e8fdebf15df514e85c71fede7f84e43db73180",
+    "size": 1147392
   },
   "linux_x86_64": {
     "file": "linux_x86_64/star7_sla_sm75_v7.so",
@@ -26,6 +26,15 @@
     "qk": "per-16-row Q / per-64-row K signed INT8 Tensor Core IMMA with INT32 accumulation",
     "pv": "Recommended FP16 probability x FP16 V, or experimental U8 probability x INT8 V; both use FP32 accumulation",
     "softmax": "FP32 online softmax",
-    "source": "Star7 sparse routing over Apache-2.0 SageAttention SM75 and Comfy Kitchen primitives"
+    "source": "Star7 SLA Q128/K64 and threshold-routed Sol Q64/K64 over Apache-2.0 SageAttention SM75 and Comfy Kitchen primitives",
+    "sol_query_block": 64,
+    "sol_key_block": 64,
+    "sol_warps": 4,
+    "sol_shared_bytes": 32896,
+    "sol_fp16_pv_registers_per_thread": 140,
+    "sol_all_int8_registers_per_thread": 180,
+    "sol_preprocess": "native CUDA Q/K/V centroid reduction, diagonal threshold routing, LUT packing, and FP16-to-INT8 quantization",
+    "sol_fp16_pv_math": "selected K64 blocks exact; unselected K64 blocks contribute through K/V centroids in the same FP32 online softmax",
+    "sol_all_int8_math": "same exact-plus-centroid Sol softmax as FP16-PV; only the exact and centroid PV products use INT8 Tensor Cores"
   }
 }

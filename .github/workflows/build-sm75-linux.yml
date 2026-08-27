@@ -19,6 +19,9 @@ jobs:
       - name: Verify exported ABI and host dependencies
         run: |
           test "$(nm -D --defined-only bin/linux_x86_64/star7_sla_sm75_v7.so | grep -c ' star7_sla_sm75_')" -ge 5
+          test "$(nm -D --defined-only bin/linux_x86_64/star7_sla_sm75_v7.so | grep -c ' star7_sol_sm75_')" -ge 8
+          nm -D --defined-only bin/linux_x86_64/star7_sla_sm75_v7.so | grep -q ' star7_sol_sm75_prepare_routes$'
+          nm -D --defined-only bin/linux_x86_64/star7_sla_sm75_v7.so | grep -q ' star7_sol_sm75_launch_all_int8_complete$'
           ! ldd bin/linux_x86_64/star7_sla_sm75_v7.so | grep -q 'not found'
           ! ldd bin/linux_x86_64/star7_sla_sm75_v7.so | grep -q 'libcudart'
       - uses: actions/upload-artifact@v4
