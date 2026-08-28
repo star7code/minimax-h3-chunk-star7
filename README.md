@@ -28,7 +28,7 @@ Attention choices include preserving an upstream backend, Comfy Kitchen INT8, ar
 | 多种注意力后端 | 支持 `existing`、Comfy Kitchen INT8、SLA、Sol 和 CK/Sparse/CK Hybrid |
 | 架构专用稀疏内核 | SM75 使用随节点分发的原生 CUDA 内核；SM80+ 使用 Triton 或 NVIDIA 官方 Sol-Attn 路径 |
 | 数值检查与定位 | 在完整 Transformer block 和 H3 视频/音频输出处检查 NaN/Inf，并提供 QKV、attention、`out_proj`、MLP 分段诊断 |
-| 轻量辅助节点 | 附带参考图像载入、参考视频载入和提示词载入；均可独立使用，不影响核心模型补丁 |
+| 轻量辅助节点 | 附带参考图像、参考视频和提示词载入；支持将对应文件直接拖入节点，且不影响核心模型补丁 |
 
 ## 工作原理
 
@@ -63,6 +63,8 @@ SM80+ 标准 Sol 模式调用随节点内置的 NVIDIA NVlabs/Sana 官方 BF16 S
 Hybrid 在完整采样 step 之间切换注意力，而不是在一次 Attention 内混合两套内核。默认前后保护区使用 CK，中间采样阶段使用对应的 SLA 或 Sol。
 
 以常见 4-step 工作流为例：第 1、4 步使用 CK，第 2、3 步使用所选稀疏模式。Hybrid 需要 ComfyUI 提供真实 sigma 调度上下文；无法可靠确定采样步时将终止任务并报告错误。
+
+RTX 20 系建议配合 [MiniMax H3 FP16 Exact Fix - Star7](https://github.com/star7code/minimax-h3-fp16-exact-star7) 使用。该项目从模型载入阶段采用 FP16 计算，并以 FP32 残差运算和精确溢出保护修复 Turing 上的 FP16 数值问题，可降低长视频中 NaN、棋盘格和音频异常的风险；它不改变注意力后端，也不会把 CK、SLA 或 Sol 的 INT8 计算转换为 FP16。
 
 ## 注意力模式
 
@@ -141,11 +143,11 @@ git clone https://github.com/star7code/minimax-h3-chunk-star7.git
 | 节点 | 用途 |
 |---|---|
 | `MiniMax H3 显存分块加速 - Star7` | QKV/RoPE/MLP 分块、自动降档和注意力选择 |
-| `参考视频载入 - Star7` | 载入并缩放参考视频，输出参考画面、音频、帧数和报告 |
-| `参考图像载入 - Star7` | 在一个节点中完成图片载入、最长边限制和可选小图放大 |
-| `提示词载入 - Star7` | 拖入图片、视频或工作流 JSON 提取提示词，自动优先长文本并保留候选词 |
+| `参考视频载入 - Star7` | 支持直接拖入视频，完成载入、时间范围裁切和最长边限制，输出同一时间窗的画面与音频 |
+| `参考图像载入 - Star7` | 支持直接拖入图片，在一个节点中完成载入、最长边限制和可选小图放大 |
+| `提示词载入 - Star7` | 支持拖入图片、视频或工作流 JSON，自动提取长文本并保留候选词 |
 
-参考图像、参考视频和提示词节点都是独立工具，不会向模型注入注意力或精度补丁。
+三个载入节点均支持将对应文件直接拖到节点上完成载入；它们都是独立工具，不会向模型注入注意力或精度补丁。
 
 ## 推荐连接顺序
 
@@ -179,7 +181,7 @@ attention_backend = existing
 |---|---|---:|
 | `chunk_tokens` | RoPE token 分块上限 | `8192` |
 | `mlp_chunk_tokens` | MLP 扩展激活分块上限，通常是主要显存调节项 | `8192`；显存紧张时先降至 `4096` |
-| `qkv_chunk_tokens` | QKV 投影临时工作集 | SM75 `4096`；SM80+ `8192` |
+| `qkv_chunk_tokens` | QKV 投影临时工作集 | `8192`；显存紧张时再降低 |
 | `auto_halve_on_oom` | 当前分块 OOM 时只对失败阶段减半重试，最低 `256` | `true` |
 | `reuse_mlp_weights` | 安全时复用已准备的 QKV/MLP 权重快照，显存压力下改用 streamed 路径 | `true` |
 | `attention_backend` | 选择已有、CK、SLA、Sol 或 Hybrid 注意力 | `comfy_kitchen_int8` |
@@ -195,9 +197,7 @@ attention_backend = existing
 
 工作流输入不会被后台改写，临时降档值也不会保存回工作流。用户重新执行节点并更改参数后，之前记忆的降档值会重置。
 
-### SM75 QKV 质量保护
-
-SM75 上 `qkv_chunk_tokens=0` 或高于 `4096` 时，实际按 `4096` 运行。这是参考语音稳定性保护，不是 OOM 降档；若 `4096` 仍然 OOM，自动降档可以继续只降低 QKV。SM80+ 不应用这一上限。
+`qkv_chunk_tokens` 在所有架构和生成类型中严格采用工作流设定值；设为 `0` 表示先尝试整段计算。开启自动降档后，只有实际发生 QKV 投影 OOM 才会降低该值。
 
 ### 按错误位置调节
 
@@ -205,38 +205,27 @@ SM75 上 `qkv_chunk_tokens=0` 或高于 `4096` 时，实际按 `4096` 运行。�
 |---|---|
 | `fc1` / SwiGLU / `fc2` MLP OOM | 降低 `mlp_chunk_tokens`：`8192 -> 4096 -> 2048 -> 1024` |
 | `rms_rope_split_half_` / RoPE OOM | 降低 `chunk_tokens`：`8192 -> 4096 -> 2048` |
-| QKV 投影临时张量 OOM | 降低 `qkv_chunk_tokens`：`4096 -> 2048 -> 1024` |
+| QKV 投影临时张量 OOM | 降低 `qkv_chunk_tokens`：`8192 -> 4096 -> 2048 -> 1024` |
 | attention kernel OOM | 更换注意力后端或减少序列/参考 token；激活分块不能缩小注意力核心工作集 |
 | 模型加载阶段 OOM | 调整模型量化、加载或卸载策略；此时分块节点尚未执行 |
 
 本机单 MLP 工作集测试中，MLP `8192 / 4096 / 2048 / 1024` 约占 `1970 / 1228 / 858 / 672 MiB`；同条件 RoPE 约为 `820 / 638 / 550 / 501 MiB`。因此显存紧张时通常先降低 MLP，无需同步降低全部参数。
 
-## RTX 2080 Ti 22GB 实测
+## 1.0MP / 10秒注意力路径实测
 
-测试卡为 22GB 显存改装版 RTX 2080 Ti，不代表标准 11GB 型号。测试采用 MiniMax H3 INT8 Tensorwise + ConvRot 主模型、768p Turbo 4-step LoRA、Euler/simple、1.0MP、10 秒、24fps。
+统一测试条件：1.0MP、10 秒、24fps，MiniMax H3 INT8 Tensorwise + ConvRot 主模型、768p Turbo 4-step LoRA、Euler/simple。测试硬件为 RTX 2080 Ti 22GB。
 
-| 注意力路径 | 平均采样 | 完整任务 | H3 sequence / 参考图最长边 |
+| 注意力路径 | 平均采样 | 完整任务 | 相对 CK 单步吞吐 |
 |---|---:|---:|---:|
-| KJNodes SM75 SageAttention 2 | `190.50秒/步` | `863.41秒` | `78,711 / 1920` |
-| Comfy Kitchen INT8（此前记录） | 约 `118–120秒/步` | 约 `620秒` | 约 `75,872 / —` |
-| SLA SM75 QK-INT8/PV-FP16（此前记录） | `96.68秒/步` | `471.12秒` | `75,872 / —` |
-| SLA SM75 All-INT8（此前记录） | `60.83秒/步` | `325.51秒` | `75,872 / —` |
-| Sol SM75 All-INT8 | `88.71秒/步` | `442.57秒` | `77,799 / 1024` |
-| 标准 CK + Sol Hybrid | `106.12秒/步` | `498.27秒` | `77,799 / 1024` |
-| 标准 CK + SLA Hybrid | `94.67秒/步` | `454.76秒` | `77,799 / 1024` |
+| KJNodes SM75 SageAttention 2 | `190.50秒/步` | `863.41秒` | 约 `0.63×` |
+| Comfy Kitchen INT8（基准） | 约 `118–120秒/步` | 约 `620秒` | `1.00×` |
+| SLA SM75 QK-INT8/PV-FP16 | `96.68秒/步` | `471.12秒` | 约 `1.24×` |
+| SLA SM75 All-INT8 | `60.83秒/步` | `325.51秒` | 约 `1.97×` |
+| Sol SM75 All-INT8 | `88.71秒/步` | `442.57秒` | 约 `1.35×` |
+| 标准 CK + Sol Hybrid | `106.12秒/步` | `498.27秒` | 约 `1.13×` |
+| 标准 CK + SLA Hybrid | `94.67秒/步` | `454.76秒` | 约 `1.27×` |
 
-All-INT8 的一组测试未复现旧版尾段爆音，但单个 seed 不能证明跨提示词质量等价；发布后仍应关注人物稳定性、语音内容和尾段音频。
-
-Hybrid 的平均采样耗时按采样进度中各步实际耗时的算术平均值计算，不以包含模型初始化、VAE 和视频封装的完整任务耗时除以步数。Sage 本轮使用 `1920` 参考图最长边，其余本轮 Sol/Hybrid 使用 `1024`，两组数据不作为严格同条件的相对性能对照。Low VRAM Attention 在第 1 步后产生 NaN 并终止，因此不列入性能表。
-
-参考视频预处理实测（0.6MP / 9秒，单步诊断）：
-
-| 路径 | H3 sequence | 总耗时 |
-|---|---:|---:|
-| 原始参考尺寸 | `103,546` | `311.60秒` |
-| 限制参考画布后 | `87,101` | `232.50秒` |
-
-SM75 参考语音回归中，QKV `8192` 相对 `4096` 出现可测解码漂移；当前 `4096` 质量保护与手动 `4096` 的 PCM 逐位一致，平均采样约 `196.27秒/步`。
+Hybrid 的平均采样耗时按采样进度中各步实际耗时的算术平均值计算，不以包含模型初始化、VAE 和视频封装的完整任务耗时除以步数。
 
 完整记录见 [BENCHMARKS.md](BENCHMARKS.md)。所有数字都是本机单配置观察值，不是跨显卡性能保证。
 

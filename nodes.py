@@ -14,7 +14,6 @@ import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
 NODE_VERSION = "2.12.0"
-SM75_QKV_QUALITY_CHUNK = 4096
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
 LEGACY_SM86PLUS_FP16_BACKEND_NAME = "sla_sm80+_qk_int8_pv_fp16"
@@ -156,26 +155,24 @@ def _current_cuda_capability():
 
 
 def _default_qkv_chunk_tokens() -> int:
-    return SM75_QKV_QUALITY_CHUNK if _current_cuda_capability() == (7, 5) else 8192
+    return 8192
 
 
-def _quality_limited_qkv_chunk(requested: int, capability) -> tuple[int, bool]:
-    requested = int(requested)
-    if capability != (7, 5) or (requested != 0 and requested <= SM75_QKV_QUALITY_CHUNK):
-        return requested, False
-    return SM75_QKV_QUALITY_CHUNK, True
-
-
-def _sm75_qkv_reuse_path(x: torch.Tensor) -> bool:
-    """Use the validated resident-weight path for any SM75 QKV tile <= 4096."""
+def _sm75_qkv_reuse_path(
+    x: torch.Tensor, effective_chunk: Optional[int] = None,
+) -> bool:
+    """Use the resident-weight path for any explicitly chunked SM75 QKV run."""
     if x.device.type != "cuda":
         return False
     try:
         capability = torch.cuda.get_device_capability(x.device)
     except Exception:
         return False
-    effective = int(_CONFIG["effective_qkv_chunk_tokens"])
-    return capability == (7, 5) and 0 < effective <= SM75_QKV_QUALITY_CHUNK
+    effective = int(
+        _CONFIG["effective_qkv_chunk_tokens"]
+        if effective_chunk is None else effective_chunk
+    )
+    return capability == (7, 5) and effective > 0
 
 
 def _is_cuda_oom(exc: BaseException) -> bool:
@@ -305,7 +302,7 @@ def _configure_runtime(
 
 
 def _set_sequence_status(
-    kind: str, sequence_length: int, reason_override: Optional[str] = None,
+    kind: str, sequence_length: int,
 ) -> None:
     """Expose the cap used by this forward without learning it as an OOM cap."""
     sequence_length = max(1, int(sequence_length))
@@ -334,41 +331,8 @@ def _set_sequence_status(
     _CONFIG[sequence_key] = sequence_length
     if changed:
         _send_runtime_status(
-            reason_override
-            or ("sequence_limit" if learned > 0 and actual < learned else "active")
+            "sequence_limit" if learned > 0 and actual < learned else "active"
         )
-
-
-def _limit_sm75_qkv_chunk_for_quality(x: torch.Tensor) -> bool:
-    """Keep Turing QKV projection on the validated speech-stable tile size.
-
-    A same-seed four-step H3 run changes decoded PCM between 4,096 and 8,192
-    even though isolated INT8 projection and RoPE tests are bitwise chunk
-    invariant. Keep the validated 4,096 upper bound on Turing; smaller
-    OOM-learned values remain valid, while SM80+ keeps the requested value.
-    """
-    if x.device.type != "cuda":
-        return False
-    # Direct SM75 INT8 projection and RoPE tests are bitwise chunk invariant,
-    # including the irregular tail. The complete H3 workflow is not: changing
-    # this allocation/call schedule changes downstream long-sequence results,
-    # and four diffusion steps amplify that difference in reference speech.
-    # Apply the validated cap regardless of how ComfyUI materialized LoRA.
-    try:
-        capability = torch.cuda.get_device_capability(x.device)
-    except Exception:
-        return False
-    configured = int(_CONFIG["qkv_chunk_tokens"])
-    _configured_limit, applies = _quality_limited_qkv_chunk(configured, capability)
-    if not applies:
-        return False
-    current = int(_CONFIG["effective_qkv_chunk_tokens"])
-    if current == 0 or current > SM75_QKV_QUALITY_CHUNK:
-        _CONFIG["effective_qkv_chunk_tokens"] = SM75_QKV_QUALITY_CHUNK
-        current = SM75_QKV_QUALITY_CHUNK
-    # If OOM fallback already learned a smaller value, report that as a
-    # reduction rather than mislabelling it as the 4096 quality cap.
-    return current == SM75_QKV_QUALITY_CHUNK
 
 
 def _slice_freqs_for_tokens(freqs_cis: torch.Tensor, start: int, end: int, seq_len: int) -> torch.Tensor:
@@ -1580,7 +1544,6 @@ def _prepare_h3_qkv_chunked(
     """
     sequence = int(x.shape[0])
     heads, head_dim = self.heads, self.head_dim
-    quality_limited = _limit_sm75_qkv_chunk_for_quality(x)
     configured_chunk = int(_CONFIG["effective_qkv_chunk_tokens"])
     chunk = sequence if configured_chunk == 0 else min(
         sequence, max(256, configured_chunk)
@@ -1607,7 +1570,7 @@ def _prepare_h3_qkv_chunked(
     qkv_call = self.qkv_proj
     qkv_weight_mode = "streamed"
     if (
-        _sm75_qkv_reuse_path(x)
+        _sm75_qkv_reuse_path(x, configured_chunk)
         and _CONFIG["reuse_mlp_weights"]
         and _linear_can_reuse_weights(self.qkv_proj)
     ):
@@ -1622,12 +1585,9 @@ def _prepare_h3_qkv_chunked(
             qkv_weight_mode = "streamed-fallback"
             _LOG.warning(
                 "[Star7 H3 Chunk] Holding the patched QKV weight exceeded VRAM; "
-                "using speech-stable per-chunk streaming"
+                "using per-chunk streaming"
             )
-    _set_sequence_status(
-        "QKV", sequence,
-        reason_override="qkv_quality_cap" if quality_limited else None,
-    )
+    _set_sequence_status("QKV", sequence)
     # These complete Q/K/V tensors are required by CK and SLA regardless of
     # projection chunk size. Retry their allocation once after releasing only
     # unused allocator cache, but do not pretend that lowering a local chunk can
@@ -2262,7 +2222,7 @@ class MiniMaxH3ActivationChunkStar7:
                         "min": 0,
                         "max": 65536,
                         "step": 256,
-                        "tooltip": "H3 QKV 投影临时显存分块。SM75 为保护参考语音稳定性，0 或高于 4096 的设定会按 4096 运行；SM80+ 不设此质量上限。若自动降档开启，QKV OOM 时只降低 QKV 后重试。",
+                        "tooltip": "H3 QKV 投影临时显存分块。设为 0 会先尝试整段计算；若自动降档开启，只有 QKV 投影显存不足时才降低 QKV 后重试。",
                     },
                 ),
                 "reuse_mlp_weights": (
@@ -2371,10 +2331,55 @@ def _normalize_reference_max_long_edge(value, default: int = 1024) -> int:
 
 def _align_h3_reference_frame_count(frame_count: int) -> int:
     """Trim a decoded 24fps reference to MiniMax H3's 17n+5 grid."""
-    frame_count = min(360, int(frame_count))
+    frame_count = int(frame_count)
     if frame_count < 5:
         return frame_count
     return frame_count - ((frame_count - 5) % 17)
+
+
+def _normalize_reference_trim(
+    enabled, start_seconds=0.0, end_seconds=0.0, source_duration=None,
+) -> tuple[float, float]:
+    """Resolve a reference window against the selected file's real duration."""
+    try:
+        source_duration = max(0.0, float(source_duration))
+    except (TypeError, ValueError):
+        source_duration = 0.0
+    if not bool(enabled):
+        return 0.0, source_duration
+    try:
+        start = float(start_seconds)
+    except (TypeError, ValueError):
+        start = 0.0
+    try:
+        end = float(end_seconds)
+    except (TypeError, ValueError):
+        end = 0.0
+    start = min(86400.0, max(0.0, start))
+    if source_duration > 0:
+        start = min(start, source_duration)
+        end = source_duration if end <= 0 else min(end, source_duration)
+    else:
+        end = max(0.0, end)
+    end = max(start, end)
+    return start, end - start
+
+
+def _ffmpeg_seconds(value: float) -> str:
+    return f"{float(value):.6f}".rstrip("0").rstrip(".") or "0"
+
+
+def _reference_media_input_args(
+    video_path: str, start_seconds: float, duration_seconds: float,
+) -> list[str]:
+    """Build one shared seek window for reference picture and source audio."""
+    args = []
+    if start_seconds > 0:
+        args.extend(["-ss", _ffmpeg_seconds(start_seconds)])
+    args.extend(["-i", video_path])
+    if duration_seconds > 0:
+        args.extend(["-t", _ffmpeg_seconds(duration_seconds)])
+    return args
 
 
 def _star7_ffmpeg_path() -> str:
@@ -2401,8 +2406,8 @@ def _hidden_subprocess_kwargs() -> dict:
     return {}
 
 
-def _video_stream_info(video_path: str) -> tuple[int, int, bool]:
-    """Read the displayed frame dimensions and whether an audio stream exists."""
+def _video_stream_info(video_path: str) -> tuple[int, int, bool, float]:
+    """Read displayed dimensions, audio presence, and source duration."""
     import av
 
     with av.open(video_path, mode="r") as container:
@@ -2410,6 +2415,13 @@ def _video_stream_info(video_path: str) -> tuple[int, int, bool]:
             raise ValueError(f"No video stream found in {video_path}")
         stream = container.streams.video[0]
         source_width, source_height = int(stream.width), int(stream.height)
+        source_duration = 0.0
+        if container.duration is not None:
+            source_duration = float(container.duration) / float(av.time_base)
+        elif stream.duration is not None and stream.time_base is not None:
+            source_duration = float(stream.duration * stream.time_base)
+        elif stream.frames and stream.average_rate:
+            source_duration = float(stream.frames / stream.average_rate)
         try:
             first_frame = next(container.decode(stream))
             rotation = int(round(float(getattr(first_frame, "rotation", 0)))) % 360
@@ -2417,18 +2429,18 @@ def _video_stream_info(video_path: str) -> tuple[int, int, bool]:
                 source_width, source_height = source_height, source_width
         except StopIteration:
             raise ValueError(f"No video frames found in {video_path}")
-        return source_width, source_height, bool(container.streams.audio)
+        return source_width, source_height, bool(container.streams.audio), source_duration
 
 
 def _reference_audio_decode_command(
     ffmpeg: str, video_path: str, audio_rate: int = 44100,
+    start_seconds: float = 0.0, duration_seconds: float = 0.0,
 ) -> list[str]:
-    """Keep source audio up to 15 seconds instead of H3 frame-grid duration."""
+    """Decode source audio from the same requested window as the video."""
     return [
         ffmpeg,
         "-v", "error",
-        "-i", video_path,
-        "-t", "15",
+        *_reference_media_input_args(video_path, start_seconds, duration_seconds),
         "-vn",
         "-ac", "2",
         "-ar", str(audio_rate),
@@ -2454,11 +2466,11 @@ class MiniMaxH3ReferenceVideoLoadStar7:
                 "max_long_edge": (
                     "INT",
                     {
-                        "default": 1344,
-                        "min": 32,
+                        "default": 720,
+                        "min": 0,
                         "max": 8192,
                         "step": 32,
-                        "tooltip": "The reference video keeps its aspect ratio and is fitted to this H3-aligned long edge.",
+                        "tooltip": "The reference video keeps its aspect ratio and is fitted to this H3-aligned long edge; 0 keeps the source size.",
                     },
                 ),
                 "allow_upscale": (
@@ -2466,6 +2478,35 @@ class MiniMaxH3ReferenceVideoLoadStar7:
                     {
                         "default": False,
                         "tooltip": "Disabled avoids spending H3 reference tokens on interpolated detail. Enable only for structure/motion A/B tests.",
+                    },
+                ),
+                "trim_enabled": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Enable a lightweight time window. Disabled loads the complete source video.",
+                    },
+                ),
+                "trim_start_seconds": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 86400.0,
+                        "step": 0.1,
+                        "round": 0.01,
+                        "tooltip": "Start position in seconds.",
+                    },
+                ),
+                "trim_end_seconds": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 86400.0,
+                        "step": 0.1,
+                        "round": 0.01,
+                        "tooltip": "End position in seconds. The UI reads the selected video's duration; 0 means through the end.",
                     },
                 ),
             }
@@ -2476,7 +2517,7 @@ class MiniMaxH3ReferenceVideoLoadStar7:
     FUNCTION = "load"
     CATEGORY = "Star7/MiniMax H3"
     DESCRIPTION = (
-        "Loads a MiniMax H3 reference video at the mandatory 24fps, limits it to 15 seconds, "
+        "Loads a MiniMax H3 reference video at the mandatory 24fps, optionally selects a time window, "
         "fits its long edge without changing orientation, aligns frames to 17n+5, and extracts "
         "the matching soundtrack. FFmpeg is resolved independently from VideoHelperSuite."
     )
@@ -2496,23 +2537,31 @@ class MiniMaxH3ReferenceVideoLoadStar7:
         path = folder_paths.get_annotated_filepath(video)
         return os.path.getmtime(path)
 
-    def load(self, video, max_long_edge=1344, allow_upscale=False):
+    def load(
+        self, video, max_long_edge=720, allow_upscale=False,
+        trim_enabled=False, trim_start_seconds=0.0, trim_end_seconds=0.0,
+    ):
         import folder_paths
 
         video_path = folder_paths.get_annotated_filepath(video)
-        source_width, source_height, has_audio = _video_stream_info(video_path)
-        width, height = _long_edge_reference_size(
-            source_width, source_height, int(max_long_edge), bool(allow_upscale), 32,
+        source_width, source_height, has_audio, source_duration = _video_stream_info(video_path)
+        max_long_edge = _normalize_reference_max_long_edge(max_long_edge, 720)
+        if max_long_edge == 0:
+            width, height = source_width, source_height
+        else:
+            width, height = _long_edge_reference_size(
+                source_width, source_height, max_long_edge, bool(allow_upscale), 32,
+            )
+        trim_start, trim_duration = _normalize_reference_trim(
+            trim_enabled, trim_start_seconds, trim_end_seconds, source_duration,
         )
         ffmpeg = _star7_ffmpeg_path()
         command = [
             ffmpeg,
             "-v", "error",
-            "-i", video_path,
-            "-t", "15",
+            *_reference_media_input_args(video_path, trim_start, trim_duration),
             "-an",
             "-vf", f"fps=24,scale={width}:{height}:flags=lanczos",
-            "-frames:v", "360",
             "-pix_fmt", "rgb24",
             "-f", "rawvideo",
             "pipe:1",
@@ -2537,7 +2586,7 @@ class MiniMaxH3ReferenceVideoLoadStar7:
         if has_audio:
             audio_rate = 44100
             audio_command = _reference_audio_decode_command(
-                ffmpeg, video_path, audio_rate,
+                ffmpeg, video_path, audio_rate, trim_start, trim_duration,
             )
             audio_result = subprocess.run(
                 audio_command, capture_output=True, check=False, **_hidden_subprocess_kwargs(),
@@ -2552,7 +2601,7 @@ class MiniMaxH3ReferenceVideoLoadStar7:
             if complete_values:
                 waveform = sample_values[:complete_values].reshape(-1, 2).transpose(0, 1)
                 audio = {"waveform": waveform.unsqueeze(0), "sample_rate": audio_rate}
-                audio_status = "stereo-44100Hz-source-up-to-15s"
+                audio_status = "stereo-44100Hz-selected-window"
 
         scale_direction = "same"
         if width * height < source_width * source_height:
@@ -2561,8 +2610,11 @@ class MiniMaxH3ReferenceVideoLoadStar7:
             scale_direction = "up"
         report = (
             f"24fps | frames={aligned_count} | {source_width}x{source_height} -> {width}x{height} "
-            f"({scale_direction}) | max_long_edge={int(max_long_edge)} | "
-            f"allow_upscale={bool(allow_upscale)} | audio={audio_status}"
+            f"({scale_direction}) | max_long_edge={max_long_edge} | "
+            f"allow_upscale={bool(allow_upscale)} | "
+            f"range={_ffmpeg_seconds(trim_start)}-{_ffmpeg_seconds(trim_start + trim_duration)}s "
+            f"({'trim' if bool(trim_enabled) else 'full-source'}) | "
+            f"source_duration={_ffmpeg_seconds(source_duration)}s | audio={audio_status}"
         )
         _LOG.info("[Star7 H3 Ref Load] %s", report)
         return frames, audio, aligned_count, report
@@ -2593,7 +2645,7 @@ class MiniMaxH3LoadImageScaleStar7:
                 "最长边": (
                     "INT",
                     {
-                        "default": 1024,
+                        "default": 1280,
                         "min": 0,
                         "max": 8192,
                         "step": 32,
@@ -2621,7 +2673,7 @@ class MiniMaxH3LoadImageScaleStar7:
         import numpy as np
         from PIL import Image, ImageOps
 
-        max_long_edge = _normalize_reference_max_long_edge(kwargs.get("最长边", 1024))
+        max_long_edge = _normalize_reference_max_long_edge(kwargs.get("最长边", 1280), 1280)
         allow_upscale = bool(kwargs.get("允许小图放大", False))
         image_path = folder_paths.get_annotated_filepath(image)
         with Image.open(image_path) as source:
@@ -2634,7 +2686,7 @@ class MiniMaxH3LoadImageScaleStar7:
             else:
                 mask = torch.zeros((1, rgb.shape[0], rgb.shape[1]), dtype=loaded.dtype)
         source_height, source_width = map(int, loaded.shape[1:3])
-        max_long_edge = _normalize_reference_max_long_edge(max_long_edge)
+        max_long_edge = _normalize_reference_max_long_edge(max_long_edge, 1280)
         if max_long_edge == 0:
             width, height = source_width, source_height
         else:
@@ -2673,7 +2725,7 @@ class MiniMaxH3LoadImageScaleStar7:
         digest = hashlib.sha256()
         with open(image_path, "rb") as handle:
             digest.update(handle.read())
-        max_long_edge = _normalize_reference_max_long_edge(kwargs.get("最长边", 1024))
+        max_long_edge = _normalize_reference_max_long_edge(kwargs.get("最长边", 1280), 1280)
         allow_upscale = bool(kwargs.get("允许小图放大", False))
         return f"{digest.hexdigest()}:{max_long_edge}:{allow_upscale}"
 

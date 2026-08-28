@@ -8,6 +8,11 @@ let localeChangeHandler;
 let locale = "zh-CN";
 const source = fs.readFileSync(new URL("./web/runtime_status.js", import.meta.url), "utf8")
     .replace(/^import .*?;\r?\n/gm, "");
+const promptImporterSource = fs.readFileSync(
+    new URL("./web/prompt_importer.js", import.meta.url), "utf8",
+);
+assert.doesNotMatch(source, /document\.addEventListener\(["'](?:drop|dragover)["']/);
+assert.doesNotMatch(promptImporterSource, /document\.addEventListener\(["'](?:drop|dragover)["']/);
 
 const context = {
     api: {
@@ -268,25 +273,6 @@ assert.match(
     ).name,
     /QKV 已从整段自动降为：51773/,
 );
-corrupted.widgets.find((widget) => widget.name === "qkv_chunk_tokens").value = 8192;
-statusHandler({
-    detail: {
-        node_id: "299",
-        configured_rope: 0,
-        effective_rope: 103546,
-        configured_mlp: 4096,
-        effective_mlp: 4096,
-        configured_qkv: 8192,
-        effective_qkv: 4096,
-        reason: "qkv_quality_cap",
-    },
-});
-assert.match(
-    corrupted.widgets.find(
-        (widget) => widget.__star7StatusName === "star7_qkv_runtime_status",
-    ).name,
-    /QKV 质量保护：4096（SM75 语音稳定；原设定 8192）/,
-);
 corrupted.widgets.find((widget) => widget.name === "chunk_tokens").value = 8192;
 corrupted.widgets.find((widget) => widget.name === "qkv_chunk_tokens").value = 4096;
 statusHandler({
@@ -341,4 +327,190 @@ assert.equal(
     corrupted.widgets.find((widget) => widget.name === "attention_backend")?.value,
     "comfy_kitchen_int8",
 );
+
+class MockReferenceNode {
+    constructor() {
+        this.type = "MiniMaxH3ReferenceVideoLoadStar7";
+        this.comfyClass = this.type;
+        this.size = [420, 500];
+        const videoEl = {
+            tagName: "VIDEO",
+            style: {},
+            listeners: {},
+            addEventListener(name, callback) { this.listeners[name] = callback; },
+        };
+        const imgEl = {
+            tagName: "IMG",
+            style: {},
+            listeners: {},
+            addEventListener(name, callback) { this.listeners[name] = callback; },
+        };
+        const previewClasses = new Set();
+        const previewSurface = {
+            style: {},
+            classList: {
+                add(name) { previewClasses.add(name); },
+                contains(name) { return previewClasses.has(name); },
+            },
+        };
+        const previewElement = {
+            hidden: false,
+            style: {},
+            parentElement: previewSurface,
+            classList: {
+                add(name) { previewClasses.add(name); },
+                contains(name) { return previewClasses.has(name); },
+            },
+            closest(selector) { return selector === ".dom-widget" ? previewSurface : null; },
+            querySelectorAll(selector) { return selector === "video, img" ? [videoEl, imgEl] : []; },
+        };
+        this.previewClasses = previewClasses;
+        this.previewSurface = previewSurface;
+        this.previewElement = previewElement;
+        this.videoEl = videoEl;
+        this.imgEl = imgEl;
+        this.widgets = [
+            { type: "combo", name: "video", value: "reference.mp4" },
+            { type: "number", name: "max_long_edge", value: 720 },
+            { type: "toggle", name: "allow_upscale", value: false },
+            { type: "toggle", name: "trim_enabled", value: false },
+            { type: "number", name: "trim_start_seconds", value: 0.0 },
+            { type: "number", name: "trim_end_seconds", value: 0.0 },
+            {
+                type: "preview",
+                name: "video-preview",
+                element: previewElement,
+                computeSize(width) { return [width, 260]; },
+            },
+        ];
+    }
+
+    onNodeCreated() {}
+
+    configure(info) {
+        if (Array.isArray(info.size)) this.size = [...info.size];
+        info.widgets_values?.forEach((value, index) => {
+            if (this.widgets[index]) this.widgets[index].value = value;
+        });
+    }
+
+    computeSize(minimum = [0, 0]) {
+        const widgetHeight = this.widgets.reduce((total, widget) => {
+            const computed = widget.computeSize?.();
+            const layout = !computed ? widget.computeLayoutSize?.(this) : null;
+            return total + (computed ? computed[1] : (layout?.minHeight ?? 24)) + 4;
+        }, 0);
+        return [
+            Math.max(Number(minimum?.[0]) || 0, 320),
+            Math.max(Number(minimum?.[1]) || 0, 80 + widgetHeight),
+        ];
+    }
+
+    setSize(size) {
+        this.size = [...size];
+        this.onResize?.(this.size);
+    }
+
+    resizeFromCanvas(size) {
+        const minimum = this.computeSize();
+        this.setSize([
+            Math.max(size[0], minimum[0]),
+            Math.max(size[1], minimum[1]),
+        ]);
+    }
+}
+
+const referenceNodeData = {
+    name: "MiniMaxH3ReferenceVideoLoadStar7",
+    input: {
+        required: {
+            video: [["reference.mp4"], {}],
+            max_long_edge: ["INT", {}],
+            allow_upscale: ["BOOLEAN", {}],
+            trim_enabled: ["BOOLEAN", {}],
+            trim_start_seconds: ["FLOAT", {}],
+            trim_end_seconds: ["FLOAT", {}],
+        },
+    },
+};
+await extension.beforeRegisterNodeDef(MockReferenceNode, referenceNodeData);
+const lateReferenceNode = new MockReferenceNode();
+const latePreviewWidget = lateReferenceNode.widgets.pop();
+lateReferenceNode.onNodeCreated();
+assert.equal(lateReferenceNode.previewSurface.style.pointerEvents, undefined);
+lateReferenceNode.widgets.push(latePreviewWidget);
+lateReferenceNode.onDrawBackground();
+assert.equal(lateReferenceNode.previewSurface.style.pointerEvents, "none");
+const referenceNode = new MockReferenceNode();
+referenceNode.onNodeCreated();
+assert.equal(referenceNode.title, "参考视频载入 - Star7");
+assert.equal(referenceNodeData.input.required.trim_enabled[1].label_on, "开启");
+assert.equal(referenceNodeData.input.required.trim_enabled[1].label_off, "关闭");
+assert.match(
+    referenceNode.widgets.find((widget) => widget.name === "trim_start_seconds").type,
+    /^converted-widget/,
+);
+const collapsedHeight = referenceNode.size[1];
+const previewWidget = referenceNode.widgets.find(
+    (widget) => widget.name === "video-preview",
+);
+assert.equal(previewWidget.computeSize, undefined);
+assert.equal(previewWidget.computeLayoutSize(referenceNode).minHeight, 120);
+const collapsedMinimumHeight = referenceNode.computeSize()[1];
+assert.ok(collapsedMinimumHeight < referenceNode.size[1]);
+const trimToggle = referenceNode.widgets.find((widget) => widget.name === "trim_enabled");
+trimToggle.value = true;
+trimToggle.callback(true);
+assert.equal(
+    referenceNode.widgets.find((widget) => widget.name === "trim_start_seconds").type,
+    "number",
+);
+assert.equal(referenceNode.size[1], collapsedHeight);
+assert.ok(referenceNode.computeSize()[1] > collapsedMinimumHeight);
+assert.ok(referenceNode.computeSize()[1] < referenceNode.size[1]);
+assert.equal(referenceNode.videoEl.style.objectFit, "contain");
+assert.equal(referenceNode.previewSurface.style.pointerEvents, "none");
+assert.equal(referenceNode.videoEl.style.pointerEvents, "auto");
+assert.equal(referenceNode.imgEl.style.pointerEvents, "none");
+assert.equal(referenceNode.previewElement.style.paddingRight, "10px");
+assert.equal(referenceNode.previewElement.style.paddingBottom, "10px");
+assert.ok(referenceNode.previewClasses.has("star7-reference-preview-pass-through"));
+context.applyReferenceVideoDuration(referenceNode, 20.2, true);
+assert.equal(referenceNode.widgets.find((widget) => widget.name === "trim_start_seconds").value, 0);
+assert.equal(referenceNode.widgets.find((widget) => widget.name === "trim_end_seconds").value, 20.2);
+referenceNode.widgets.find((widget) => widget.name === "trim_start_seconds").value = 12.0;
+referenceNode.widgets.find((widget) => widget.name === "trim_start_seconds").callback?.(12.0);
+assert.equal(referenceNode.widgets.find((widget) => widget.name === "trim_end_seconds").value, 20.2);
+referenceNode.configure({
+    size: [560, 640],
+    widgets_values: ["reference.mp4", 1344, false, false, 2.0, 9.0],
+});
+assert.deepEqual(referenceNode.size, [560, 640]);
+assert.equal(referenceNode.widgets.find((widget) => widget.name === "max_long_edge").value, 1344);
+assert.equal(referenceNode.widgets.find((widget) => widget.name === "trim_end_seconds").value, 9.0);
+assert.match(
+    referenceNode.widgets.find((widget) => widget.name === "trim_end_seconds").type,
+    /^converted-widget/,
+);
+referenceNode.configure({
+    size: [560, 640],
+    widgets_values: ["reference.mp4", 1344, false, true, 2.0, 9.0],
+});
+assert.equal(
+    referenceNode.widgets.find((widget) => widget.name === "trim_start_seconds").type,
+    "number",
+);
+assert.deepEqual(referenceNode.size, [560, 640]);
+referenceNode.resizeFromCanvas([400, 420]);
+assert.deepEqual(referenceNode.size, [400, 420]);
+referenceNode.resizeFromCanvas([700, 1100]);
+assert.deepEqual(referenceNode.size, [700, 1100]);
+referenceNode.resizeFromCanvas([700, 720]);
+assert.deepEqual(referenceNode.size, [700, 720]);
+assert.deepEqual([...referenceNode.__star7ReferenceFrameSize], [700, 720]);
+referenceNode.videoEl.listeners.loadedmetadata();
+referenceNode.resizeFromCanvas([700, 1100]);
+await Promise.resolve();
+assert.deepEqual(referenceNode.size, [700, 720]);
+assert.deepEqual([...referenceNode.__star7ReferenceFrameSize], [700, 720]);
 console.log("Runtime status localization and workflow restore tests passed");

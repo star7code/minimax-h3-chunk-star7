@@ -1048,33 +1048,19 @@ def test_new_activation_chunk_defaults_are_architecture_safe():
     required = chunk_nodes.MiniMaxH3ActivationChunkStar7.INPUT_TYPES()["required"]
     assert required["chunk_tokens"][1]["default"] == 8192
     assert required["mlp_chunk_tokens"][1]["default"] == 8192
-    expected_qkv = (
-        4096
-        if torch.cuda.is_available() and torch.cuda.get_device_capability() == (7, 5)
-        else 8192
-    )
-    assert required["qkv_chunk_tokens"][1]["default"] == expected_qkv
+    assert required["qkv_chunk_tokens"][1]["default"] == 8192
 
 
-def test_sm75_qkv_quality_cap_is_architecture_isolated():
-    assert chunk_nodes._quality_limited_qkv_chunk(8192, (7, 5)) == (4096, True)
-    assert chunk_nodes._quality_limited_qkv_chunk(0, (7, 5)) == (4096, True)
-    assert chunk_nodes._quality_limited_qkv_chunk(2048, (7, 5)) == (2048, False)
-    for capability in ((8, 0), (8, 6), (8, 9), (12, 0), None):
-        assert chunk_nodes._quality_limited_qkv_chunk(8192, capability) == (8192, False)
-        assert chunk_nodes._quality_limited_qkv_chunk(0, capability) == (0, False)
-
-
-def test_sm75_qkv_resident_reuse_includes_explicit_4096_and_smaller():
+def test_sm75_qkv_resident_reuse_supports_configured_tiles():
     original_capability = torch.cuda.get_device_capability
     original_config = dict(chunk_nodes._CONFIG)
     fake_cuda_tensor = SimpleNamespace(device=torch.device("cuda"))
     try:
         torch.cuda.get_device_capability = lambda _device=None: (7, 5)
-        for effective in (4096, 2048):
+        for effective in (8192, 4096, 2048):
             chunk_nodes._CONFIG["effective_qkv_chunk_tokens"] = effective
             assert chunk_nodes._sm75_qkv_reuse_path(fake_cuda_tensor) is True
-        chunk_nodes._CONFIG["effective_qkv_chunk_tokens"] = 8192
+        chunk_nodes._CONFIG["effective_qkv_chunk_tokens"] = 0
         assert chunk_nodes._sm75_qkv_reuse_path(fake_cuda_tensor) is False
         torch.cuda.get_device_capability = lambda _device=None: (8, 0)
         chunk_nodes._CONFIG["effective_qkv_chunk_tokens"] = 4096
@@ -1107,7 +1093,7 @@ def test_reference_image_uses_long_edge_controls():
     assert "允许小图放大" in inputs
     assert "缩放算法" not in inputs
     assert "scale_by" not in inputs
-    assert inputs["最长边"][1]["default"] == 1024
+    assert inputs["最长边"][1]["default"] == 1280
     assert inputs["最长边"][1]["min"] == 0
     assert inputs["允许小图放大"][1]["default"] is False
     assert chunk_nodes._normalize_reference_max_long_edge(0) == 0
@@ -1117,15 +1103,43 @@ def test_reference_image_uses_long_edge_controls():
 
 def test_reference_video_frame_count_is_h3_aligned():
     assert chunk_nodes._align_h3_reference_frame_count(360) == 345
+    assert chunk_nodes._align_h3_reference_frame_count(480) == 464
     assert chunk_nodes._align_h3_reference_frame_count(205) == 192
     assert chunk_nodes._align_h3_reference_frame_count(5) == 5
+
+
+def test_reference_video_trim_defaults_and_window_are_compact():
+    inputs = chunk_nodes.MiniMaxH3ReferenceVideoLoadStar7.INPUT_TYPES()["required"]
+    assert inputs["trim_enabled"][1]["default"] is False
+    assert inputs["trim_start_seconds"][1]["default"] == 0.0
+    assert inputs["trim_end_seconds"][1]["default"] == 0.0
+    assert inputs["trim_end_seconds"][1]["max"] == 86400.0
+    assert inputs["max_long_edge"][1]["default"] == 720
+    assert inputs["max_long_edge"][1]["min"] == 0
+    assert chunk_nodes._normalize_reference_trim(False, 7.0, 9.0, 20.2) == (0.0, 20.2)
+    assert chunk_nodes._normalize_reference_trim(True, 7.0, 9.0, 20.2) == (7.0, 2.0)
+    assert chunk_nodes._normalize_reference_trim(True, -2.0, 99.0, 8.0) == (0.0, 8.0)
+    start, duration = chunk_nodes._normalize_reference_trim(True, 12.0, 20.2, 20.2)
+    assert start == 12.0
+    assert abs(duration - 8.2) < 1e-6
+
+
+def test_reference_video_and_audio_share_the_same_trim_window():
+    args = chunk_nodes._reference_media_input_args("reference.mp4", 4.2, 9.0)
+    assert args == ["-ss", "4.2", "-i", "reference.mp4", "-t", "9"]
+    command = chunk_nodes._reference_audio_decode_command(
+        "ffmpeg", "reference.mp4", 44100, 4.2, 9.0,
+    )
+    assert command[command.index("-ss") + 1] == "4.2"
+    assert command[command.index("-t") + 1] == "9"
+    assert command.index("-ss") < command.index("-i")
 
 
 def test_reference_audio_keeps_source_duration_instead_of_frame_grid_trim():
     command = chunk_nodes._reference_audio_decode_command(
         "ffmpeg", "reference.mp4", 44100,
     )
-    assert command[command.index("-t") + 1] == "15"
+    assert "-t" not in command
     assert command[command.index("-ar") + 1] == "44100"
     assert "17n+5" not in " ".join(command)
 
@@ -1519,13 +1533,14 @@ if __name__ == "__main__":
     test_qkv_zero_prefers_full_then_learns_oom_chunk()
     test_legacy_node_alias_is_deprecated()
     test_new_activation_chunk_defaults_are_architecture_safe()
-    test_sm75_qkv_quality_cap_is_architecture_isolated()
-    test_sm75_qkv_resident_reuse_includes_explicit_4096_and_smaller()
+    test_sm75_qkv_resident_reuse_supports_configured_tiles()
     test_reference_video_loader_is_registered()
     test_reference_video_long_edge_limit_preserves_orientation()
     test_reference_video_long_edge_upscale_is_explicit()
     test_reference_image_uses_long_edge_controls()
     test_reference_video_frame_count_is_h3_aligned()
+    test_reference_video_trim_defaults_and_window_are_compact()
+    test_reference_video_and_audio_share_the_same_trim_window()
     test_reference_audio_keeps_source_duration_instead_of_frame_grid_trim()
     test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse()
     test_install_preserves_upstream_block_patch()

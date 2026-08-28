@@ -40,7 +40,7 @@ const TEXT = {
             auto_halve_on_oom: "Retries only the failing RoPE, MLP, or QKV stage with a smaller chunk. It cannot reduce model weights, attention buffers, or other fixed allocations.",
             verbose: "Shows actual chunk sizes, automatic reductions, and active QKV/MLP weight modes in the console.",
             mlp_chunk_tokens: "0 tries full-sequence MLP first. With automatic reduction enabled, an MLP VRAM error is retried with a smaller chunk. Otherwise this is the main VRAM control.",
-            qkv_chunk_tokens: "On SM75, 0 or values above 4096 run at the speech-stable 4096 quality cap. SM80+ follows the requested value. A QKV projection VRAM error can still reduce only this stage further.",
+            qkv_chunk_tokens: "Controls the temporary QKV projection workspace. 0 tries the full sequence first; with automatic reduction enabled, only a QKV projection VRAM error reduces this stage.",
             disable_dynamic_prefetch: "Legacy workflow field only. This experimental feature has been removed and is always disabled.",
             reuse_mlp_weights: "Reuses isolated QKV/MLP weight snapshots across token chunks. Falls back safely if a snapshot runs out of VRAM.",
             attention_backend: "Select the incoming backend, CK INT8, or the matching SM75/SM80+ SLA, Sol, or Hybrid path. Architecture-specific sparse modes stop on failure instead of substituting another backend. All-INT8 prioritizes throughput and should be quality-tested for the target workflow.",
@@ -48,7 +48,6 @@ const TEXT = {
         current: (label, value) => `${label} in use: ${value} (configured)`,
         limited: (label, value, configured) => `${label} in use: ${value} (set ${configured}, limited by video size)`,
         reduced: (label, value, configured) => `${label} auto-reduced to: ${value} (set ${configured})`,
-        qualityLimited: (label, value, configured) => `${label} quality cap: ${value} (SM75 speech stability; set ${configured})`,
         full: (label) => `${label}: full sequence (no fixed chunk)`,
         reducedFromFull: (label, value) => `${label} auto-reduced from full sequence to: ${value}`,
         rope: "RoPE",
@@ -62,7 +61,7 @@ const TEXT = {
             auto_halve_on_oom: "显存不足时自动降档",
             verbose: "显示运行详情",
             mlp_chunk_tokens: "MLP 分块大小（主要显存调节）",
-            qkv_chunk_tokens: "QKV 分块大小",
+            qkv_chunk_tokens: "QKV 分块大小（参考显存调节）",
             disable_dynamic_prefetch: "提前加载下一层（实验功能已移除）",
             reuse_mlp_weights: "复用分块权重（提速）",
             attention_backend: "注意力计算方式",
@@ -72,7 +71,7 @@ const TEXT = {
             auto_halve_on_oom: "只缩小发生显存不足的 RoPE、MLP 或 QKV 阶段并重试；模型权重、注意力固定缓冲等显存不会被误降。",
             verbose: "在控制台显示实际分块、是否自动降档以及 QKV/MLP 权重加速方式。",
             mlp_chunk_tokens: "设为 0 会先尝试整段 MLP；开启自动降档后，只有 MLP 显存不足才缩小重试。它仍是主要显存调节项。",
-            qkv_chunk_tokens: "SM75 上，0 或高于 4096 的设定会按语音稳定值 4096 运行；SM80+ 按设定值运行。QKV 投影显存不足时仍只会继续降低这一阶段。",
+            qkv_chunk_tokens: "调节 QKV 投影的临时显存。设为 0 会先尝试整段计算；开启自动降档后，只有 QKV 投影显存不足才降低这一阶段。",
             disable_dynamic_prefetch: "仅为兼容旧工作流保留，不再参与计算，功能始终关闭。",
             reuse_mlp_weights: "在 token 块之间复用独立 QKV/MLP 权重快照；快照显存不足时自动切换安全流式路径。",
             attention_backend: "可选择传入模型已有后端、CK INT8，或与显卡架构对应的 SM75/SM80+ SLA、Sol、Hybrid 路径。架构专用稀疏模式失败时终止，不替换为其他后端；All-INT8 侧重吞吐，建议按目标工作流验证质量。",
@@ -80,7 +79,6 @@ const TEXT = {
         current: (label, value) => `${label} 实际使用：${value}（设定值）`,
         limited: (label, value, configured) => `${label} 实际使用：${value}（设定 ${configured}，视频规模只需要这么多）`,
         reduced: (label, value, configured) => `${label} 已自动降为：${value}（原设定 ${configured}）`,
-        qualityLimited: (label, value, configured) => `${label} 质量保护：${value}（SM75 语音稳定；原设定 ${configured}）`,
         full: (label) => `${label}：整段计算（未固定分块）`,
         reducedFromFull: (label, value) => `${label} 已从整段自动降为：${value}`,
         rope: "RoPE",
@@ -95,6 +93,9 @@ const REFERENCE_LOAD_TEXT = {
             video: "Reference video",
             max_long_edge: "Maximum long edge",
             allow_upscale: "Allow small video upscale",
+            trim_enabled: "Trim reference range",
+            trim_start_seconds: "Start time (seconds)",
+            trim_end_seconds: "End time (seconds)",
         },
         outputs: ["reference video", "reference audio", "frame count", "report"],
     },
@@ -104,6 +105,9 @@ const REFERENCE_LOAD_TEXT = {
             video: "参考视频",
             max_long_edge: "最长边限制",
             allow_upscale: "允许小视频放大",
+            trim_enabled: "裁切视频范围",
+            trim_start_seconds: "开始时间（秒）",
+            trim_end_seconds: "结束时间（秒）",
         },
         outputs: ["参考视频画面", "参考视频音频", "帧数", "报告"],
     },
@@ -112,12 +116,20 @@ const REFERENCE_LOAD_TEXT = {
 const IMAGE_LOAD_SCALE_TEXT = {
     en: {
         title: "Reference Image Load - Star7",
-        labels: { image: "Image", upscale_method: "Scale method", scale_by: "Scale factor" },
+        labels: {
+            image: "Image",
+            "最长边": "Maximum long edge",
+            "允许小图放大": "Allow small image upscale",
+        },
         outputs: ["image", "mask"],
     },
     zh: {
         title: "参考图像载入 - Star7",
-        labels: { image: "图片", upscale_method: "缩放算法", scale_by: "缩放系数" },
+        labels: {
+            image: "图片",
+            "最长边": "最长边限制",
+            "允许小图放大": "允许小图放大",
+        },
         outputs: ["图片", "遮罩"],
     },
 };
@@ -150,6 +162,491 @@ function localizeReferenceLoadNode(node) {
     });
 }
 
+function setCompactWidgetVisible(widget, visible) {
+    if (!widget) return;
+    if (!("__star7OriginalType" in widget)) {
+        widget.__star7OriginalType = widget.type;
+        widget.__star7OriginalComputeSize = widget.computeSize;
+        widget.__star7OriginalComputedHeight = widget.computedHeight;
+    }
+    if (visible) {
+        widget.type = widget.__star7OriginalType;
+        if (widget.__star7OriginalComputeSize === undefined) {
+            delete widget.computeSize;
+        } else {
+            widget.computeSize = widget.__star7OriginalComputeSize;
+        }
+        widget.computedHeight = widget.__star7OriginalComputedHeight;
+    } else {
+        // Keep the widget in node.widgets so prompt/workflow serialization
+        // remains positional; collapse only its canvas layout and drawing.
+        widget.type = "converted-widget:star7-trim";
+        widget.computeSize = () => [0, -4];
+        widget.computedHeight = 0;
+    }
+    for (const key of ["element", "inputEl"]) {
+        if (widget[key]?.style) widget[key].style.display = visible ? "" : "none";
+    }
+}
+
+function refreshReferenceTrimControls(node) {
+    const toggle = node.widgets?.find((widget) => widget.name === "trim_enabled");
+    const start = node.widgets?.find((widget) => widget.name === "trim_start_seconds");
+    const end = node.widgets?.find((widget) => widget.name === "trim_end_seconds");
+    if (!toggle || !start || !end) return;
+    const visible = toggle.value === true || toggle.value === 1 || toggle.value === "true";
+    setCompactWidgetVisible(start, visible);
+    setCompactWidgetVisible(end, visible);
+    node.setDirtyCanvas?.(true, true);
+}
+
+const REFERENCE_PREVIEW_MIN_WIDTH = 320;
+const REFERENCE_PREVIEW_MIN_HEIGHT = 120;
+const REFERENCE_PREVIEW_WIDGET_NAMES = new Set([
+    "video-preview",
+    "$$comfy_animation_preview",
+    "videopreview",
+]);
+const REFERENCE_PREVIEW_PASS_THROUGH_CLASS = "star7-reference-preview-pass-through";
+
+function referencePreviewElements(preview) {
+    const previewElement = preview?.element ?? preview?.parentEl;
+    const previewRoot = preview?.element?.closest?.(".dom-widget")
+        ?? preview?.parentEl?.parentElement
+        ?? previewElement?.parentElement;
+    const media = [
+        preview?.videoEl,
+        preview?.imgEl,
+        ...Array.from(preview?.element?.querySelectorAll?.("video, img") ?? []),
+    ].filter(Boolean);
+    return {
+        previewElement,
+        previewRoot,
+        media: [...new Set(media)],
+    };
+}
+
+function installReferencePreviewPassThroughStyle() {
+    if (
+        typeof document === "undefined"
+        || !document.head?.appendChild
+        || !document.createElement
+        || document.getElementById?.("star7-reference-preview-pass-through-style")
+    ) return;
+    const style = document.createElement("style");
+    style.id = "star7-reference-preview-pass-through-style";
+    style.textContent = `
+        .${REFERENCE_PREVIEW_PASS_THROUGH_CLASS} {
+            pointer-events: none !important;
+            user-select: none !important;
+        }
+        .${REFERENCE_PREVIEW_PASS_THROUGH_CLASS} video {
+            pointer-events: auto !important;
+        }
+    `;
+    document.head.appendChild(style);
+}
+
+function withReferencePreviewCollapsed(node, preview, callback) {
+    const computeSize = preview.computeSize;
+    const computedHeight = preview.computedHeight;
+    // Keep the widget row's normal layout gap while measuring all non-preview
+    // chrome. The returned preview height can then fill the exact remainder.
+    preview.computeSize = (width) => [width, 0];
+    preview.computedHeight = 0;
+    try {
+        return callback();
+    } finally {
+        preview.computeSize = computeSize;
+        preview.computedHeight = computedHeight;
+    }
+}
+
+function withReferenceTrimExpanded(node, callback) {
+    const widgets = ["trim_start_seconds", "trim_end_seconds"]
+        .map((name) => node.widgets?.find((widget) => widget.name === name))
+        .filter(Boolean);
+    const state = widgets.map((widget) => ({
+        widget,
+        type: widget.type,
+        computeSize: widget.computeSize,
+        computedHeight: widget.computedHeight,
+    }));
+    for (const widget of widgets) {
+        widget.type = widget.__star7OriginalType ?? widget.type;
+        if (widget.__star7OriginalComputeSize === undefined) {
+            delete widget.computeSize;
+        } else {
+            widget.computeSize = widget.__star7OriginalComputeSize;
+        }
+        widget.computedHeight = widget.__star7OriginalComputedHeight;
+    }
+    try {
+        return callback();
+    } finally {
+        for (const item of state) {
+            item.widget.type = item.type;
+            item.widget.computeSize = item.computeSize;
+            item.widget.computedHeight = item.computedHeight;
+        }
+    }
+}
+
+function referencePreviewChromeHeight(node, preview, width, expandedTrim = false) {
+    const calculate = () => withReferencePreviewCollapsed(
+        node,
+        preview,
+        // LiteGraph treats the second value passed to computeSize as a
+        // requested minimum.  Passing the restored node height here makes a
+        // saved instance permanently unable to shrink after reopening.
+        () => Number(node.computeSize?.([width, 0])?.[1]) || 0,
+    );
+    return expandedTrim ? withReferenceTrimExpanded(node, calculate) : calculate();
+}
+
+function referencePreviewMinimumSize(node, preview) {
+    const width = Math.max(REFERENCE_PREVIEW_MIN_WIDTH, Number(node.size?.[0]) || 0);
+    const chromeHeight = referencePreviewChromeHeight(node, preview, width, true);
+    return [REFERENCE_PREVIEW_MIN_WIDTH, chromeHeight + REFERENCE_PREVIEW_MIN_HEIGHT];
+}
+
+function clampReferencePreviewSize(node, preview) {
+    if (!Array.isArray(node.size)) return;
+    const minimum = referencePreviewMinimumSize(node, preview);
+    const width = Math.max(minimum[0], Number(node.size[0]) || minimum[0]);
+    const height = Math.max(minimum[1], Number(node.size[1]) || minimum[1]);
+    if (width !== node.size[0] || height !== node.size[1]) {
+        node.setSize?.([width, height]);
+    }
+}
+
+function rememberReferenceFrameSize(node) {
+    if (!Array.isArray(node.size)) return;
+    node.__star7ReferenceFrameSize = [
+        Number(node.size[0]) || REFERENCE_PREVIEW_MIN_WIDTH,
+        Number(node.size[1]) || REFERENCE_PREVIEW_MIN_HEIGHT,
+    ];
+}
+
+function installReferenceMediaSizeGuard(node, preview) {
+    const preserveFrame = () => {
+        if (!Array.isArray(node.__star7ReferenceFrameSize)) {
+            rememberReferenceFrameSize(node);
+        }
+        node.__star7ReferenceMediaSizing = true;
+        Promise.resolve().then(() => {
+            const size = node.__star7ReferenceFrameSize;
+            if (Array.isArray(size)) node.setSize?.([...size]);
+            node.__star7ReferenceMediaSizing = false;
+            node.setDirtyCanvas?.(true, true);
+        });
+    };
+    for (const element of referencePreviewElements(preview).media) {
+        if (element.__star7MediaSizeGuardInstalled) continue;
+        element.__star7MediaSizeGuardInstalled = true;
+        const isVideo = String(element.tagName ?? "").toLowerCase() === "video"
+            || element === preview.videoEl;
+        element.addEventListener?.(isVideo ? "loadedmetadata" : "load", preserveFrame, true);
+    }
+}
+
+function referencePreviewWidget(node) {
+    return node.widgets?.find((widget) => REFERENCE_PREVIEW_WIDGET_NAMES.has(widget.name));
+}
+
+function installReferencePreviewLayout(node) {
+    const preview = referencePreviewWidget(node);
+    if (!preview) return false;
+    if (!Array.isArray(node.__star7ReferenceFrameSize)) {
+        rememberReferenceFrameSize(node);
+    }
+    installReferenceMediaSizeGuard(node, preview);
+    if (!preview.__star7FixedFrameLayout) {
+        preview.__star7FixedFrameLayout = true;
+        preview.__star7OriginalComputeSize = preview.computeSize;
+        preview.__star7OriginalComputeLayoutSize = preview.computeLayoutSize;
+        // A computeSize tied to node.size becomes LiteGraph's current minimum
+        // on every resize, so a taller node can never shrink again. Use the
+        // flexible layout API: 120px is the minimum, while the preview receives
+        // all remaining body height during normal layout.
+        preview.computeSize = undefined;
+        preview.computeLayoutSize = () => ({
+            minHeight: REFERENCE_PREVIEW_MIN_HEIGHT,
+            maxHeight: 1_000_000,
+            minWidth: 0,
+            maxWidth: 1_000_000,
+        });
+    }
+
+    // Keep the DOM wrapper transparent to LiteGraph, while allowing the video
+    // itself to receive native playback-control events. A small bottom/right
+    // gutter leaves the canvas resize handle reachable after media is loaded.
+    installReferencePreviewPassThroughStyle();
+    const { previewElement, previewRoot, media } = referencePreviewElements(preview);
+    for (const element of [previewRoot, previewElement, ...media]) {
+        if (!element?.style) continue;
+        element.classList?.add?.(REFERENCE_PREVIEW_PASS_THROUGH_CLASS);
+        element.style.pointerEvents = "none";
+        element.style.userSelect = "none";
+    }
+
+    if (previewElement?.style) {
+        previewElement.style.width = "100%";
+        previewElement.style.height = "100%";
+        previewElement.style.boxSizing = "border-box";
+        previewElement.style.paddingRight = "10px";
+        previewElement.style.paddingBottom = "10px";
+        previewElement.style.overflow = "hidden";
+        previewElement.style.display = "flex";
+        previewElement.style.alignItems = "center";
+        previewElement.style.justifyContent = "center";
+    }
+    for (const element of media) {
+        if (!element?.style) continue;
+        const isVideo = String(element.tagName ?? "").toLowerCase() === "video"
+            || element === preview.videoEl;
+        element.style.pointerEvents = isVideo ? "auto" : "none";
+        element.style.width = "100%";
+        element.style.height = "100%";
+        element.style.maxWidth = "100%";
+        element.style.maxHeight = "100%";
+        element.style.objectFit = "contain";
+    }
+
+    if (!node.__star7ReferenceResizeInstalled) {
+        node.__star7ReferenceResizeInstalled = true;
+        const originalResize = node.onResize;
+        node.onResize = function (size) {
+            const requested = Array.isArray(size)
+                ? [Number(size[0]), Number(size[1])]
+                : [Number(this.size?.[0]), Number(this.size?.[1])];
+            const target = this.__star7ReferenceMediaSizing
+                ? this.__star7ReferenceFrameSize
+                : requested;
+            const result = originalResize?.apply(this, arguments);
+            const minimum = referencePreviewMinimumSize(this, preview);
+            const width = Math.max(minimum[0], Number(target?.[0]) || minimum[0]);
+            const height = Math.max(minimum[1], Number(target?.[1]) || minimum[1]);
+            if (Array.isArray(this.size)) {
+                this.size[0] = width;
+                this.size[1] = height;
+            }
+            if (Array.isArray(size)) {
+                size[0] = width;
+                size[1] = height;
+            }
+            if (!this.__star7ReferenceMediaSizing) {
+                this.__star7ReferenceFrameSize = [width, height];
+            }
+            this.setDirtyCanvas?.(true, true);
+            return result;
+        };
+    }
+    clampReferencePreviewSize(node, preview);
+    node.setDirtyCanvas?.(true, true);
+    return Boolean(previewRoot);
+}
+
+function installReferencePreviewWatcher(node) {
+    if (node.__star7ReferencePreviewWatcherInstalled) return;
+    node.__star7ReferencePreviewWatcherInstalled = true;
+    const originalDrawBackground = node.onDrawBackground;
+    function star7ReferencePreviewWatcher() {
+        const result = originalDrawBackground?.apply(this, arguments);
+        const preview = referencePreviewWidget(this);
+        const root = preview ? referencePreviewElements(preview).previewRoot : null;
+        if (!root?.classList?.contains?.(REFERENCE_PREVIEW_PASS_THROUGH_CLASS)) {
+            if (!installReferencePreviewLayout(this)) return result;
+        }
+        if (this.onDrawBackground === star7ReferencePreviewWatcher) {
+            this.onDrawBackground = originalDrawBackground;
+        }
+        this.__star7ReferencePreviewWatcherInstalled = false;
+        return result;
+    }
+    node.onDrawBackground = star7ReferencePreviewWatcher;
+}
+
+function refreshReferenceVideoLayout(node) {
+    refreshReferenceTrimControls(node);
+    installReferencePreviewLayout(node);
+    node.setDirtyCanvas?.(true, true);
+}
+
+function scheduleReferenceVideoLayout(node) {
+    installReferencePreviewWatcher(node);
+    refreshReferenceVideoLayout(node);
+    const schedule = globalThis.requestAnimationFrame;
+    if (typeof schedule === "function") {
+        schedule(() => refreshReferenceVideoLayout(node));
+    }
+    // Core creates its media preview after restoring the node and loading the
+    // video. It therefore may not exist during configure or the first frame.
+    const defer = globalThis.setTimeout;
+    if (typeof defer === "function") {
+        const generation = (node.__star7ReferenceLayoutGeneration || 0) + 1;
+        node.__star7ReferenceLayoutGeneration = generation;
+        for (const delay of [50, 250, 1000, 2500]) {
+            defer(() => {
+                if (node.__star7ReferenceLayoutGeneration === generation) {
+                    refreshReferenceVideoLayout(node);
+                }
+            }, delay);
+        }
+    }
+}
+
+function applyReferenceVideoDuration(node, sourceDuration, resetRange = false) {
+    if (!Number.isFinite(sourceDuration) || sourceDuration <= 0) return;
+    const durationValue = Math.round(sourceDuration * 1000) / 1000;
+    const start = node.widgets?.find((widget) => widget.name === "trim_start_seconds");
+    const end = node.widgets?.find((widget) => widget.name === "trim_end_seconds");
+    if (!start || !end) return;
+    node.__star7ReferenceDuration = durationValue;
+    start.options ??= {};
+    end.options ??= {};
+    start.options.max = durationValue;
+    if (resetRange) start.value = 0;
+    start.value = Math.min(durationValue, Math.max(0, Number(start.value) || 0));
+    end.options.min = start.value;
+    end.options.max = durationValue;
+    if (resetRange) {
+        end.value = durationValue;
+    } else {
+        const current = Number(end.value) || durationValue;
+        end.value = Math.min(durationValue, Math.max(start.value, current));
+    }
+    node.setDirtyCanvas?.(true, true);
+}
+
+function refreshReferenceDurationLimit(node) {
+    const sourceDuration = Number(node.__star7ReferenceDuration);
+    if (!Number.isFinite(sourceDuration) || sourceDuration <= 0) return;
+    applyReferenceVideoDuration(node, sourceDuration, false);
+}
+
+function referenceVideoViewUrl(value) {
+    if (!value) return null;
+    const raw = String(value).replace(/\s*\[(?:input|output|temp)\]\s*$/i, "");
+    const normalized = raw.replaceAll("\\", "/");
+    const slash = normalized.lastIndexOf("/");
+    const filename = slash >= 0 ? normalized.slice(slash + 1) : normalized;
+    const subfolder = slash >= 0 ? normalized.slice(0, slash) : "";
+    const query = new URLSearchParams({ filename, type: "input", subfolder });
+    return api.apiURL(`/view?${query.toString()}`);
+}
+
+function probeReferenceVideoDuration(node, resetRange = false) {
+    if (typeof document === "undefined") return;
+    const videoWidget = node.widgets?.find((widget) => widget.name === "video");
+    const url = referenceVideoViewUrl(videoWidget?.value);
+    if (!url) return;
+    const requestId = (node.__star7DurationRequestId || 0) + 1;
+    node.__star7DurationRequestId = requestId;
+    const media = document.createElement("video");
+    media.preload = "metadata";
+    media.onloadedmetadata = () => {
+        if (node.__star7DurationRequestId !== requestId) return;
+        applyReferenceVideoDuration(node, Number(media.duration), resetRange);
+        media.removeAttribute("src");
+        media.load?.();
+    };
+    media.onerror = () => {
+        if (node.__star7DurationRequestId === requestId) {
+            console.warn("[Star7] Unable to read reference video duration", videoWidget?.value);
+        }
+    };
+    media.src = url;
+}
+
+function installReferenceTrimControls(node) {
+    const toggle = node.widgets?.find((widget) => widget.name === "trim_enabled");
+    const video = node.widgets?.find((widget) => widget.name === "video");
+    const start = node.widgets?.find((widget) => widget.name === "trim_start_seconds");
+    const end = node.widgets?.find((widget) => widget.name === "trim_end_seconds");
+    if (!toggle) return;
+    if (!node.__star7ReferenceTrimInstalled) {
+        node.__star7ReferenceTrimInstalled = true;
+        const originalCallback = toggle.callback;
+        toggle.callback = function () {
+            const result = originalCallback?.apply(this, arguments);
+            refreshReferenceVideoLayout(node);
+            return result;
+        };
+        const originalVideoCallback = video?.callback;
+        if (video) video.callback = function () {
+            const result = originalVideoCallback?.apply(this, arguments);
+            probeReferenceVideoDuration(node, !node.__star7Configuring);
+            return result;
+        };
+        const originalStartCallback = start?.callback;
+        if (start) start.callback = function () {
+            const result = originalStartCallback?.apply(this, arguments);
+            refreshReferenceDurationLimit(node);
+            return result;
+        };
+        const originalEndCallback = end?.callback;
+        if (end) end.callback = function () {
+            const result = originalEndCallback?.apply(this, arguments);
+            refreshReferenceDurationLimit(node);
+            return result;
+        };
+        probeReferenceVideoDuration(node, true);
+    }
+    refreshReferenceTrimControls(node);
+}
+
+function isReferenceMediaFile(file, kind) {
+    const name = String(file?.name || "").toLowerCase();
+    const mime = String(file?.type || "").toLowerCase();
+    if (kind === "video") {
+        return mime.startsWith("video/") || /\.(mp4|mov|mkv|webm|avi|m4v|wmv|flv|mpeg|mpg)$/.test(name);
+    }
+    return mime.startsWith("image/") || /\.(png|jpe?g|webp|bmp|gif|tiff?|avif)$/.test(name);
+}
+
+async function uploadReferenceMedia(node, file, kind) {
+    if (!isReferenceMediaFile(file, kind)) return false;
+    const form = new FormData();
+    form.append("image", file, file.name);
+    const response = await api.fetchApi("/upload/image", { method: "POST", body: form });
+    if (!response.ok) throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+    const uploaded = await response.json();
+    const value = uploaded.subfolder
+        ? `${uploaded.subfolder.replaceAll("\\", "/")}/${uploaded.name}`
+        : uploaded.name;
+    const widgetName = kind === "video" ? "video" : "image";
+    const widget = node.widgets?.find((item) => item.name === widgetName);
+    if (!widget) return false;
+    const values = widget.options?.values;
+    if (Array.isArray(values) && !values.includes(value)) values.push(value);
+    widget.value = value;
+    widget.callback?.(value);
+    node.graph?.setDirtyCanvas?.(true, true);
+    node.setDirtyCanvas?.(true, true);
+    return true;
+}
+
+function installReferenceMediaDrop(node, kind) {
+    if (node.__star7ReferenceMediaDropInstalled) return;
+    node.__star7ReferenceMediaDropInstalled = true;
+    const previousDragOver = node.onDragOver;
+    const previousDragDrop = node.onDragDrop;
+    node.onDragOver = function (event) {
+        if (Array.from(event?.dataTransfer?.files || []).some((file) => isReferenceMediaFile(file, kind))) return true;
+        return previousDragOver?.apply(this, arguments) ?? false;
+    };
+    node.onDragDrop = function (event) {
+        const file = Array.from(event?.dataTransfer?.files || []).find((item) => isReferenceMediaFile(item, kind));
+        if (!file) return previousDragDrop?.apply(this, arguments) ?? false;
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        event.stopImmediatePropagation?.();
+        void uploadReferenceMedia(this, file, kind).catch((error) => console.error("[Star7]", error));
+        return true;
+    };
+}
+
 function localizeImageLoadScaleNode(node) {
     const text = IMAGE_LOAD_SCALE_TEXT[language()];
     node.title = text.title;
@@ -167,9 +664,6 @@ function localizeImageLoadScaleNode(node) {
 
 function formatValue(label, effective, configured, reason = "active") {
     const text = strings();
-    if (label === "QKV" && reason === "qkv_quality_cap") {
-        return text.qualityLimited(label, effective, configured);
-    }
     if (configured === 0) {
         const stage = label.toLowerCase();
         if (reason === `${stage}_oom` && effective > 0) {
@@ -472,10 +966,14 @@ app.registerExtension({
     nodeCreated(node) {
         if (node.comfyClass === IMAGE_LOAD_SCALE_NODE_NAME || node.type === IMAGE_LOAD_SCALE_NODE_NAME) {
             localizeImageLoadScaleNode(node);
+            installReferenceMediaDrop(node, "image");
             return;
         }
         if (node.comfyClass === REFERENCE_LOAD_NODE_NAME || node.type === REFERENCE_LOAD_NODE_NAME) {
             localizeReferenceLoadNode(node);
+            installReferenceTrimControls(node);
+            scheduleReferenceVideoLayout(node);
+            installReferenceMediaDrop(node, "video");
             return;
         }
         if (NODE_NAMES.has(node.comfyClass) || NODE_NAMES.has(node.type)) {
@@ -485,10 +983,15 @@ app.registerExtension({
     loadedGraphNode(node) {
         if (node.comfyClass === IMAGE_LOAD_SCALE_NODE_NAME || node.type === IMAGE_LOAD_SCALE_NODE_NAME) {
             localizeImageLoadScaleNode(node);
+            installReferenceMediaDrop(node, "image");
             return;
         }
         if (node.comfyClass === REFERENCE_LOAD_NODE_NAME || node.type === REFERENCE_LOAD_NODE_NAME) {
             localizeReferenceLoadNode(node);
+            installReferenceTrimControls(node);
+            scheduleReferenceVideoLayout(node);
+            installReferenceMediaDrop(node, "video");
+            probeReferenceVideoDuration(node, false);
             return;
         }
         if (NODE_NAMES.has(node.comfyClass) || NODE_NAMES.has(node.type)) {
@@ -508,6 +1011,7 @@ app.registerExtension({
             nodeType.prototype.onNodeCreated = function () {
                 original?.apply(this, arguments);
                 localizeImageLoadScaleNode(this);
+                installReferenceMediaDrop(this, "image");
             };
             return;
         }
@@ -519,14 +1023,40 @@ app.registerExtension({
                 spec[1] ??= {};
                 spec[1].display_name = text.labels[name];
                 if (spec[0] === "BOOLEAN") {
-                    spec[1].label_on = language() === "zh" ? "允许" : "Allow";
-                    spec[1].label_off = language() === "zh" ? "禁止" : "Disallow";
+                    const isTrimToggle = name === "trim_enabled";
+                    spec[1].label_on = language() === "zh"
+                        ? (isTrimToggle ? "开启" : "允许")
+                        : (isTrimToggle ? "On" : "Allow");
+                    spec[1].label_off = language() === "zh"
+                        ? (isTrimToggle ? "关闭" : "禁止")
+                        : (isTrimToggle ? "Off" : "Disallow");
                 }
             }
             const original = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 original?.apply(this, arguments);
                 localizeReferenceLoadNode(this);
+                installReferenceTrimControls(this);
+                scheduleReferenceVideoLayout(this);
+                installReferenceMediaDrop(this, "video");
+            };
+
+            const originalConfigure = nodeType.prototype.configure;
+            nodeType.prototype.configure = function () {
+                this.__star7Configuring = true;
+                let result;
+                try {
+                    result = originalConfigure?.apply(this, arguments);
+                } finally {
+                    this.__star7Configuring = false;
+                }
+                localizeReferenceLoadNode(this);
+                rememberReferenceFrameSize(this);
+                installReferenceTrimControls(this);
+                scheduleReferenceVideoLayout(this);
+                installReferenceMediaDrop(this, "video");
+                probeReferenceVideoDuration(this, false);
+                return result;
             };
             return;
         }
@@ -581,6 +1111,8 @@ app.registerExtension({
                 }
                 if (node.comfyClass === REFERENCE_LOAD_NODE_NAME || node.type === REFERENCE_LOAD_NODE_NAME) {
                     localizeReferenceLoadNode(node);
+                    installReferenceTrimControls(node);
+                    scheduleReferenceVideoLayout(node);
                     node.setDirtyCanvas?.(true, true);
                     continue;
                 }

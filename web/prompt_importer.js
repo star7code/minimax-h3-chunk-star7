@@ -235,44 +235,8 @@ function install(node) {
     });
 }
 
-function nodeAtDrop(event) {
-    const canvas = app.canvas;
-    const point = canvas?.convertEventToCanvasOffset?.(event) || canvas?.graph_mouse;
-    if (!point) return null;
-    if (canvas.graph?.getNodeOnPos) return canvas.graph.getNodeOnPos(point[0], point[1]);
-    return [...(canvas.graph?._nodes || [])].reverse().find((node) =>
-        point[0] >= node.pos[0] && point[0] <= node.pos[0] + node.size[0]
-        && point[1] >= node.pos[1] && point[1] <= node.pos[1] + node.size[1]
-    ) || null;
-}
-
-function installGlobalDrop() {
-    if (window._star7ChunkPromptDropInstalled) return;
-    window._star7ChunkPromptDropInstalled = true;
-    document.addEventListener("dragover", (event) => {
-        const file = Array.from(event.dataTransfer?.files || []).find(supported);
-        const node = file ? nodeAtDrop(event) : null;
-        if (node?.comfyClass === NODE_NAME) {
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "copy";
-        }
-    }, true);
-    document.addEventListener("drop", (event) => {
-        const file = Array.from(event.dataTransfer?.files || []).find(supported);
-        const node = file ? nodeAtDrop(event) : null;
-        if (node?.comfyClass !== NODE_NAME || !node._star7PromptImport) return;
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        void importFile(node, node._star7PromptImport.promptWidget, node._star7PromptImport.candidateButton, file);
-    }, true);
-}
-
 app.registerExtension({
     name: "Star7.MiniMaxH3.LightPromptImport",
-    setup() {
-        installGlobalDrop();
-    },
     beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData?.name !== NODE_NAME) return;
         const previous = nodeType.prototype.onNodeCreated;

@@ -114,10 +114,10 @@ Activation chunking does not reduce theoretical FLOPs. If a workload already fit
 | 12–16GB | 8192 | 1024–2048 | 1024–2048 |
 | below 12GB | 4096–8192 | 512–1024 | 512–1024 |
 
-These are initial tuning ranges rather than capacity guarantees. SM75 applies a
-speech-stability ceiling of 4096 to QKV; SM80+ does not apply that ceiling.
-Next-block prefetch has been removed and is always disabled, so it is no longer
-a tuning control.
+These are initial tuning ranges rather than capacity guarantees. QKV follows the
+configured value on every architecture and only decreases after an actual QKV
+projection OOM when automatic fallback is enabled. Next-block prefetch has been
+removed and is always disabled, so it is no longer a tuning control.
 
 ## Memory observation
 

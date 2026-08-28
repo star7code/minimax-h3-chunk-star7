@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Removed the former SM75 QKV `4096` cap. QKV now follows the configured value
+  for every architecture and generation type, and only decreases after an
+  actual QKV projection OOM when automatic fallback is enabled.
+- Clarified the QKV control as the reference-memory adjustment in the node UI.
+
+- Added an optional compact time-range control to `参考视频载入 - Star7`.
+  It reads the selected file's real duration, refreshes when the video changes,
+  and applies the same uncapped time window to picture and source audio.
+
 - Reorganized the release documentation around the current feature set:
   independent QKV/RoPE/MLP chunking followed by selectable CK, SLA, Sol, and
   Hybrid attention. Removed obsolete prefetch guidance and corrected SM80+
@@ -91,19 +100,10 @@
   model precision from FP16 SLA buffers and identify newer architectures that
   still require real-device validation.
 
-- Fixed the reported reference-speech regression with a validated SM75 QKV
-  quality cap of 4,096 tokens. In a same-seed four-step Turbo-LoRA A/B run,
-  QKV 8,192 changed decoded PCM versus 4,096 (20.18 dB difference), while
-  changing only MLP from 4,096 to 8,192 remained PCM hash-identical. SM80+
-  keeps the requested QKV size; OOM fallback may still reduce either path.
-- SM75 QKV now prepares one private weight snapshot and reuses it across any
-  speech-stable tile at or below 4,096 instead of repeating dynamic weight
-  staging for every token chunk. Snapshot OOM falls back to the same numerical
-  path with per-chunk streaming.
-- At `S=103,546`, QKV snapshot reuse reduced the first-block QKV stage from
-  565.5 ms to 391.3 ms. The complete four-step run averaged 196.27 seconds per
-  step, and its decoded PCM was bitwise identical to both automatic-cap and
-  explicit-QKV-4,096 validation runs.
+- Added a private SM75 QKV weight snapshot so projection chunks can reuse the
+  prepared weight instead of repeating dynamic staging. Snapshot OOM falls
+  back to per-chunk streaming. At `S=103,546`, the measured first-block QKV
+  stage decreased from 565.5 ms to 391.3 ms in the recorded workflow.
 - The Star7 reference loader now preserves source audio up to 15 seconds
   instead of trimming it to the shorter `17n+5`-aligned video duration, which
   could remove as much as 16/24 seconds and cut the final spoken syllable.
