@@ -271,4 +271,4 @@ class Star7VideoWorkflowExport:
 
 
 NODE_CLASS_MAPPINGS = {"Star7VideoWorkflowExport": Star7VideoWorkflowExport}
-NODE_DISPLAY_NAME_MAPPINGS = {"Star7VideoWorkflowExport": "视频与工作流导出 - Star7"}
+NODE_DISPLAY_NAME_MAPPINGS = {"Star7VideoWorkflowExport": "Video and Workflow Export - Star7"}

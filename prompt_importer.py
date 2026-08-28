@@ -399,7 +399,7 @@ class MiniMaxH3PromptImportStar7:
             "required": {
                 "prompt": ("STRING", {
                     "default": "", "multiline": True, "dynamicPrompts": True,
-                    "tooltip": "可直接编辑，或把带工作流的图片、视频、JSON 拖入节点自动导入提示词。",
+                    "tooltip": "Edit directly, or drop a workflow image, video, or JSON file onto the node to import its prompt.",
                 }),
             }
         }
@@ -408,7 +408,7 @@ class MiniMaxH3PromptImportStar7:
     RETURN_NAMES = ("prompt",)
     FUNCTION = "get_prompt"
     CATEGORY = "Star7/MiniMax H3"
-    DESCRIPTION = "从图片、视频或工作流 JSON 导入提示词；自动优先选择有效文本最多的候选。— Star7"
+    DESCRIPTION = "Imports prompts from images, videos, or workflow JSON and prioritizes the strongest long-text candidate. — Star7"
 
     @classmethod
     def IS_CHANGED(cls, prompt):
@@ -419,4 +419,4 @@ class MiniMaxH3PromptImportStar7:
 
 
 NODE_CLASS_MAPPINGS = {"MiniMaxH3PromptImportStar7": MiniMaxH3PromptImportStar7}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3PromptImportStar7": "提示词载入 - Star7"}
+NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3PromptImportStar7": "Prompt Load - Star7"}

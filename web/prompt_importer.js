@@ -5,6 +5,58 @@ const NODE_NAME = "MiniMaxH3PromptImportStar7";
 const ACCEPT = ".png,.webp,.jpg,.jpeg,.gif,.avif,.mp4,.mov,.mkv,.webm,.avi,.m4v,.json,image/*,video/*,application/json";
 const EXTENSIONS = new Set(["png", "webp", "jpg", "jpeg", "gif", "avif", "mp4", "mov", "mkv", "webm", "avi", "m4v", "json"]);
 
+const PROMPT_TEXT = {
+    en: {
+        title: "Prompt Load - Star7",
+        prompt: "Prompt",
+        output: "prompt",
+        tooltip: "Edit directly, or drop a workflow image, video, or JSON file onto the node to import its prompt.",
+        importFile: "Import file",
+        candidates: (count) => `Candidates (${count})`,
+        candidatesTitle: (count) => `Prompt candidates (${count})`,
+        noCandidates: "No candidates are available. Import a file first.",
+        preferred: "Preferred · ",
+        promptFallback: "Prompt",
+        chars: (count) => `${count} chars`,
+        unsupported: "Unsupported file type. The current prompt was not changed.",
+        recognizing: "Reading…",
+        noPrompt: "No usable prompt was found. The current prompt was not changed.",
+        edited: "The prompt was edited while the file was being read. The result remains available under Candidates and was not applied automatically.",
+        imported: (source) => `Imported: ${source}`,
+        failed: (error) => `Import failed: ${error}. The current prompt was not changed.`,
+    },
+    zh: {
+        title: "提示词载入 - Star7",
+        prompt: "提示词",
+        output: "提示词",
+        tooltip: "可直接编辑，或把带工作流的图片、视频、JSON 拖入节点自动导入提示词。",
+        importFile: "导入文件",
+        candidates: (count) => `候选词（${count}）`,
+        candidatesTitle: (count) => `候选词（${count}）`,
+        noCandidates: "当前没有候选词。请先导入文件。",
+        preferred: "首选 · ",
+        promptFallback: "提示词",
+        chars: (count) => `${count} 字`,
+        unsupported: "不支持该文件类型，原提示词未改变。",
+        recognizing: "识别中…",
+        noPrompt: "没有识别到可用提示词，原内容未改变。",
+        edited: "识别期间提示词已被编辑；结果已保留在候选词中，没有自动覆盖。",
+        imported: (source) => `已导入：${source}`,
+        failed: (error) => `导入失败：${error}。原提示词未改变。`,
+    },
+};
+
+function language() {
+    const locale = app.ui?.settings?.getSettingValue?.("Comfy.Locale")
+        ?? globalThis.navigator?.language
+        ?? "en";
+    return String(locale).toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+function strings() {
+    return PROMPT_TEXT[language()];
+}
+
 function extensionOf(filename) {
     const parts = String(filename || "").toLowerCase().split(".");
     return parts.length > 1 ? parts.pop() : "";
@@ -60,12 +112,13 @@ function overlay(title) {
 }
 
 function showCandidates(node, widget) {
+    const text = strings();
     const candidates = node._star7PromptCandidates || [];
     if (!candidates.length) {
-        toast("当前没有候选词。请先导入文件。");
+        toast(text.noCandidates);
         return;
     }
-    const { backdrop, panel } = overlay(`候选词（${candidates.length}）`);
+    const { backdrop, panel } = overlay(text.candidatesTitle(candidates.length));
     candidates.forEach((candidate, index) => {
         const button = document.createElement("button");
         button.type = "button";
@@ -77,15 +130,15 @@ function showCandidates(node, widget) {
         });
         const meta = document.createElement("div");
         const length = Number(candidate.length || String(candidate.text || "").length);
-        meta.textContent = `${index === 0 ? "首选 · " : ""}${candidate.label || "提示词"} · ${length} 字`;
+        meta.textContent = `${index === 0 ? text.preferred : ""}${candidate.label || text.promptFallback} · ${text.chars(length)}`;
         Object.assign(meta.style, { color: index === 0 ? "#91ddb0" : "#aaa", fontSize: "12px", marginBottom: "4px" });
         const preview = document.createElement("div");
-        const text = String(candidate.text || "");
-        preview.textContent = text.length > 700 ? `${text.slice(0, 700)}…` : text;
+        const promptText = String(candidate.text || "");
+        preview.textContent = promptText.length > 700 ? `${promptText.slice(0, 700)}…` : promptText;
         Object.assign(preview.style, { whiteSpace: "pre-wrap", overflowWrap: "anywhere" });
         button.append(meta, preview);
         button.addEventListener("click", () => {
-            setPrompt(node, widget, text);
+            setPrompt(node, widget, promptText);
             backdrop.remove();
         });
         panel.appendChild(button);
@@ -93,14 +146,15 @@ function showCandidates(node, widget) {
 }
 
 async function importFile(node, widget, candidateButton, file) {
+    const text = strings();
     if (!supported(file)) {
-        toast("不支持该文件类型，原提示词未改变。");
+        toast(text.unsupported);
         return;
     }
     const requestId = (node._star7PromptRequestId || 0) + 1;
     node._star7PromptRequestId = requestId;
     const original = String(widget.value ?? "");
-    candidateButton.textContent = "识别中…";
+    candidateButton.textContent = text.recognizing;
     try {
         const form = new FormData();
         form.append("file", file, file.name);
@@ -108,21 +162,21 @@ async function importFile(node, widget, candidateButton, file) {
         const result = await response.json();
         if (node._star7PromptRequestId !== requestId) return;
         node._star7PromptCandidates = Array.isArray(result.candidates) ? result.candidates : [];
-        candidateButton.textContent = `候选词（${node._star7PromptCandidates.length}）`;
+        candidateButton.textContent = text.candidates(node._star7PromptCandidates.length);
         if (!response.ok || !result.success || !String(result.prompt || "").trim()) {
-            toast(result.message || "没有识别到可用提示词，原内容未改变。");
+            toast(text.noPrompt);
             return;
         }
         if (String(widget.value ?? "") !== original) {
-            toast("识别期间提示词已被编辑；结果已保留在候选词中，没有自动覆盖。");
+            toast(text.edited);
             return;
         }
         setPrompt(node, widget, result.prompt);
-        toast(`已导入：${result.source || file.name}`, true);
+        toast(text.imported(result.source || file.name), true);
     } catch (error) {
-        candidateButton.textContent = `候选词（${node._star7PromptCandidates?.length || 0}）`;
+        candidateButton.textContent = text.candidates(node._star7PromptCandidates?.length || 0);
         console.error("[MiniMaxH3Chunk-Star7 Prompt Import]", error);
-        toast(`导入失败：${error.message || error}。原提示词未改变。`);
+        toast(text.failed(error.message || error));
     }
 }
 
@@ -136,6 +190,27 @@ function chooseFile(callback) {
     input.click();
 }
 
+function localizePromptNode(node) {
+    const text = strings();
+    node.title = text.title;
+    const promptWidget = node.widgets?.find((widget) => widget.name === "prompt");
+    if (promptWidget) {
+        promptWidget.label = text.prompt;
+        promptWidget.localized_name = text.prompt;
+        promptWidget.options ??= {};
+        promptWidget.options.tooltip = text.tooltip;
+    }
+    const promptInput = node.inputs?.find((input) => input.name === "prompt");
+    if (promptInput) promptInput.localized_name = text.prompt;
+    const promptOutput = node.outputs?.find((output) => output.name === "prompt");
+    if (promptOutput) promptOutput.localized_name = text.output;
+    const candidateButton = node._star7PromptImport?.candidateButton;
+    if (candidateButton) {
+        candidateButton.textContent = text.candidates(node._star7PromptCandidates?.length || 0);
+    }
+    node.setDirtyCanvas?.(true, true);
+}
+
 function install(node) {
     if (node._star7PromptImportInstalled) return;
     node._star7PromptImportInstalled = true;
@@ -143,7 +218,7 @@ function install(node) {
     const promptWidget = node.widgets?.find((widget) => widget.name === "prompt");
     if (!promptWidget) return;
 
-    let candidateText = "候选词（0）";
+    let candidateText = strings().candidates(0);
     const actionWidget = {
         name: "star7_prompt_import_actions",
         type: "custom",
@@ -153,7 +228,7 @@ function install(node) {
             return candidateText;
         },
         set textContent(value) {
-            candidateText = String(value || "候选词（0）");
+            candidateText = String(value || strings().candidates(0));
             node.graph?.setDirtyCanvas?.(true, true);
         },
         computeSize(width) {
@@ -178,7 +253,7 @@ function install(node) {
                 ctx.strokeStyle = globalThis.LiteGraph?.WIDGET_OUTLINE_COLOR || "#606060";
                 ctx.stroke();
                 ctx.fillStyle = globalThis.LiteGraph?.WIDGET_TEXT_COLOR || "#ddd";
-                ctx.fillText(index === 0 ? "导入文件" : candidateText, left + buttonWidth / 2, top + buttonHeight / 2);
+                ctx.fillText(index === 0 ? strings().importFile : candidateText, left + buttonWidth / 2, top + buttonHeight / 2);
             }
             ctx.restore();
         },
@@ -203,6 +278,7 @@ function install(node) {
     };
     node.addCustomWidget(actionWidget);
     node._star7PromptImport = { promptWidget, candidateButton: actionWidget };
+    localizePromptNode(node);
 
     const previousDragOver = node.onDragOver;
     const previousDragDrop = node.onDragDrop;
@@ -278,9 +354,24 @@ app.registerExtension({
     name: "Star7.MiniMaxH3.LightPromptImport",
     setup() {
         installPromptNodeDropCapture();
+        app.ui?.settings?.addEventListener?.("Comfy.Locale.change", () => {
+            for (const node of app.graph?._nodes ?? []) {
+                if (node.comfyClass === NODE_NAME || node.type === NODE_NAME) {
+                    localizePromptNode(node);
+                }
+            }
+        });
     },
     beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData?.name !== NODE_NAME) return;
+        const text = strings();
+        nodeData.display_name = text.title;
+        const promptSpec = nodeData.input?.required?.prompt;
+        if (Array.isArray(promptSpec)) {
+            promptSpec[1] ??= {};
+            promptSpec[1].display_name = text.prompt;
+            promptSpec[1].tooltip = text.tooltip;
+        }
         const previous = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             previous?.apply(this, arguments);

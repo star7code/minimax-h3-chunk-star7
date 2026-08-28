@@ -7,6 +7,7 @@ const NODE_NAMES = new Set([
 ]);
 const REFERENCE_LOAD_NODE_NAME = "MiniMaxH3ReferenceVideoLoadStar7";
 const IMAGE_LOAD_SCALE_NODE_NAME = "MiniMaxH3LoadImageScaleStar7";
+const WORKFLOW_EXPORT_NODE_NAME = "Star7VideoWorkflowExport";
 const REAL_WIDGET_DEFAULTS = {
     chunk_tokens: 8192,
     auto_halve_on_oom: true,
@@ -15,7 +16,7 @@ const REAL_WIDGET_DEFAULTS = {
     // keep their historical behavior. Fresh node defaults come from Python.
     mlp_chunk_tokens: 4096,
     qkv_chunk_tokens: 4096,
-    disable_dynamic_prefetch: "实验功能已移除",
+    disable_dynamic_prefetch: "Experimental feature removed",
     reuse_mlp_weights: true,
     attention_backend: "comfy_kitchen_int8",
 };
@@ -45,6 +46,7 @@ const TEXT = {
             reuse_mlp_weights: "Reuses isolated QKV/MLP weight snapshots across token chunks. Falls back safely if a snapshot runs out of VRAM.",
             attention_backend: "Select the incoming backend, CK INT8, or the matching SM75/SM80+ SLA, Sol, or Hybrid path. Architecture-specific sparse modes stop on failure instead of substituting another backend. All-INT8 prioritizes throughput and should be quality-tested for the target workflow.",
         },
+        removedValue: "Experimental feature removed",
         current: (label, value) => `${label} in use: ${value} (configured)`,
         limited: (label, value, configured) => `${label} in use: ${value} (set ${configured}, limited by video size)`,
         reduced: (label, value, configured) => `${label} auto-reduced to: ${value} (set ${configured})`,
@@ -76,6 +78,7 @@ const TEXT = {
             reuse_mlp_weights: "在 token 块之间复用独立 QKV/MLP 权重快照；快照显存不足时自动切换安全流式路径。",
             attention_backend: "可选择传入模型已有后端、CK INT8，或与显卡架构对应的 SM75/SM80+ SLA、Sol、Hybrid 路径。架构专用稀疏模式失败时终止，不替换为其他后端；All-INT8 侧重吞吐，建议按目标工作流验证质量。",
         },
+        removedValue: "实验功能已移除",
         current: (label, value) => `${label} 实际使用：${value}（设定值）`,
         limited: (label, value, configured) => `${label} 实际使用：${value}（设定 ${configured}，视频规模只需要这么多）`,
         reduced: (label, value, configured) => `${label} 已自动降为：${value}（原设定 ${configured}）`,
@@ -131,6 +134,29 @@ const IMAGE_LOAD_SCALE_TEXT = {
             "允许小图放大": "允许小图放大",
         },
         outputs: ["图片", "遮罩"],
+    },
+};
+
+const WORKFLOW_EXPORT_TEXT = {
+    en: {
+        title: "Video and Workflow Export - Star7",
+        labels: { "视频文件": "Video file", "导出方式": "Export mode" },
+        modes: {
+            "视频内置工作流": "Video with embedded workflow",
+            "仅视频": "Video only",
+            "视频 + 工作流 JSON": "Video + workflow JSON",
+            "视频 + 工作流 PNG": "Video + workflow PNG",
+        },
+    },
+    zh: {
+        title: "视频与工作流导出 - Star7",
+        labels: { "视频文件": "视频文件", "导出方式": "导出方式" },
+        modes: {
+            "视频内置工作流": "视频内置工作流",
+            "仅视频": "仅导出视频",
+            "视频 + 工作流 JSON": "视频与工作流 JSON",
+            "视频 + 工作流 PNG": "视频与内置工作流图片",
+        },
     },
 };
 
@@ -662,6 +688,25 @@ function localizeImageLoadScaleNode(node) {
     });
 }
 
+function localizeWorkflowExportNode(node) {
+    const text = WORKFLOW_EXPORT_TEXT[language()];
+    node.title = text.title;
+    for (const [name, label] of Object.entries(text.labels)) {
+        const widget = node.widgets?.find((item) => item.name === name);
+        if (widget) {
+            widget.label = label;
+            widget.localized_name = label;
+        }
+        const input = node.inputs?.find((item) => item.name === name);
+        if (input) input.localized_name = label;
+    }
+    const mode = node.widgets?.find((item) => item.name === "导出方式");
+    if (mode) {
+        mode.options ??= {};
+        mode.options.getOptionLabel = (value) => text.modes[value] ?? String(value);
+    }
+}
+
 function formatValue(label, effective, configured, reason = "active") {
     const text = strings();
     if (configured === 0) {
@@ -699,6 +744,9 @@ function localizeNode(node) {
         widget.localized_name = label;
         widget.options ??= {};
         widget.options.tooltip = text.tooltips[name];
+        if (name === "disable_dynamic_prefetch") {
+            widget.value = text.removedValue;
+        }
     }
     const modelInput = node.inputs?.find((input) => input.name === "model");
     if (modelInput) {
@@ -964,6 +1012,10 @@ api.addEventListener("star7-h3-chunk-status", ({ detail }) => {
 app.registerExtension({
     name: "Star7.MiniMaxH3Chunk.RuntimeStatus",
     nodeCreated(node) {
+        if (node.comfyClass === WORKFLOW_EXPORT_NODE_NAME || node.type === WORKFLOW_EXPORT_NODE_NAME) {
+            localizeWorkflowExportNode(node);
+            return;
+        }
         if (node.comfyClass === IMAGE_LOAD_SCALE_NODE_NAME || node.type === IMAGE_LOAD_SCALE_NODE_NAME) {
             localizeImageLoadScaleNode(node);
             installReferenceMediaDrop(node, "image");
@@ -981,6 +1033,10 @@ app.registerExtension({
         }
     },
     loadedGraphNode(node) {
+        if (node.comfyClass === WORKFLOW_EXPORT_NODE_NAME || node.type === WORKFLOW_EXPORT_NODE_NAME) {
+            localizeWorkflowExportNode(node);
+            return;
+        }
         if (node.comfyClass === IMAGE_LOAD_SCALE_NODE_NAME || node.type === IMAGE_LOAD_SCALE_NODE_NAME) {
             localizeImageLoadScaleNode(node);
             installReferenceMediaDrop(node, "image");
@@ -999,6 +1055,24 @@ app.registerExtension({
         }
     },
     async beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name === WORKFLOW_EXPORT_NODE_NAME) {
+            const text = WORKFLOW_EXPORT_TEXT[language()];
+            nodeData.display_name = text.title;
+            for (const [name, spec] of Object.entries(nodeData.input?.required ?? {})) {
+                if (!text.labels[name] || !Array.isArray(spec)) continue;
+                spec[1] ??= {};
+                spec[1].display_name = text.labels[name];
+                if (name === "导出方式") {
+                    spec[1].getOptionLabel = (value) => text.modes[value] ?? String(value);
+                }
+            }
+            const original = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                original?.apply(this, arguments);
+                localizeWorkflowExportNode(this);
+            };
+            return;
+        }
         if (nodeData.name === IMAGE_LOAD_SCALE_NODE_NAME) {
             const text = IMAGE_LOAD_SCALE_TEXT[language()];
             nodeData.display_name = text.title;
@@ -1104,6 +1178,11 @@ app.registerExtension({
     setup() {
         app.ui?.settings?.addEventListener?.("Comfy.Locale.change", () => {
             for (const node of app.graph?._nodes ?? []) {
+                if (node.comfyClass === WORKFLOW_EXPORT_NODE_NAME || node.type === WORKFLOW_EXPORT_NODE_NAME) {
+                    localizeWorkflowExportNode(node);
+                    node.setDirtyCanvas?.(true, true);
+                    continue;
+                }
                 if (node.comfyClass === IMAGE_LOAD_SCALE_NODE_NAME || node.type === IMAGE_LOAD_SCALE_NODE_NAME) {
                     localizeImageLoadScaleNode(node);
                     node.setDirtyCanvas?.(true, true);

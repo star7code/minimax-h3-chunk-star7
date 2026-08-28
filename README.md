@@ -1,6 +1,6 @@
 # MiniMax H3 Activation Chunk & Attention Acceleration - Star7
 
-[中文说明](#中文说明) · [实测记录](BENCHMARKS.md) · [示例工作流](examples/workflows)
+[中文说明](#中文说明) · [English](README_EN.md) · [实测记录](BENCHMARKS.md) · [示例工作流](examples/workflows)
 
 This ComfyUI project helps MiniMax H3 run high-quality, long-duration video generation on GPUs with limited VRAM. Its core node provides independent QKV, RoPE, and MLP activation chunking together with a selectable attention backend. It does not change the sampler, sigma schedule, latent layout, VAE, duration, frame count, or output resolution.
 
@@ -218,12 +218,12 @@ attention_backend = existing
 | 注意力路径 | 平均采样 | 完整任务 | 相对 CK 单步吞吐 |
 |---|---:|---:|---:|
 | KJNodes SM75 SageAttention 2 | `190.50秒/步` | `863.41秒` | 约 `0.63×` |
-| Comfy Kitchen INT8（基准） | 约 `118–120秒/步` | 约 `620秒` | `1.00×` |
+| Comfy Kitchen INT8（基准） | `119.50秒/步` | `620.32秒` | `1.00×` |
 | SLA SM75 QK-INT8/PV-FP16 | `96.68秒/步` | `471.12秒` | 约 `1.24×` |
-| SLA SM75 All-INT8 | `60.83秒/步` | `325.51秒` | 约 `1.97×` |
+| SLA SM75 All-INT8 | `60.83秒/步` | `325.51秒` | 约 `1.96×` |
 | Sol SM75 All-INT8 | `88.71秒/步` | `442.57秒` | 约 `1.35×` |
 | 标准 CK + Sol Hybrid | `106.12秒/步` | `498.27秒` | 约 `1.13×` |
-| 标准 CK + SLA Hybrid | `94.67秒/步` | `454.76秒` | 约 `1.27×` |
+| 标准 CK + SLA Hybrid | `94.67秒/步` | `454.76秒` | 约 `1.26×` |
 
 Hybrid 的平均采样耗时按采样进度中各步实际耗时的算术平均值计算，不以包含模型初始化、VAE 和视频封装的完整任务耗时除以步数。
 
@@ -284,6 +284,7 @@ STAR7_SLA_LONG_SELF_TEST=1
 ## 示例工作流
 
 - [通用工作流](examples/workflows/MiniMax-H3-Activation-Chunk-Star7.json)：适合自行选择原生、Sage、CK 或 SM80+ 路径。
+- [通用工作流（English）](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-English.json)：英文画布标签与说明版本。
 - [RTX 20 系工作流](examples/workflows/MiniMax-H3-Activation-Chunk-RTX20-Star7.json)：使用 Native FP16 Loader，并默认采用 Sol SM75 All-INT8。
 
 示例中的参考条件来自 [T8mars/comfyui-minimax-h3-audio-T8](https://github.com/T8mars/comfyui-minimax-h3-audio-T8)。仓库不包含可能涉及版权或隐私的参考素材，导入工作流后请替换占位文件。

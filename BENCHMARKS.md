@@ -29,8 +29,8 @@ This document records one local Windows/ComfyUI case. It is evidence for configu
 
 | Attention path | Observed sampling time |
 |---|---:|
-| KJNodes custom SM75 SageAttention 2 path | approximately 170 seconds/step |
-| Comfy Kitchen INT8 | approximately 120 seconds/step |
+| KJNodes custom SM75 SageAttention 2 path | **190.50 seconds/step** |
+| Comfy Kitchen INT8 | **119.50 seconds/step** |
 | Star7 SLA SM75 QK INT8 / PV FP16 + audio guard | **96.68 seconds/step** |
 | Star7 SLA SM75 All-INT8 + audio guard | **60.83 seconds/step** |
 
@@ -42,8 +42,8 @@ Video queries used 85.08% dynamic block sparsity; eight target-audio query block
 used full attention in the same native kernel, giving 83.93% overall effective
 sparsity. The four steps took 97.23, 96.98, 95.88, and 96.88 seconds (96.68
 seconds/step average), and the complete prompt finished in 471.12 seconds. Against
-the separately recorded approximately 118-second CK run, sampling throughput was
-approximately 1.22×. No CK or Sage failure fallback was used.
+the separately recorded 119.50-second CK run, sampling throughput was
+approximately 1.24×. No CK or Sage failure fallback was used.
 
 The earlier 59.18-second result belonged to the first pure-INT8 PV kernel and was
 removed because it had accumulated visual/audio error. ABI v7 reintroduces a
@@ -75,7 +75,7 @@ The four denoising steps of the 1.0MP/10-second case account for approximately 4
 
 | Case | Confirmed complete task time |
 |---|---:|
-| 1.0MP, 10 seconds, 4-step Turbo LoRA | approximately 620 seconds |
+| 1.0MP, 10 seconds, 4-step Turbo LoRA | **620.32 seconds** |
 | 0.6MP, 15 seconds, 4-step Turbo LoRA | approximately 530 seconds |
 | 0.4MP, 10 seconds, 4-step Turbo LoRA | approximately 180 seconds |
 | 0.4MP, 5 seconds, 4-step Turbo LoRA | approximately 85 seconds |
@@ -93,9 +93,9 @@ T ≈ T_fixed + aS + bS² + T_post
 
 RoPE, normalization, projections, and MLP work are primarily linear in `S`. Full self-attention includes QK/AV work that is approximately quadratic in `S`; memory-efficient kernels reduce residency but do not remove all attention arithmetic. VAE, super-resolution, and encoding add a separate component that is approximately proportional to pixels times frames plus fixed overhead.
 
-The A/C spatial-duration budget ratio is approximately `2.5×`, while the observed end-to-end time ratio is `620/180 ≈ 3.44×`. The C/D budget ratio is approximately `2×`, while the time ratio is `180/85 ≈ 2.12×`. These observations are consistent with a mixture of fixed, linear, quadratic-attention, and post-processing costs rather than one constant linear multiplier.
+The A/C spatial-duration budget ratio is approximately `2.5×`, while the observed end-to-end time ratio is `620.32/180 ≈ 3.45×`. The C/D budget ratio is approximately `2×`, while the time ratio is `180/85 ≈ 2.12×`. These observations are consistent with a mixture of fixed, linear, quadratic-attention, and post-processing costs rather than one constant linear multiplier.
 
-Activation chunking does not reduce theoretical FLOPs. If a workload already fits dedicated VRAM without allocator pressure or host-memory migration, chunking alone should not be expected to improve speed and can add small-GEMM/kernel-launch overhead. The recorded 170-to-120 seconds/step improvement came primarily from selecting CK INT8 instead of the custom SM75 SageAttention 2 path.
+Activation chunking does not reduce theoretical FLOPs. If a workload already fits dedicated VRAM without allocator pressure or host-memory migration, chunking alone should not be expected to improve speed and can add small-GEMM/kernel-launch overhead. The recorded 190.50-to-119.50 seconds/step improvement came primarily from selecting CK INT8 instead of the custom SM75 SageAttention 2 path.
 
 ## VRAM tuning decision guide
 

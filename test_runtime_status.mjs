@@ -12,7 +12,7 @@ const promptImporterSource = fs.readFileSync(
     new URL("./web/prompt_importer.js", import.meta.url), "utf8",
 );
 assert.doesNotMatch(source, /document\.addEventListener\(["'](?:drop|dragover)["']/);
-assert.doesNotMatch(promptImporterSource, /document\.addEventListener\(["'](?:drop|dragover)["']/);
+assert.match(promptImporterSource, /promptNodeAtDrop\(event\)/);
 
 const context = {
     api: {
@@ -208,11 +208,21 @@ const serialized = {};
 corrupted.onSerialize(serialized);
 assert.equal(
     JSON.stringify(serialized.widgets_values),
-    JSON.stringify([8192, true, true, 4096, 4096, "实验功能已移除", true, "comfy_kitchen_int8"]),
+    JSON.stringify([8192, true, true, 4096, 4096, "Experimental feature removed", true, "comfy_kitchen_int8"]),
 );
-for (const [name, value] of Object.entries(restored)) {
-    assert.equal(serialized.widgets_values_named[name], value);
-}
+assert.equal(
+    JSON.stringify(serialized.widgets_values_named),
+    JSON.stringify({
+        chunk_tokens: 8192,
+        auto_halve_on_oom: true,
+        verbose: true,
+        mlp_chunk_tokens: 4096,
+        qkv_chunk_tokens: 4096,
+        disable_dynamic_prefetch: "Experimental feature removed",
+        reuse_mlp_weights: true,
+        attention_backend: "comfy_kitchen_int8",
+    }),
+);
 
 const customTitleNode = new MockNode();
 customTitleNode.title = "我的自定义标题";
@@ -294,6 +304,10 @@ assert.equal(customTitleNode.title, "我的自定义标题");
 assert.equal(
     corrupted.widgets.find((widget) => widget.name === "mlp_chunk_tokens")?.label,
     "MLP chunk size (main VRAM control)",
+);
+assert.equal(
+    corrupted.widgets.find((widget) => widget.name === "disable_dynamic_prefetch")?.value,
+    "Experimental feature removed",
 );
 assert.match(
     corrupted.widgets.find(

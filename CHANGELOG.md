@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 2.12.1 - 2026-08-29
+
+- Added automatic Chinese/English UI labels for the chunk, reference-media,
+  prompt-loading, and workflow-export nodes while preserving stable workflow
+  field values and attention backend IDs.
+- Added a complete English README and an English general example workflow.
+- Synchronized the recorded CK baseline to `119.50 seconds/step` and
+  `620.32 seconds` across the README and benchmark document.
 
 - Removed the former SM75 QKV `4096` cap. QKV now follows the configured value
   for every architecture and generation type, and only decreases after an

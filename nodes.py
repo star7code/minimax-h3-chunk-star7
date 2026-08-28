@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.12.0"
+NODE_VERSION = "2.12.1"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
 LEGACY_SM86PLUS_FP16_BACKEND_NAME = "sla_sm80+_qk_int8_pv_fp16"
@@ -2210,9 +2210,9 @@ class MiniMaxH3ActivationChunkStar7:
                 "disable_dynamic_prefetch": (
                     "STRING",
                     {
-                        "default": "实验功能已移除",
+                        "default": "Experimental feature removed",
                         "multiline": False,
-                        "tooltip": "提前加载下一层（实验功能已移除）。该字段仅用于兼容旧工作流，不再参与计算。",
+                        "tooltip": "Legacy workflow field only. This experimental feature has been removed and no longer participates in computation.",
                     },
                 ),
                 "qkv_chunk_tokens": (
@@ -2222,7 +2222,7 @@ class MiniMaxH3ActivationChunkStar7:
                         "min": 0,
                         "max": 65536,
                         "step": 256,
-                        "tooltip": "H3 QKV 投影临时显存分块。设为 0 会先尝试整段计算；若自动降档开启，只有 QKV 投影显存不足时才降低 QKV 后重试。",
+                        "tooltip": "H3 QKV projection workspace chunk. Zero tries the full sequence first; automatic reduction lowers only QKV after a QKV projection OOM.",
                     },
                 ),
                 "reuse_mlp_weights": (
@@ -2649,14 +2649,14 @@ class MiniMaxH3LoadImageScaleStar7:
                         "min": 0,
                         "max": 8192,
                         "step": 32,
-                        "tooltip": "保持宽高比，将图片最长边限制在这个 H3 对齐尺寸内；设为 0 保持原尺寸。",
+                        "tooltip": "Preserve aspect ratio and limit the image to this H3-aligned long edge; zero keeps the source size.",
                     },
                 ),
                 "允许小图放大": (
                     "BOOLEAN",
                     {
                         "default": False,
-                        "tooltip": "默认关闭，不放大小图；需要放大参考图时再开启。",
+                        "tooltip": "Disabled by default. Enable only when a small reference image should be enlarged.",
                     },
                 ),
             }
