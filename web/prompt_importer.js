@@ -235,8 +235,50 @@ function install(node) {
     });
 }
 
+function promptNodeAtDrop(event) {
+    const canvas = app.canvas;
+    // Use this event's coordinates only. Falling back to graph_mouse can point
+    // at a previously hovered node and would incorrectly consume a drop made
+    // on empty canvas.
+    const point = canvas?.convertEventToCanvasOffset?.(event);
+    if (!Array.isArray(point) || point.length < 2) return null;
+    const node = canvas.graph?.getNodeOnPos?.(point[0], point[1]) ?? null;
+    return node?.comfyClass === NODE_NAME || node?.type === NODE_NAME ? node : null;
+}
+
+function installPromptNodeDropCapture() {
+    if (window._star7ChunkPromptDropInstalled) return;
+    window._star7ChunkPromptDropInstalled = true;
+
+    document.addEventListener("dragover", (event) => {
+        const file = Array.from(event.dataTransfer?.files || []).find(supported);
+        const node = file ? promptNodeAtDrop(event) : null;
+        if (!node) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+    }, true);
+
+    document.addEventListener("drop", (event) => {
+        const file = Array.from(event.dataTransfer?.files || []).find(supported);
+        const node = file ? promptNodeAtDrop(event) : null;
+        if (!node?._star7PromptImport) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        void importFile(
+            node,
+            node._star7PromptImport.promptWidget,
+            node._star7PromptImport.candidateButton,
+            file,
+        );
+    }, true);
+}
+
 app.registerExtension({
     name: "Star7.MiniMaxH3.LightPromptImport",
+    setup() {
+        installPromptNodeDropCapture();
+    },
     beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData?.name !== NODE_NAME) return;
         const previous = nodeType.prototype.onNodeCreated;
