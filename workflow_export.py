@@ -102,7 +102,7 @@ def _ffmetadata_value(value):
     return value.replace("\n", "\\\n")
 
 
-def _replace_video_with_retry(source_path, video_path, attempts=30, delay=0.2):
+def _replace_video_with_retry(source_path, video_path, attempts=600, delay=0.2):
     """Replace a freshly produced video after transient Windows readers release it."""
     last_error = None
     for attempt in range(max(1, int(attempts))):
