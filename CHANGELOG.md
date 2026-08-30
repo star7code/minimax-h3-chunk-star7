@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.12.2 - 2026-08-30
+
+- Added FastH3 VSA compatibility for upstream enhanced-loader models. Use
+  `attention_backend=existing` to preserve VSA while QKV, RoPE, and MLP
+  chunking continue to manage activation-memory peaks.
+- Suppressed the generic chunk step-timing line when the upstream VSA runtime
+  already reports complete step timing.
+- Exposed the original Comfy Kitchen RoPE callable on the Chunk dispatcher so
+  an independent upstream loader can remove a stale process-wide wrapper when
+  no Chunk node is connected. A connected Chunk node installs it again normally.
+- Extended workflow-video metadata replacement polling from roughly 6 seconds
+  to as long as 120 seconds for long-video encoding.
+
 ## 2.12.1 - 2026-08-29
 
 - Added automatic Chinese/English UI labels for the chunk, reference-media,

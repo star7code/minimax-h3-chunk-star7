@@ -874,6 +874,11 @@ def _step_timing_finish(
     timing = transformer_options.pop("_star7_step_timing", None)
     if not isinstance(timing, dict) or timing.get("step") != step_index:
         return
+    # FastH3 VSA owns its step timer because the VSA model wrapper measures the
+    # complete native path.  Avoid printing a second, indistinguishable line
+    # from the generic chunk node.
+    if transformer_options.get("star7_fasth3_vsa_v1"):
+        return
 
     start_event = timing.get("start_event")
     if start_event is not None and device.type == "cuda":
@@ -1780,6 +1785,13 @@ def install_patch(
     if _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE is None:
         _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = ck.rms_rope_split_half_
         _PATCHED_CK = ck
+
+    # Allow independently installed upstream loaders to identify and remove a
+    # stale process-wide dispatcher without importing this project.  A Chunk
+    # node connected downstream simply installs it again for its own path.
+    _chunked_rms_rope_split_half_inplace._star7_original = (
+        _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE
+    )
 
     _configure_runtime(
         chunk_tokens, mlp_chunk_tokens, auto_halve_on_oom, verbose,

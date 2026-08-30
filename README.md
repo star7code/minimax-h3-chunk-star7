@@ -255,6 +255,8 @@ Loader -> LoRA -> Sage Attention Patch -> Activation Chunk - Star7
 
 并选择 `attention_backend=existing`。本节点只安装 QKV/RoPE/MLP 分块并保留传入模型的注意力实现。
 
+FastH3 VSA 模型同样选择 `attention_backend=existing`：VSA 加速由上游增强载入节点独立提供，本节点只追加 QKV、RoPE 与 MLP 分块，不替换 VSA attention；未连接本节点时，VSA 仍可独立运行。
+
 外部 TE-Speed 等 block-loop 缓存可以接在本节点之前；完整步与缓存前缀仍会经过 Star7 block/attention 补丁。节点使用 model clone、弱绑定 forward 和可识别 wrapper 标记，避免重复包装与旧模型被闭包长期强引用。
 
 数值兼容说明：

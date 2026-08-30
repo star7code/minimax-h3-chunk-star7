@@ -28,6 +28,8 @@ The dropdown intentionally uses stable backend IDs so workflows remain portable 
 | `existing` | Keep the incoming model's current attention implementation, including an upstream Sage or other patch |
 | `comfy_kitchen_int8` | Use ComfyUI / Comfy Kitchen INT8 attention |
 
+For a FastH3 VSA model, select `existing`. The upstream enhanced loader owns VSA acceleration; this node adds only QKV, RoPE, and MLP chunking without replacing VSA attention. VSA remains independently usable when this node is absent.
+
 ### SM75 / RTX 20 series
 
 | ID | Computation path |
