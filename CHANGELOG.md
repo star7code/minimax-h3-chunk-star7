@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.12.3 - 2026-08-31
+
+- Refreshed the directly connected VHS Video Combine preview after workflow
+  metadata export replaces the completed video, and added a scoped playback
+  recovery for stale preview URLs. VHS source files and unrelated VHS nodes are
+  not modified.
+- Added Copy and Paste actions to Prompt Load, arranged with Import File and
+  Candidates in one compact, width-responsive row.
+
 ## 2.12.2 - 2026-08-30
 
 - Added FastH3 VSA compatibility for upstream enhanced-loader models. Use

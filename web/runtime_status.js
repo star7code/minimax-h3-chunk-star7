@@ -8,6 +8,7 @@ const NODE_NAMES = new Set([
 const REFERENCE_LOAD_NODE_NAME = "MiniMaxH3ReferenceVideoLoadStar7";
 const IMAGE_LOAD_SCALE_NODE_NAME = "MiniMaxH3LoadImageScaleStar7";
 const WORKFLOW_EXPORT_NODE_NAME = "Star7VideoWorkflowExport";
+const VHS_VIDEO_COMBINE_NODE_NAME = "VHS_VideoCombine";
 const REAL_WIDGET_DEFAULTS = {
     chunk_tokens: 8192,
     auto_halve_on_oom: true,
@@ -707,6 +708,81 @@ function localizeWorkflowExportNode(node) {
     }
 }
 
+function linkedVHSVideoCombine(node) {
+    const linkId = node.inputs?.find((input) => input.name === "视频文件")?.link
+        ?? node.inputs?.[0]?.link;
+    const link = app.graph?.links?.[linkId];
+    if (!link) return null;
+    const upstream = app.graph?.getNodeById?.(link.origin_id);
+    return upstream?.comfyClass === VHS_VIDEO_COMBINE_NODE_NAME
+        || upstream?.type === VHS_VIDEO_COMBINE_NODE_NAME
+        ? upstream
+        : null;
+}
+
+function installVHSPlaybackRecovery(node) {
+    const preview = node.widgets?.find((widget) => widget.name === "videopreview");
+    const video = preview?.videoEl;
+    if (!preview || !video || video.__star7PlaybackRecoveryInstalled) return false;
+    video.__star7PlaybackRecoveryInstalled = true;
+    const nativePlay = video.play.bind(video);
+    video.play = function () {
+        let request;
+        try {
+            request = nativePlay();
+        } catch (error) {
+            request = Promise.reject(error);
+        }
+        if (!request?.catch) return request;
+        return request.catch(() => {
+            // VHS keeps a cached/transcoded URL. The workflow exporter replaces
+            // the completed MP4 to add metadata, so that URL can become stale.
+            // Rebuild it with VHS' own cache-busting timestamp and retry once.
+            if (video.__star7PlaybackRecoveryPending) return undefined;
+            video.__star7PlaybackRecoveryPending = true;
+            globalThis.setTimeout?.(() => {
+                preview.updateSource?.();
+                video.addEventListener?.("canplay", () => {
+                    video.__star7PlaybackRecoveryPending = false;
+                    if (!preview.value?.paused && !preview.value?.hidden) {
+                        nativePlay().catch?.(() => {});
+                    }
+                }, { once: true });
+                globalThis.setTimeout?.(() => {
+                    video.__star7PlaybackRecoveryPending = false;
+                }, 3000);
+            }, 80);
+            return undefined;
+        });
+    };
+    return true;
+}
+
+function scheduleVHSPlaybackRecovery(node) {
+    installVHSPlaybackRecovery(node);
+    for (const delay of [0, 100, 500, 1500]) {
+        globalThis.setTimeout?.(() => installVHSPlaybackRecovery(node), delay);
+    }
+}
+
+function installLinkedVHSPlaybackRecovery(exportNode) {
+    const videoNode = linkedVHSVideoCombine(exportNode);
+    if (videoNode) scheduleVHSPlaybackRecovery(videoNode);
+}
+
+function refreshLinkedVHSPreview(exportNode) {
+    const videoNode = linkedVHSVideoCombine(exportNode);
+    if (!videoNode) return;
+    scheduleVHSPlaybackRecovery(videoNode);
+    for (const delay of [80, 350]) {
+        globalThis.setTimeout?.(() => {
+            const preview = videoNode.widgets?.find((widget) => widget.name === "videopreview");
+            preview?.updateSource?.();
+            videoNode.setDirtyCanvas?.(true, true);
+        }, delay);
+    }
+}
+
 function formatValue(label, effective, configured, reason = "active") {
     const text = strings();
     if (configured === 0) {
@@ -1014,6 +1090,7 @@ app.registerExtension({
     nodeCreated(node) {
         if (node.comfyClass === WORKFLOW_EXPORT_NODE_NAME || node.type === WORKFLOW_EXPORT_NODE_NAME) {
             localizeWorkflowExportNode(node);
+            installLinkedVHSPlaybackRecovery(node);
             return;
         }
         if (node.comfyClass === IMAGE_LOAD_SCALE_NODE_NAME || node.type === IMAGE_LOAD_SCALE_NODE_NAME) {
@@ -1035,6 +1112,7 @@ app.registerExtension({
     loadedGraphNode(node) {
         if (node.comfyClass === WORKFLOW_EXPORT_NODE_NAME || node.type === WORKFLOW_EXPORT_NODE_NAME) {
             localizeWorkflowExportNode(node);
+            installLinkedVHSPlaybackRecovery(node);
             return;
         }
         if (node.comfyClass === IMAGE_LOAD_SCALE_NODE_NAME || node.type === IMAGE_LOAD_SCALE_NODE_NAME) {
@@ -1070,6 +1148,13 @@ app.registerExtension({
             nodeType.prototype.onNodeCreated = function () {
                 original?.apply(this, arguments);
                 localizeWorkflowExportNode(this);
+                installLinkedVHSPlaybackRecovery(this);
+            };
+            const originalExecuted = nodeType.prototype.onExecuted;
+            nodeType.prototype.onExecuted = function () {
+                const result = originalExecuted?.apply(this, arguments);
+                refreshLinkedVHSPreview(this);
+                return result;
             };
             return;
         }

@@ -267,7 +267,10 @@ class Star7VideoWorkflowExport:
 
         _prune_vhs_files(vhs_files, video_path, 导出方式 == _PNG_MODE)
         _LOG.info("[Star7 Workflow Export] %s | %s", 导出方式, video_path)
-        return ()
+        # Ensure ComfyUI emits this output node's executed event. The frontend
+        # then refreshes VHS after the MP4 is atomically replaced with the
+        # metadata-bearing copy.
+        return {"ui": {"star7_export": [os.path.basename(video_path)]}, "result": ()}
 
 
 NODE_CLASS_MAPPINGS = {"Star7VideoWorkflowExport": Star7VideoWorkflowExport}

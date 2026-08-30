@@ -13,6 +13,13 @@ const PROMPT_TEXT = {
         tooltip: "Edit directly, or drop a workflow image, video, or JSON file onto the node to import its prompt.",
         importFile: "Import file",
         candidates: (count) => `Candidates (${count})`,
+        copy: "Copy",
+        paste: "Paste",
+        copied: "Prompt copied.",
+        pasted: "Clipboard text pasted.",
+        emptyClipboard: "The clipboard does not contain text.",
+        copyFailed: (error) => `Copy failed: ${error}`,
+        pasteFailed: (error) => `Paste failed: ${error}`,
         candidatesTitle: (count) => `Prompt candidates (${count})`,
         noCandidates: "No candidates are available. Import a file first.",
         preferred: "Preferred · ",
@@ -32,6 +39,13 @@ const PROMPT_TEXT = {
         tooltip: "可直接编辑，或把带工作流的图片、视频、JSON 拖入节点自动导入提示词。",
         importFile: "导入文件",
         candidates: (count) => `候选词（${count}）`,
+        copy: "复制",
+        paste: "粘贴",
+        copied: "提示词已复制。",
+        pasted: "剪贴板内容已粘贴。",
+        emptyClipboard: "剪贴板中没有文本内容。",
+        copyFailed: (error) => `复制失败：${error}`,
+        pasteFailed: (error) => `粘贴失败：${error}`,
         candidatesTitle: (count) => `候选词（${count}）`,
         noCandidates: "当前没有候选词。请先导入文件。",
         preferred: "首选 · ",
@@ -85,6 +99,56 @@ function setPrompt(node, widget, text) {
     widget.callback?.(widget.value);
     node.graph?.setDirtyCanvas?.(true, true);
     app.graph?.setDirtyCanvas?.(true, true);
+}
+
+async function copyPrompt(widget) {
+    const text = strings();
+    try {
+        await navigator.clipboard.writeText(String(widget.value ?? ""));
+        toast(text.copied, true);
+    } catch (error) {
+        toast(text.copyFailed(error?.message || error));
+    }
+}
+
+async function pastePrompt(node, widget) {
+    const text = strings();
+    try {
+        const value = await navigator.clipboard.readText();
+        if (!value) {
+            toast(text.emptyClipboard);
+            return;
+        }
+        setPrompt(node, widget, value);
+        toast(text.pasted, true);
+    } catch (error) {
+        toast(text.pasteFailed(error?.message || error));
+    }
+}
+
+function drawActionRow(ctx, width, y, height, labels) {
+    const margin = 10;
+    const gap = 5;
+    const count = Math.max(1, labels.length);
+    const buttonWidth = Math.max(1, (width - margin * 2 - gap * (count - 1)) / count);
+    const buttonHeight = Math.min(24, Math.max(1, height - 2));
+    const top = y + Math.max(0, (height - buttonHeight) / 2);
+    ctx.save();
+    ctx.font = "13px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (let index = 0; index < count; index += 1) {
+        const left = margin + index * (buttonWidth + gap);
+        ctx.beginPath();
+        ctx.roundRect(left, top, buttonWidth, buttonHeight, 5);
+        ctx.fillStyle = globalThis.LiteGraph?.WIDGET_BGCOLOR || "#2d2d2d";
+        ctx.fill();
+        ctx.strokeStyle = globalThis.LiteGraph?.WIDGET_OUTLINE_COLOR || "#606060";
+        ctx.stroke();
+        ctx.fillStyle = globalThis.LiteGraph?.WIDGET_TEXT_COLOR || "#ddd";
+        ctx.fillText(labels[index], left + buttonWidth / 2, top + buttonHeight / 2, Math.max(1, buttonWidth - 8));
+    }
+    ctx.restore();
 }
 
 function overlay(title) {
@@ -235,40 +299,26 @@ function install(node) {
             return [width, 28];
         },
         draw(ctx, currentNode, width, y, height) {
-            const margin = 10;
-            const gap = 6;
-            const buttonWidth = (width - margin * 2 - gap) / 2;
-            const buttonHeight = Math.min(24, height - 2);
-            const top = y + Math.max(0, (height - buttonHeight) / 2);
-            ctx.save();
-            ctx.font = "13px sans-serif";
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            for (let index = 0; index < 2; index += 1) {
-                const left = margin + index * (buttonWidth + gap);
-                ctx.beginPath();
-                ctx.roundRect(left, top, buttonWidth, buttonHeight, 5);
-                ctx.fillStyle = globalThis.LiteGraph?.WIDGET_BGCOLOR || "#2d2d2d";
-                ctx.fill();
-                ctx.strokeStyle = globalThis.LiteGraph?.WIDGET_OUTLINE_COLOR || "#606060";
-                ctx.stroke();
-                ctx.fillStyle = globalThis.LiteGraph?.WIDGET_TEXT_COLOR || "#ddd";
-                ctx.fillText(index === 0 ? strings().importFile : candidateText, left + buttonWidth / 2, top + buttonHeight / 2);
-            }
-            ctx.restore();
+            const text = strings();
+            drawActionRow(ctx, width, y, height, [text.importFile, candidateText, text.copy, text.paste]);
         },
         mouse(event, pos, currentNode) {
             if (event.type === "pointerdown" || event.type === "mousedown") {
-                this._pressedSide = pos[0] >= currentNode.size[0] / 2 ? "right" : "left";
+                this._pressedIndex = Math.min(3, Math.max(0, Math.floor(pos[0] / (currentNode.size[0] / 4))));
                 return true;
             }
             if (event.type !== "pointerup" && event.type !== "mouseup") return false;
-            const side = this._pressedSide || (pos[0] >= currentNode.size[0] / 2 ? "right" : "left");
-            this._pressedSide = null;
-            if (side === "right") {
-                showCandidates(currentNode, promptWidget);
-            } else {
+            const index = this._pressedIndex
+                ?? Math.min(3, Math.max(0, Math.floor(pos[0] / (currentNode.size[0] / 4))));
+            this._pressedIndex = null;
+            if (index === 0) {
                 chooseFile((file) => void importFile(currentNode, promptWidget, actionWidget, file));
+            } else if (index === 1) {
+                showCandidates(currentNode, promptWidget);
+            } else if (index === 2) {
+                void copyPrompt(promptWidget);
+            } else {
+                void pastePrompt(currentNode, promptWidget);
             }
             return true;
         },
@@ -277,7 +327,10 @@ function install(node) {
         },
     };
     node.addCustomWidget(actionWidget);
-    node._star7PromptImport = { promptWidget, candidateButton: actionWidget };
+    node._star7PromptImport = {
+        promptWidget,
+        candidateButton: actionWidget,
+    };
     localizePromptNode(node);
 
     const previousDragOver = node.onDragOver;
