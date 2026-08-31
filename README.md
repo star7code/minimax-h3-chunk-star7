@@ -102,6 +102,7 @@ RTX 20 系建议配合 [MiniMax H3 FP16 Exact Fix - Star7](https://github.com/st
 
 - 追求最高兼容性或保留已有 Sage：选择 `existing`。
 - 通用配置：优先选择 `comfy_kitchen_int8`。
+- SM80+ 默认推荐 BF16；若启动器明确开启 `--fp16-unet`，最新版 Star7 载入节点会安装 FP16 Exact 保护，CK、SLA、Sol 与 Hybrid 均可继续运行。只有未经保护的普通 FP16 会在采样前被拦截并提示检查载入节点与启动参数。
 - SM75 使用 SLA：先以 `sla_sm75_qk_int8_pv_fp16` 验证质量，再根据需求测试 All-INT8 或 Hybrid。
 - SM80+ 使用 Sol：优先从 `sol_sm80+_bf16_official` 开始；All-INT8 只应在同配置 A/B 测试后采用。
 - 稀疏模式并非所有分辨率、时长和显卡上都必然快于 CK，应比较同模型、同 seed、同帧数、同步数和同卸载策略下的采样耗时。
@@ -145,6 +146,7 @@ git clone https://github.com/star7code/minimax-h3-chunk-star7.git
 | 节点 | 用途 |
 |---|---|
 | `MiniMax H3 显存分块加速 - Star7` | QKV/RoPE/MLP 分块、自动降档和注意力选择 |
+| `MiniMax H3 实时预览 - Star7` | 每个采样步骤后用 TAEH3 显示覆盖完整时间轴的循环动画 |
 | `参考视频载入 - Star7` | 支持直接拖入视频，完成载入、时间范围裁切和最长边限制，输出同一时间窗的画面与音频 |
 | `参考图像载入 - Star7` | 支持直接拖入图片，在一个节点中完成载入、最长边限制和可选小图放大 |
 | `提示词载入 - Star7` | 支持拖入图片、视频或工作流 JSON，自动提取长文本并保留候选词 |
@@ -157,8 +159,13 @@ git clone https://github.com/star7code/minimax-h3-chunk-star7.git
 
 ```text
 UNET Loader -> LoRA -> Attention patch（可选）
-            -> Activation Chunk - Star7 -> Guider / Scheduler / Sampler
+            -> Activation Chunk - Star7 -> Live Preview - Star7 -> Guider -> Sampler
+                                      `-> Scheduler -----------------> Sampler
 ```
+
+实时预览默认均匀抽取 25 个时间位置、预览长边 512；帧数可设置为 4–64。“只显示第一步预览”默认关闭，开启后仅在 Step 1 解码一次，后续采样步骤不再产生预览开销。它只接在 Guider 的 MODEL 路径，Scheduler 可继续直接连接 Chunk。
+
+实时预览使用约 22MB 的 `taeh3.safetensors`。若 `models/vae_approx` 中缺少该文件，节点会从 madebyollin/taehv 的固定版本在后台下载并校验 SHA-256，采样不会等待下载。下载完成后的下一个采样步骤会立即开始预览；若直到最终步骤才完成且此前没有显示过预览，则最终步骤只补发一次预览。下载失败只关闭预览，不影响正式生成。
 
 RTX 20 系：
 

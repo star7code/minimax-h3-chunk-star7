@@ -1282,6 +1282,39 @@ def test_comfy_kitchen_int8_attention_forward_cuda():
     assert torch.isfinite(output).all()
 
 
+def test_sm80_h3_rejects_upstream_fp16_compute():
+    class FakeModel:
+        def __init__(self, dtype):
+            self.dtype = dtype
+            self.model_options = {"transformer_options": {}}
+
+        def get_model_object(self, name):
+            assert name == "manual_cast_dtype"
+            return self.dtype
+
+    try:
+        chunk_nodes._validate_sm80_h3_compute_dtype(
+            FakeModel(torch.float16), (8, 9)
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "Upstream precision configuration error" in message
+        assert "The GPU supports FP16" in message
+        assert "分块节点尚未修改模型" in message
+        assert "请自行检查启动器参数" in message
+    else:
+        raise AssertionError("SM80+ accepted unsupported FP16 H3 compute")
+
+    chunk_nodes._validate_sm80_h3_compute_dtype(FakeModel(torch.bfloat16), (8, 9))
+    chunk_nodes._validate_sm80_h3_compute_dtype(FakeModel(torch.float16), (7, 5))
+
+    protected = FakeModel(torch.float16)
+    protected.model_options["transformer_options"][
+        chunk_nodes.FP16_EXACT_PATCH_FLAG
+    ] = "test"
+    chunk_nodes._validate_sm80_h3_compute_dtype(protected, (8, 9))
+
+
 def test_sla_backend_is_strict_and_architecture_checked():
     backend = chunk_nodes._load_sla_backend()
     sol = chunk_nodes._load_sol_backend()
@@ -1658,6 +1691,7 @@ if __name__ == "__main__":
     test_sm75_ck_keeps_precision_external_with_block_loop_cache()
     test_sm75_convrot_qkv_projection_is_bitwise_chunk_invariant()
     test_comfy_kitchen_int8_attention_forward_cuda()
+    test_sm80_h3_rejects_upstream_fp16_compute()
     test_sla_backend_is_strict_and_architecture_checked()
     test_sol_q64k64_routing_has_variable_row_counts()
     test_bundled_official_sol_dispatch_is_self_contained()

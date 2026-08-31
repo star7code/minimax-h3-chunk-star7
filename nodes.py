@@ -14,7 +14,8 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.12.4"
+NODE_VERSION = "2.12.5"
+FP16_EXACT_PATCH_FLAG = "star7_minimax_h3_fp16_exact_fix"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
 LEGACY_SM86PLUS_FP16_BACKEND_NAME = "sla_sm80+_qk_int8_pv_fp16"
@@ -2138,6 +2139,50 @@ def install_patch(
         else _chunked_rms_rope_split_half_inplace
     )
 
+def _effective_model_compute_dtype(model):
+    effective_dtype = None
+    try:
+        effective_dtype = model.get_model_object("manual_cast_dtype")
+    except (AttributeError, KeyError):
+        pass
+    if effective_dtype is None:
+        base_model = getattr(model, "model", None)
+        get_dtype_inference = getattr(base_model, "get_dtype_inference", None)
+        if callable(get_dtype_inference):
+            effective_dtype = get_dtype_inference()
+    return effective_dtype
+
+
+def _validate_sm80_h3_compute_dtype(model, capability):
+    if capability is None or capability[0] < 8:
+        return
+    if _effective_model_compute_dtype(model) is not torch.float16:
+        return
+    transformer_options = getattr(model, "model_options", {}).get(
+        "transformer_options", {}
+    )
+    if transformer_options.get(FP16_EXACT_PATCH_FLAG):
+        _LOG.info(
+            "[Star7 H3 Chunk] Precision check passed: SM80+ FP16 is protected "
+            "by Star7 H3 FP16 Exact; sampling will continue."
+        )
+        return
+    raise RuntimeError(
+        "[Star7 H3 Chunk] Upstream precision configuration error; task stopped "
+        "before Chunk or attention execution. MiniMax H3 was loaded as "
+        "unprotected FP16 on SM80+. The GPU supports FP16, but this upstream "
+        "model has no Star7 FP16 Exact overflow protection. Chunk has not "
+        "modified the model and sampling has not started. Check the launcher "
+        "settings: remove --fp16-unet/use BF16, or reload the model with the "
+        "latest Star7 H3 loader to enable protected FP16. / 上游精度配置错误，"
+        "任务已在分块和注意力计算前终止：SM80+ 上的 MiniMax H3 被载入为"
+        "未保护的 FP16。显卡本身支持 FP16，但当前上游模型没有安装 Star7 "
+        "FP16 Exact 溢出保护；分块节点尚未修改模型，采样也尚未开始。请自行"
+        "检查启动器参数：关闭 FP16 UNet/改用 BF16，或使用最新版 Star7 H3 "
+        "载入节点重新载入模型以启用受保护的 FP16。"
+    )
+
+
 def install_model_patch(
     model,
     chunk_tokens: int,
@@ -2224,6 +2269,10 @@ def install_model_patch(
     capability = (
         torch.cuda.get_device_capability() if torch.cuda.is_available() else None
     )
+    # A global --fp16-unet can override H3's normal BF16 policy.  Protected
+    # FP16 from a Star7 loader is valid; reject only an unprotected upstream
+    # FP16 model before backend-dependent NaN/Inf can appear.
+    _validate_sm80_h3_compute_dtype(patched, capability)
     if attention_backend in strict_sla_backends or (
         hybrid_attention and not hybrid_sol_attention
     ):

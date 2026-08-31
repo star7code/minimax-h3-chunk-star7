@@ -127,9 +127,16 @@ These are observations from one local configuration, not cross-GPU performance g
 - SM75 Windows x64 ships with a CUDA 13 static-runtime DLL and requires an NVIDIA 580+ driver.
 - SM75 Linux x86_64 ships with a CUDA 12.6 static-runtime `.so`, targets Ubuntu 20.04 / glibc 2.31 or newer, and requires driver 525.60.13+.
 - SM80+ SLA paths use Triton and compile/cache kernels on first use.
+- BF16 remains the default on SM80+. If the launcher explicitly enables `--fp16-unet`, the latest Star7 loader installs FP16 Exact protection so CK, SLA, Sol, and Hybrid can continue. Only ordinary unprotected FP16 is rejected before sampling with a clear loader/launcher diagnostic.
 - The official SM80+ Sol mode bundles the relevant NVlabs/Sana `sol-engine` source.
 - Strict SLA/Sol/Hybrid modes stop on architecture, environment, self-test, or computation failures; they do not silently fall back to CK or Sage.
 - NaN/Inf guards detect and locate invalid output. They do not replace invalid values with zero and are not an FP16 repair mechanism.
+
+## H3 Live Preview
+
+`MiniMax H3 Live Preview - Star7` decodes uniformly sampled temporal positions after each eligible H3 sampling step with `taeh3.safetensors`. If the approximately 22MB decoder is missing from `models/vae_approx`, the node downloads the pinned madebyollin/taehv weight in the background and verifies its SHA-256 without blocking sampling. Preview starts at the next sampling callback after the download completes. If it becomes ready only at the final callback and no earlier preview was shown, one final preview is emitted. Download or preview failure never stops the main generation.
+
+The default preview uses 25 uniformly distributed temporal positions at a 512-pixel long edge. `First step only` is disabled by default; when enabled, only Step 1 is decoded and all later preview work is skipped.
 
 ## License
 
