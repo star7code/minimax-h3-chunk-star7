@@ -48,7 +48,7 @@ MiniMax H3 长序列推理主要存在三个可独立控制的临时显存峰值
 
 SLA 按 LightX2V 契约使用 `Q=128`、`K=64` 动态 Top-K 块路由。目标视频查询通常只保留约 15% 的 K 块参与 QK/PV，online softmax 状态和最终累积保持 FP32。
 
-SM75 原生内核对目标音频查询块执行完整注意力，以保护长视频尾段音频。SM80+ 当前仅对音频范围提高路由优先级，日志标记为 `routing-priority-only`；两者的保护级别不同。
+SM75 原生内核对目标音频查询块执行完整注意力。SM80+ 在保留边界路由的同时，以量化前 Q/K/V 对参考音频和生成音频的查询范围执行完整注意力并覆盖稀疏结果；视频查询仍使用 SLA 稀疏计算。
 
 SLA 建议配合 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo-SLA) 使用，以获得更适合该稀疏模式的长时序表现。
 
@@ -57,6 +57,8 @@ SLA 建议配合 [MiniMax H3 Turbo SLA LoRA](https://huggingface.co/lightx2v/Min
 Sol 使用 `Q64/K64`、`tau=1.0` 的阈值路由。被选中的 K/V 块执行精确注意力；未命中块不是直接丢弃，而是通过 K/V 质心近似贡献，并与精确块合并到同一次 FP32 online softmax 中。
 
 SM80+ 标准 Sol 模式调用随节点内置的 NVIDIA NVlabs/Sana 官方 BF16 Sol-Attn 接口。SM75 与 SM80+ 的 Star7 All-INT8 路径保留“精确块 + 未命中块质心近似”的完整 Sol 语义，但采用不同的 Q/K/PV 量化和 CUDA/Triton 实现，因此不具备与官方 BF16 路径逐值一致性。
+
+SM80+ Sol 保留音频范围的 KV sink，并对参考音频和生成音频查询使用完整注意力结果覆盖；该保护同时适用于官方 BF16、All-INT8 和 Hybrid 中的 Sol 步。
 
 ### Hybrid
 
@@ -89,10 +91,10 @@ RTX 20 系建议配合 [MiniMax H3 FP16 Exact Fix - Star7](https://github.com/st
 
 | `attention_backend` | 计算路径 | 定位 |
 |---|---|---|
-| `sla_sm80+_qk_int8_pv_bf16` | QK INT8、PV BF16、FP32 softmax/累积 | SM80+ SLA 标准模式 |
-| `sla_sm80+_all_int8` | QK/PV INT8、FP32 softmax/累积 | 性能/质量对照模式，需实机验证 |
-| `sol_sm80+_bf16_official` | NVIDIA 官方 BF16 exact+approx Sol-Attn | SM80+ Sol 标准模式 |
-| `sol_sm80+_all_int8` | Star7 exact+centroid Sol，PV INT8 | 性能/质量对照模式，需实机验证 |
+| `sla_sm80+_qk_int8_pv_bf16` | QK INT8、PV BF16、FP32 softmax/累积、完整音频查询保护 | SM80+ SLA 标准模式 |
+| `sla_sm80+_all_int8` | QK/PV INT8、FP32 softmax/累积、完整音频查询保护 | 性能/质量对照模式，需实机验证 |
+| `sol_sm80+_bf16_official` | NVIDIA 官方 BF16 exact+approx Sol-Attn、音频 KV sink 与完整音频查询保护 | SM80+ Sol 标准模式 |
+| `sol_sm80+_all_int8` | Star7 exact+centroid Sol、PV INT8、音频 KV sink 与完整音频查询保护 | 性能/质量对照模式，需实机验证 |
 | `hybrid_sm80+_ck_sla_qk_int8_pv_bf16` | CK / SLA BF16-PV / CK | Hybrid SLA；中段不是 All-INT8 |
 | `hybrid_sm80+_ck_sol_bf16_official` | CK / NVIDIA 官方 BF16 Sol / CK | Hybrid Sol；中段使用官方模式 |
 
@@ -166,6 +168,8 @@ MiniMax H3 Native FP16 Loader - Star7 -> LoRA
 ```
 
 FP16 Loader 与 Chunk 是两个可以独立运行的节点。Chunk 不注入 FP16 Exact；SM75 未检测到独立修复节点时输出一次提示，SM80+ 跳过该项检测提示。
+
+剪枝/T8 H3 可以同时使用原生 8 维 LoRA 与通过 ComfyUI 标准加载器载入的 2688 维完整模型转换版 LoRA。本节点只把尺寸不匹配的完整 AdaLN 增量映射到压缩时间曲线，原生 T8 AdaLN 和其余可匹配权重继续使用 ComfyUI 原路径。原版未转换 Turbo LoRA 仍需其专用加载器；FastH3 VSA 的 `adapter_model.safetensors` 是模型合并原料，不能作为普通 LoRA 加载。
 
 如果前面已经安装 Sage 或其他注意力补丁，把本节点设为：
 
@@ -293,4 +297,4 @@ STAR7_SLA_LONG_SELF_TEST=1
 
 ## License
 
-Star7 项目代码使用 [MIT License](LICENSE)。内置的 NVIDIA Sol-Attn 源码按其 [Apache 2.0 License](vendor/LICENSE.NVIDIA-Sana-Apache-2.0) 与 [第三方声明](vendor/sol_attn/THIRD_PARTY_NOTICES.md) 分发。
+Star7 项目代码使用 [MIT License](LICENSE)。内置的 NVIDIA Sol-Attn 源码按其 [Apache 2.0 License](vendor/LICENSE.NVIDIA-Sana-Apache-2.0) 与 [第三方声明](vendor/sol_attn/THIRD_PARTY_NOTICES.md) 分发。H3 AdaLN 曲线网格及适配机制的来源与许可见 [Larryvrh H3 Turbo 声明](vendor/LARRYVRH-H3-TURBO-NOTICE.md)。

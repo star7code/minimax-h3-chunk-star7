@@ -44,14 +44,16 @@ For a FastH3 VSA model, select `existing`. The upstream enhanced loader owns VSA
 
 | ID | Computation path |
 |---|---|
-| `sla_sm80+_qk_int8_pv_bf16` | SLA with INT8 QK, BF16 PV, and FP32 softmax/accumulation |
-| `sla_sm80+_all_int8` | SLA INT8 QK/PV comparison mode |
-| `sol_sm80+_bf16_official` | Official NVIDIA BF16 exact+approx Sol-Attn |
-| `sol_sm80+_all_int8` | Star7 exact+centroid Sol with INT8 PV |
+| `sla_sm80+_qk_int8_pv_bf16` | SLA with INT8 QK, BF16 PV, FP32 softmax/accumulation, and full-attention audio queries |
+| `sla_sm80+_all_int8` | SLA INT8 QK/PV comparison mode with full-attention audio queries |
+| `sol_sm80+_bf16_official` | Official NVIDIA BF16 exact+approx Sol-Attn with audio KV sinks and full-attention audio queries |
+| `sol_sm80+_all_int8` | Star7 exact+centroid Sol with INT8 PV, audio KV sinks, and full-attention audio queries |
 | `hybrid_sm80+_ck_sla_qk_int8_pv_bf16` | CK / SLA BF16-PV / CK |
 | `hybrid_sm80+_ck_sol_bf16_official` | CK / official NVIDIA BF16 Sol / CK |
 
 SLA uses dynamic Top-K block routing. Sol combines exact selected-block contributions with centroid approximations for non-selected blocks. Hybrid switches the backend between complete denoising steps; it does not mix two kernels inside one attention call.
+
+On SM80+, every SLA and Sol mode replaces sparse results for reference- and generated-audio query ranges with full attention computed from the pre-quantization Q/K/V tensors. Video queries remain sparse. Hybrid inherits the same protection during its sparse steps.
 
 Sparse attention is not guaranteed to outperform CK at every resolution, duration, or GPU. Compare sampling time under the same model, seed, frame count, step count, and offload policy.
 
@@ -79,6 +81,8 @@ Chinese ComfyUI environments display Chinese node and control labels; other loca
 | `attention_backend` | Select existing, CK, SLA, Sol, or Hybrid attention | `comfy_kitchen_int8` |
 
 For RTX 20-series GPUs, pair this project with [MiniMax H3 FP16 Exact Fix - Star7](https://github.com/star7code/minimax-h3-fp16-exact-star7). It adds FP16 numerical protection without converting CK/SLA/Sol INT8 attention calculations to FP16.
+
+Compressed/T8 H3 checkpoints can stack native 8-wide LoRAs with converted full-model 2688-wide LoRAs loaded through ComfyUI's standard LoRA node. The chunk node maps only incompatible full-width AdaLN contributions through the compressed time curve and leaves native T8 and compatible backbone patches unchanged. An unconverted original Turbo LoRA still requires its dedicated loader; FastH3 VSA `adapter_model.safetensors` is conversion input rather than a runtime LoRA.
 
 ## Installation
 
@@ -129,4 +133,4 @@ These are observations from one local configuration, not cross-GPU performance g
 
 ## License
 
-Star7 code is distributed under the [MIT License](LICENSE). Bundled NVIDIA Sol-Attn source is distributed under its [Apache 2.0 license and third-party notices](vendor/sol_attn/THIRD_PARTY_NOTICES.md).
+Star7 code is distributed under the [MIT License](LICENSE). Bundled NVIDIA Sol-Attn source is distributed under its [Apache 2.0 license and third-party notices](vendor/sol_attn/THIRD_PARTY_NOTICES.md). The H3 AdaLN curve grid and adaptation provenance are documented in the [Larryvrh H3 Turbo notice](vendor/LARRYVRH-H3-TURBO-NOTICE.md).

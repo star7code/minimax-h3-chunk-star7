@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import time
+import uuid
 import weakref
 from fractions import Fraction
 from types import MethodType
@@ -13,7 +14,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.12.1"
+NODE_VERSION = "2.12.4"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
 LEGACY_SM86PLUS_FP16_BACKEND_NAME = "sla_sm80+_qk_int8_pv_fp16"
@@ -75,6 +76,7 @@ _LOGGED_SOL_SHAPES = set()
 _PROFILED_QKV_STAGES = set()
 _LOGGED_SLA_ENVIRONMENTS = set()
 _LAST_FAILED_SLA_BLOCK = None
+_ADALN_EGRID = None
 _CONFIG = {
     "chunk_tokens": 8192,
     "mlp_chunk_tokens": 8192,
@@ -143,6 +145,227 @@ def _weak_callable(value):
 def _weak_method(owner, function):
     """Bind a model patch through a weak proxy instead of the model module."""
     return MethodType(function, weakref.proxy(owner))
+
+
+def _load_pruned_adaln_egrid():
+    global _ADALN_EGRID
+    if _ADALN_EGRID is None:
+        import comfy.utils
+        path = os.path.join(
+            os.path.dirname(__file__), "assets", "h3_silu_temb_grid.safetensors",
+        )
+        if not os.path.isfile(path):
+            raise FileNotFoundError(
+                "MiniMax H3 pruned-LoRA curve grid is missing: " + path
+            )
+        payload = comfy.utils.load_torch_file(path, safe_load=True)
+        grid = payload.get("silu_t_emb_grid")
+        if not isinstance(grid, torch.Tensor) or grid.ndim != 2:
+            raise ValueError("Invalid MiniMax H3 pruned-LoRA curve grid")
+        _ADALN_EGRID = grid.detach().to(device="cpu", dtype=torch.float32)
+    return _ADALN_EGRID
+
+
+def _pruned_adaln_lora_contribution(
+    patch, *, full_input_features=None, output_features=None,
+):
+    """Return only a full-width AdaLN LoRA that needs curve adaptation.
+
+    A pruned/T8-native LoRA already has the model's compressed 8-wide AdaLN
+    input and must stay on ComfyUI's normal weight-patch path.  Treating both
+    layouts alike makes mixed full/pruned LoRA stacks fail after a re-queue.
+    """
+    try:
+        import comfy.weight_adapter
+        adapter = patch[1]
+        if not isinstance(adapter, comfy.weight_adapter.LoRAAdapter):
+            return None
+        strength, _, strength_model, offset, function = patch
+        up, down, alpha, mid, dora_scale, reshape = adapter.weights
+        if (
+            float(strength_model) != 1.0
+            or offset is not None
+            or function is not None
+            or mid is not None
+            or dora_scale is not None
+            or reshape is not None
+            or up.ndim != 2
+            or down.ndim != 2
+            or up.shape[1] != down.shape[0]
+            or (
+                full_input_features is not None
+                and int(down.shape[1]) != int(full_input_features)
+            )
+            or (
+                output_features is not None
+                and int(up.shape[0]) != int(output_features)
+            )
+        ):
+            return None
+        scale = float(strength) * (
+            float(alpha) / int(down.shape[0]) if alpha is not None else 1.0
+        )
+        return up, down, scale
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return None
+
+
+def _curve_silu_rows(t_emb, table, egrid, state):
+    """Recover the matching full-width silu(t_emb) curve rows once per forward."""
+    if state.get("t_emb") is t_emb:
+        return state["silu_rows"]
+    device = t_emb.device
+    coords = t_emb.detach().to(device=device, dtype=torch.float32)
+    curve = table.to(device=device, dtype=torch.float32)
+    if curve.shape[0] != egrid.shape[0] or curve.shape[0] < 2:
+        raise ValueError("MiniMax H3 AdaLN curve tables are inconsistent")
+
+    # Each compressed row is a linear interpolation between adjacent curve
+    # samples. Recover that segment and fraction, then apply the identical
+    # interpolation to the original 2688-dim silu(t_emb) grid.
+    start = curve[:-1]
+    direction = curve[1:] - start
+    denominator = direction.square().sum(dim=1).clamp_min_(1e-20)
+    best_index = None
+    best_fraction = None
+    for row_start in range(0, coords.shape[0], 64):
+        rows = coords[row_start:row_start + 64]
+        relative = rows[:, None, :] - start[None, :, :]
+        fraction = (
+            (relative * direction[None, :, :]).sum(dim=2)
+            / denominator[None, :]
+        ).clamp_(0.0, 1.0)
+        error = (
+            relative - fraction[:, :, None] * direction[None, :, :]
+        ).square().sum(dim=2)
+        index = error.argmin(dim=1)
+        selected_fraction = fraction.gather(1, index[:, None]).squeeze(1)
+        best_index = index if best_index is None else torch.cat((best_index, index))
+        best_fraction = selected_fraction if best_fraction is None else torch.cat((best_fraction, selected_fraction))
+
+    device_key = (device.type, device.index)
+    if state.get("full_curve_device") != device_key:
+        state["full_curve"] = egrid.to(device=device, dtype=torch.float32)
+        state["full_curve_device"] = device_key
+    full_curve = state["full_curve"]
+    silu_rows = torch.lerp(
+        full_curve[best_index],
+        full_curve[best_index + 1],
+        best_fraction[:, None],
+    )
+    state["t_emb"] = t_emb
+    state["silu_rows"] = silu_rows
+    return silu_rows
+
+
+def _make_pruned_adaln_lora_forward(
+    upstream, contributions, table, egrid, state, modalities, expand, hidden,
+):
+    upstream = _weak_callable(upstream)
+
+    def forward(_base, t_emb):
+        output = upstream(t_emb)
+        if not isinstance(output, (tuple, list)) or not output:
+            return output
+        dtype = output[0].dtype
+        silu_rows = _curve_silu_rows(t_emb, table, egrid, state).to(dtype=dtype)
+        delta = None
+        for up, down, scale in contributions:
+            part = F.linear(
+                F.linear(silu_rows, down.to(silu_rows.device, dtype)),
+                up.to(silu_rows.device, dtype),
+            ).mul_(scale)
+            delta = part if delta is None else delta.add_(part)
+        if delta is None:
+            return output
+        chunks = delta.view(
+            t_emb.shape[0] * modalities, expand * hidden,
+        ).chunk(expand, dim=-1)
+        result = tuple(value + addition.to(value.dtype) for value, addition in zip(output, chunks))
+        return list(result) if isinstance(output, list) else result
+
+    return forward
+
+
+def _adapt_pruned_h3_lora(patched, diffusion_model, verbose=False):
+    """Preserve full-model LoRA AdaLN contributions on curve/pruned H3 bases."""
+    if not getattr(diffusion_model, "use_adaln_curves", False):
+        return 0
+    transformer_options = patched.model_options.setdefault("transformer_options", {})
+    if transformer_options.get("star7_pruned_h3_lora_adapted"):
+        return 0
+
+    egrid = _load_pruned_adaln_egrid()
+    full_input_features = int(egrid.shape[1])
+    grouped = {}
+    adapted = 0
+    for key in list(patched.patches):
+        if not (
+            key.startswith("diffusion_model.")
+            and key.endswith(".adaln_proj.linear.weight")
+        ):
+            continue
+        path = key[:-len(".linear.weight")]
+        base = patched.get_model_object(path)
+        output_features = (
+            int(base.modalities) * int(base.expand) * int(base.hidden)
+        )
+        retained = []
+        contributions = []
+        for patch in patched.patches[key]:
+            contribution = _pruned_adaln_lora_contribution(
+                patch,
+                full_input_features=full_input_features,
+                output_features=output_features,
+            )
+            if contribution is None:
+                retained.append(patch)
+            else:
+                contributions.append(contribution)
+        if not contributions:
+            continue
+        if retained:
+            patched.patches[key] = retained
+        else:
+            del patched.patches[key]
+        grouped[path] = contributions
+        adapted += len(contributions)
+
+    if not grouped:
+        transformer_options["star7_pruned_h3_lora_adapted"] = True
+        return 0
+
+    table = diffusion_model.adaln_t_table.detach()
+    state = {}
+    for path, contributions in grouped.items():
+        base = patched.get_model_object(path)
+        forward_path = path + ".forward"
+        upstream = patched.object_patches.get(forward_path, base.forward)
+        patched.add_object_patch(
+            forward_path,
+            _weak_method(
+                base,
+                _make_pruned_adaln_lora_forward(
+                    upstream,
+                    contributions,
+                    table,
+                    egrid,
+                    state,
+                    int(base.modalities),
+                    int(base.expand),
+                    int(base.hidden),
+                ),
+            ),
+        )
+    patched.patches_uuid = uuid.uuid4()
+    transformer_options["star7_pruned_h3_lora_adapted"] = True
+    _LOG.info(
+        "[Star7 H3 Chunk] Full-model LoRA detected on pruned H3: adapted %d "
+        "AdaLN patches through the time-conditioning curve; compatible backbone "
+        "patches remain unchanged.",
+        adapted,
+    )
+    return adapted
 
 
 def _current_cuda_capability():
@@ -480,10 +703,17 @@ def _chunked_rms_rope_split_half_inplace(
 
 def _linear_can_reuse_weights(linear) -> bool:
     """Whether a ComfyUI Linear supports one cast per chunked operation."""
-    return all(
+    if not all(
         hasattr(linear, name)
         for name in ("weight", "weight_function", "bias_function", "_forward")
-    )
+    ):
+        return False
+    # Runtime LoRA loaders may replace ``linear.forward`` with a bound bypass
+    # hook. Calling ``linear._forward`` with a resident snapshot would skip that
+    # LoRA contribution entirely. Keep the streamed chunk path whenever an
+    # external object owns forward; standard ComfyUI weight patches remain safe.
+    forward_owner = getattr(getattr(linear, "forward", None), "__self__", linear)
+    return forward_owner is linear
 
 
 def _linear_quantization_mode(linear) -> Optional[str]:
@@ -1255,6 +1485,86 @@ def _load_sol_backend():
     return sol_backend
 
 
+def _merge_token_ranges(ranges, length):
+    merged = []
+    for start, end in sorted(
+        (max(0, int(start)), min(int(length), int(end)))
+        for start, end in ranges
+    ):
+        if start >= end:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return tuple(merged)
+
+
+def _dense_audio_query_overrides(q, k, v, ranges, *, layout="BHLD"):
+    """Calculate exact full-KV attention only for protected audio queries."""
+    if layout == "BTHD":
+        q_heads = q.transpose(1, 2)
+        k_heads = k.transpose(1, 2)
+        v_heads = v.transpose(1, 2)
+    elif layout == "BHLD":
+        q_heads, k_heads, v_heads = q, k, v
+    else:
+        raise ValueError(f"Unsupported audio-guard layout: {layout}")
+    length = q_heads.shape[-2]
+    protected = _merge_token_ranges(ranges, length)
+    overrides = []
+    for start, end in protected:
+        exact = F.scaled_dot_product_attention(
+            q_heads[:, :, start:end], k_heads, v_heads,
+            dropout_p=0.0, is_causal=False,
+            scale=q_heads.shape[-1] ** -0.5,
+        )
+        if layout == "BTHD":
+            exact = exact.transpose(1, 2).contiguous()
+        overrides.append((start, end, exact))
+    return overrides
+
+
+def _apply_dense_audio_query_overrides(output, overrides, *, layout="BHLD"):
+    for start, end, exact in overrides:
+        if layout == "BTHD":
+            output[:, start:end] = exact.to(output.dtype)
+        elif layout == "BHLD":
+            output[:, :, start:end] = exact.to(output.dtype)
+        else:
+            raise ValueError(f"Unsupported audio-guard layout: {layout}")
+    return output
+
+
+def _sm80plus_audio_query_overrides(q, k, v, ranges, *, layout="BHLD"):
+    if not ranges or q.device.type != "cuda":
+        return []
+    try:
+        if torch.cuda.get_device_capability(q.device) < (8, 0):
+            return []
+    except Exception:
+        return []
+    return _dense_audio_query_overrides(q, k, v, ranges, layout=layout)
+
+
+def _h3_audio_token_ranges(segments):
+    ranges = []
+    for start, end, mod_row in segments:
+        if isinstance(mod_row, int):
+            modality_tag = mod_row % 3
+        elif torch.is_tensor(mod_row) and mod_row.numel() == 1:
+            modality_tag = int(mod_row.item()) % 3
+        else:
+            modality_tag = -1
+        if modality_tag == 2:
+            ranges.append((int(start), int(end)))
+    # H3 places the generated audio and video streams in the final two packed
+    # segments. Preserve generated audio even when its mask is not scalar.
+    if len(segments) >= 2:
+        ranges.append((int(segments[-2][0]), int(segments[-2][1])))
+    return sorted(set(ranges))
+
+
 def _minimax_sla_forward(
     self, x, rope_freqs=None, transformer_options={},
     star7_sla_mod_segments=(),
@@ -1301,23 +1611,10 @@ def _minimax_sla_forward(
     sla_segments = star7_sla_mod_segments or getattr(
         self, "_star7_sla_mod_segments", ()
     )
-    priority_ranges = []
-    for start, end, mod_row in sla_segments:
-        if isinstance(mod_row, int):
-            modality_tag = mod_row % 3
-        elif torch.is_tensor(mod_row) and mod_row.numel() == 1:
-            modality_tag = int(mod_row.item()) % 3
-        else:
-            modality_tag = -1
-        if modality_tag == 2:
-            priority_ranges.append((int(start), int(end)))
-    # MiniMax H3 guarantees that the target audio and video streams are the
-    # final two packed segments. Use that contract even when a masked segment
-    # carries a per-row tensor instead of a scalar modality tag.
-    if len(sla_segments) >= 2:
-        audio_segment = sla_segments[-2]
-        priority_ranges.append((int(audio_segment[0]), int(audio_segment[1])))
-    priority_ranges = sorted(set(priority_ranges))
+    priority_ranges = _h3_audio_token_ranges(sla_segments)
+    audio_overrides = _sm80plus_audio_query_overrides(
+        q, k, v, priority_ranges, layout="BHLD",
+    )
     device_index = q.device.index
     owned_qkv = [q, k, v]
     del q, k, v
@@ -1331,6 +1628,25 @@ def _minimax_sla_forward(
         },
         debug=debug_block,
     )
+    _apply_dense_audio_query_overrides(
+        result.output, audio_overrides, layout="BHLD",
+    )
+    dense_audio_tokens = sum(end - start for start, end, _ in audio_overrides)
+    effective_sparsity = result.effective_sparsity * (
+        1.0 - dense_audio_tokens / max(1, sequence)
+    )
+    dense_guard_status = (
+        "full-attention-applied-sm80plus"
+        if audio_overrides else result.dense_guard_status
+    )
+    protected_query_blocks = (
+        sum(
+            (end + sla_backend.BLOCK_Q - 1) // sla_backend.BLOCK_Q
+            - start // sla_backend.BLOCK_Q
+            for start, end, _ in audio_overrides
+        )
+        if audio_overrides else result.protected_query_blocks
+    )
     shape_key = (sequence, self.heads, self.head_dim, device_index)
     if _CONFIG["verbose"] and shape_key not in _LOGGED_SLA_SHAPES:
         _LOGGED_SLA_SHAPES.add(shape_key)
@@ -1340,9 +1656,9 @@ def _minimax_sla_forward(
             "dense-audio-guard=%s | segments=%d | audio-ranges=%s | "
             "backend=%s | implementation=%s",
             result.query_blocks, result.key_blocks, result.selected_key_blocks,
-            result.protected_query_blocks,
-            result.effective_sparsity * 100.0,
-            result.dense_guard_status,
+            protected_query_blocks,
+            effective_sparsity * 100.0,
+            dense_guard_status,
             len(sla_segments), priority_ranges,
             _CONFIG.get("attention_backend"),
             result.implementation,
@@ -1419,12 +1735,21 @@ def _minimax_sol_forward(
         sink_start = int(audio_segment[0])
         sink_tokens = max(0, int(audio_segment[1]) - sink_start)
 
+    audio_ranges = _h3_audio_token_ranges(segments)
+    sol_layout = "BTHD" if official else "BHLD"
+    audio_overrides = _sm80plus_audio_query_overrides(
+        q, k, v, audio_ranges, layout=sol_layout,
+    )
+
     if official:
         result = sol_backend.run_official(
             q, k, v,
             tau=sol_backend.DEFAULT_TAU,
             sink_tokens=sink_tokens,
             sink_start=sink_start,
+        )
+        _apply_dense_audio_query_overrides(
+            result.output, audio_overrides, layout="BTHD",
         )
         out = result.output.reshape(
             1, sequence, self.heads * self.head_dim
@@ -1439,6 +1764,9 @@ def _minimax_sol_forward(
             topk_blocks=sol_backend.DEFAULT_TOPK_BLOCKS,
             sink_tokens=sink_tokens,
             sink_start=sink_start,
+        )
+        _apply_dense_audio_query_overrides(
+            result.output, audio_overrides, layout="BHLD",
         )
         out = result.output.transpose(1, 2).reshape(
             1, sequence, self.heads * self.head_dim
@@ -1458,10 +1786,13 @@ def _minimax_sol_forward(
         _LOG.info(
             "[Star7 H3 Chunk] Sol runtime | backend=%s | Q64/K64 | "
             "Q-blocks=%d | K-blocks=%d | selected=%d..%d | density=%s | "
-            "tau=%.2f | audio-sink=%s:%d | implementation=%s",
+            "tau=%.2f | audio-sink=%s:%d | dense-audio-queries=%d | "
+            "implementation=%s",
             configured, result.query_blocks, result.key_blocks,
             result.min_selected_blocks, result.max_selected_blocks, density,
-            result.routing_tau, sink_start, sink_tokens, result.implementation,
+            result.routing_tau, sink_start, sink_tokens,
+            sum(end - start for start, end, _ in audio_overrides),
+            result.implementation,
         )
     return projected
 
@@ -1842,6 +2173,8 @@ def install_model_patch(
     if not isinstance(diffusion_model, h3_model.MiniMaxH3Model):
         _LOG.warning("[Star7 H3 Chunk] Non-H3 model received; only the guarded RoPE dispatch was installed")
         return patched
+
+    _adapt_pruned_h3_lora(patched, diffusion_model, verbose=verbose)
 
     transformer_options = patched.model_options.setdefault("transformer_options", {})
     star7_fp16 = bool(transformer_options.get("star7_minimax_h3_fp16_exact_fix"))

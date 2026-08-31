@@ -457,6 +457,19 @@ def test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse():
     )
     assert chunk_nodes._linear_can_reuse_weights(patched) is True
 
+    class BypassHook:
+        def forward(self, value):
+            return value
+
+    bypassed = SimpleNamespace(
+        weight=object(),
+        weight_function=[],
+        bias_function=[],
+        _forward=lambda *args: None,
+        forward=BypassHook().forward,
+    )
+    assert chunk_nodes._linear_can_reuse_weights(bypassed) is False
+
 
 def test_chunked_mlp_preserves_external_precision_callable(device=torch.device("cpu")):
     calls = []
@@ -589,6 +602,53 @@ def test_audio_guard_status_distinguishes_sm75_full_from_sm80_routing_only():
     assert backend._audio_guard_status((), ()) == "not-requested"
     assert backend._audio_guard_status(ranges, ranges) == "full-attention-applied"
     assert backend._audio_guard_status(ranges, ()) == "routing-priority-only"
+
+
+def test_sm80_audio_query_override_matches_full_attention_for_both_layouts():
+    torch.manual_seed(7)
+    q = torch.randn(1, 2, 9, 8)
+    k = torch.randn_like(q)
+    v = torch.randn_like(q)
+    ranges = [(2, 5), (4, 7)]
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q[:, :, 2:7], k, v, dropout_p=0.0, is_causal=False,
+        scale=8 ** -0.5,
+    )
+
+    overrides = chunk_nodes._dense_audio_query_overrides(
+        q, k, v, ranges, layout="BHLD",
+    )
+    output = torch.zeros_like(q)
+    chunk_nodes._apply_dense_audio_query_overrides(
+        output, overrides, layout="BHLD",
+    )
+    assert torch.allclose(output[:, :, 2:7], expected, atol=1e-6)
+    assert torch.count_nonzero(output[:, :, :2]) == 0
+
+    q_bthd, k_bthd, v_bthd = (
+        tensor.transpose(1, 2).contiguous() for tensor in (q, k, v)
+    )
+    overrides = chunk_nodes._dense_audio_query_overrides(
+        q_bthd, k_bthd, v_bthd, ranges, layout="BTHD",
+    )
+    output_bthd = torch.zeros_like(q_bthd)
+    chunk_nodes._apply_dense_audio_query_overrides(
+        output_bthd, overrides, layout="BTHD",
+    )
+    assert torch.allclose(
+        output_bthd[:, 2:7].transpose(1, 2), expected, atol=1e-6,
+    )
+
+
+def test_h3_audio_ranges_include_reference_and_generated_audio():
+    segments = [
+        (0, 4, 0),
+        (4, 7, 2),
+        (7, 11, torch.tensor(1)),
+        (11, 14, torch.tensor([0, 1])),
+        (14, 20, 1),
+    ]
+    assert chunk_nodes._h3_audio_token_ranges(segments) == [(4, 7), (11, 14)]
 
 
 def test_chunk_contains_no_fp16_exact_repair_implementation():
@@ -1144,6 +1204,55 @@ def test_reference_audio_keeps_source_duration_instead_of_frame_grid_trim():
     assert "17n+5" not in " ".join(command)
 
 
+def test_pruned_h3_lora_curve_preserves_full_width_adaln_delta():
+    table = torch.tensor([[0.0, 0.0], [1.0, 2.0], [2.0, 4.0]])
+    egrid = torch.tensor([
+        [0.0, 0.0, 0.0, 0.0],
+        [2.0, 4.0, 6.0, 8.0],
+        [4.0, 8.0, 12.0, 16.0],
+    ])
+    compressed = torch.tensor([[0.25, 0.5], [1.5, 3.0]])
+    expected_rows = torch.tensor([
+        [0.5, 1.0, 1.5, 2.0],
+        [3.0, 6.0, 9.0, 12.0],
+    ])
+    rows = chunk_nodes._curve_silu_rows(compressed, table, egrid, {})
+    assert torch.allclose(rows, expected_rows, atol=1e-5)
+
+    up = torch.arange(8, dtype=torch.float32).reshape(4, 2) / 10
+    down = torch.arange(8, dtype=torch.float32).reshape(2, 4) / 10
+    forward = chunk_nodes._make_pruned_adaln_lora_forward(
+        lambda x: (torch.zeros(x.shape[0], 2), torch.zeros(x.shape[0], 2)),
+        [(up, down, 0.7)], table, egrid, {}, 1, 2, 2,
+    )
+    actual = torch.cat(forward(None, compressed), dim=-1)
+    expected = torch.nn.functional.linear(
+        torch.nn.functional.linear(expected_rows, down), up,
+    ) * 0.7
+    assert torch.allclose(actual, expected, atol=1e-5)
+
+
+def test_pruned_h3_lora_adapter_rejects_native_eight_wide_adaln_patch():
+    import comfy.weight_adapter
+
+    up = torch.zeros(24, 2)
+    full_down = torch.zeros(2, 2688)
+    native_down = torch.zeros(2, 8)
+
+    def patch_for(down):
+        adapter = comfy.weight_adapter.LoRAAdapter(
+            set(), (up, down, None, None, None, None),
+        )
+        return (1.0, adapter, 1.0, None, None)
+
+    assert chunk_nodes._pruned_adaln_lora_contribution(
+        patch_for(full_down), full_input_features=2688, output_features=24,
+    ) is not None
+    assert chunk_nodes._pruned_adaln_lora_contribution(
+        patch_for(native_down), full_input_features=2688, output_features=24,
+    ) is None
+
+
 def test_comfy_kitchen_int8_attention_forward_cuda():
     if not torch.cuda.is_available():
         return
@@ -1542,6 +1651,7 @@ if __name__ == "__main__":
     test_reference_video_trim_defaults_and_window_are_compact()
     test_reference_video_and_audio_share_the_same_trim_window()
     test_reference_audio_keeps_source_duration_instead_of_frame_grid_trim()
+    test_pruned_h3_lora_curve_preserves_full_width_adaln_delta()
     test_dynamic_vbar_linear_can_be_snapshotted_for_resident_reuse()
     test_install_preserves_upstream_block_patch()
     test_sm75_sla_does_not_install_fp16_exact_without_companion()

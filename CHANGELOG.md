@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.12.4 - 2026-08-31
+
+- Added lossless full-model LoRA AdaLN adaptation for compressed/pruned H3
+  checkpoints. Standard ComfyUI LoRA patches with the original 2688-wide time
+  input are evaluated through the H3 curve grid, while native 8-wide T8 LoRA
+  patches remain on ComfyUI's normal path. Both layouts can be stacked without
+  shape errors or dropping compatible backbone patches.
+- Preserved external bypass-LoRA forwards when the SM75 QKV chunk path considers
+  resident weight reuse, preventing an upstream Turbo LoRA injection from being
+  skipped.
+- Added full-attention replacement for reference- and generated-audio query
+  ranges in every SM80+ SLA and Sol path, including their Hybrid sparse steps.
+  Sparse video attention remains unchanged; Sol audio KV sinks and SLA boundary
+  routing are retained.
+
 ## 2.12.3 - 2026-08-31
 
 - Refreshed the directly connected VHS Video Combine preview after workflow
