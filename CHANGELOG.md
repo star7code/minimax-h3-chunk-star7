@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.12.8 - 2026-09-01
+
+- Added a compact hover-only timeline to H3 Live Preview. Dragging pauses the
+  loop and scrubs across all decoded temporal samples; releasing resumes
+  playback from the selected position.
+- Reused the existing animated WebP payload through browser-side frame decoding,
+  adding no backend encoding, transport, or sampling work. Older frontends that
+  cannot decode animation frames continue using the original animated preview.
+- Added stale-decode cancellation and explicit timer/frame cleanup when a newer
+  sampling-step preview arrives or the node is removed.
+
 ## 2.12.7 - 2026-09-01
 
 - Added an optional aspect-ratio crop to Reference Image Load. It is disabled
