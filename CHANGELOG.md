@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.12.7 - 2026-09-01
+
+- Added an optional aspect-ratio crop to Reference Image Load. It is disabled
+  on new nodes and defaults to 16:9 landscape when enabled.
+- Included square, landscape, and portrait presets from 1:1 through 21:9/9:21.
+  The node automatically takes the largest centered crop, preserving as much
+  source area as possible before applying the existing long-edge limit.
+- Kept the selected ratio in normal workflow serialization, synchronized alpha
+  masks with the image crop, and added compact bilingual conditional controls.
+
 ## 2.12.6 - 2026-09-01
 
 - Replaced the retired prefetch placeholder with automatic attention-output

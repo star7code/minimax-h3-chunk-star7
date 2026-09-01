@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.12.6"
+NODE_VERSION = "2.12.7"
 FP16_EXACT_PATCH_FLAG = "star7_minimax_h3_fp16_exact_fix"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
@@ -3188,6 +3188,51 @@ def _normalize_reference_max_long_edge(value, default: int = 1024) -> int:
     return int(default) if value < 32 else min(8192, value)
 
 
+_REFERENCE_IMAGE_ASPECT_RATIOS = (
+    "1:1",
+    "4:3", "3:4",
+    "3:2", "2:3",
+    "16:9", "9:16",
+    "21:9", "9:21",
+)
+
+
+def _reference_image_crop_box(width: int, height: int, aspect_ratio: str):
+    """Return the largest centered integer crop matching the requested ratio."""
+    width, height = int(width), int(height)
+    if width <= 0 or height <= 0:
+        raise ValueError("Reference image dimensions must be positive")
+    try:
+        ratio_width, ratio_height = (
+            int(part) for part in str(aspect_ratio).split(":", 1)
+        )
+    except (TypeError, ValueError):
+        raise ValueError(f"Unsupported reference image aspect ratio: {aspect_ratio}")
+    if (
+        ratio_width <= 0 or ratio_height <= 0
+        or str(aspect_ratio) not in _REFERENCE_IMAGE_ASPECT_RATIOS
+    ):
+        raise ValueError(f"Unsupported reference image aspect ratio: {aspect_ratio}")
+
+    reduced = Fraction(ratio_width, ratio_height)
+    ratio_width, ratio_height = reduced.numerator, reduced.denominator
+    scale = min(width // ratio_width, height // ratio_height)
+    if scale > 0:
+        # Exact ratio, with the greatest integer scale that still fits inside
+        # the source. This is the maximum-area crop for the selected ratio.
+        crop_width = ratio_width * scale
+        crop_height = ratio_height * scale
+    elif width * ratio_height > height * ratio_width:
+        crop_height = height
+        crop_width = max(1, height * ratio_width // ratio_height)
+    else:
+        crop_width = width
+        crop_height = max(1, width * ratio_height // ratio_width)
+    left = (width - crop_width) // 2
+    top = (height - crop_height) // 2
+    return left, top, left + crop_width, top + crop_height
+
+
 def _align_h3_reference_frame_count(frame_count: int) -> int:
     """Trim a decoded 24fps reference to MiniMax H3's 17n+5 grid."""
     frame_count = int(frame_count)
@@ -3518,6 +3563,20 @@ class MiniMaxH3LoadImageScaleStar7:
                         "tooltip": "Disabled by default. Enable only when a small reference image should be enlarged.",
                     },
                 ),
+                "调整比例": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "When enabled, take the largest centered crop matching the selected aspect ratio before resizing.",
+                    },
+                ),
+                "目标比例": (
+                    _REFERENCE_IMAGE_ASPECT_RATIOS,
+                    {
+                        "default": "16:9",
+                        "tooltip": "The crop keeps the maximum possible source area; no crop direction setting is required.",
+                    },
+                ),
             }
         }
 
@@ -3534,9 +3593,18 @@ class MiniMaxH3LoadImageScaleStar7:
 
         max_long_edge = _normalize_reference_max_long_edge(kwargs.get("最长边", 1280), 1280)
         allow_upscale = bool(kwargs.get("允许小图放大", False))
+        crop_aspect = bool(kwargs.get("调整比例", False))
+        target_aspect = str(kwargs.get("目标比例", "16:9"))
         image_path = folder_paths.get_annotated_filepath(image)
         with Image.open(image_path) as source:
             source = ImageOps.exif_transpose(source)
+            original_width, original_height = source.size
+            if crop_aspect:
+                source = source.crop(
+                    _reference_image_crop_box(
+                        original_width, original_height, target_aspect,
+                    )
+                )
             rgb = np.asarray(source.convert("RGB"), dtype=np.float32) / 255.0
             loaded = torch.from_numpy(rgb).unsqueeze(0)
             if "A" in source.getbands():
@@ -3569,8 +3637,10 @@ class MiniMaxH3LoadImageScaleStar7:
                 (scaled.shape[0], height, width), dtype=scaled.dtype, device=scaled.device,
             )
         _LOG.info(
-            "[Star7 H3 Ref Image] %dx%d -> %dx%d | max_long_edge=%d | allow_upscale=%s",
-            source_width, source_height, width, height,
+            "[Star7 H3 Ref Image] %dx%d -> crop=%dx%d -> %dx%d | aspect=%s | "
+            "max_long_edge=%d | allow_upscale=%s",
+            original_width, original_height, source_width, source_height, width, height,
+            target_aspect if crop_aspect else "original",
             max_long_edge, bool(allow_upscale),
         )
         return scaled, mask
@@ -3586,7 +3656,12 @@ class MiniMaxH3LoadImageScaleStar7:
             digest.update(handle.read())
         max_long_edge = _normalize_reference_max_long_edge(kwargs.get("最长边", 1280), 1280)
         allow_upscale = bool(kwargs.get("允许小图放大", False))
-        return f"{digest.hexdigest()}:{max_long_edge}:{allow_upscale}"
+        crop_aspect = bool(kwargs.get("调整比例", False))
+        target_aspect = str(kwargs.get("目标比例", "16:9"))
+        return (
+            f"{digest.hexdigest()}:{max_long_edge}:{allow_upscale}:"
+            f"{crop_aspect}:{target_aspect}"
+        )
 
     @classmethod
     def VALIDATE_INPUTS(cls, image, **kwargs):

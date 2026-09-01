@@ -21,6 +21,22 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(chunk_nodes)
 
 
+def test_reference_image_aspect_crop_uses_largest_centered_area():
+    assert chunk_nodes._reference_image_crop_box(1920, 1080, "16:9") == (0, 0, 1920, 1080)
+    assert chunk_nodes._reference_image_crop_box(1920, 1080, "1:1") == (420, 0, 1500, 1080)
+    assert chunk_nodes._reference_image_crop_box(1080, 1920, "9:16") == (0, 0, 1080, 1920)
+    assert chunk_nodes._reference_image_crop_box(1080, 1920, "4:3") == (0, 555, 1080, 1365)
+
+
+def test_reference_image_aspect_crop_rejects_unknown_ratios():
+    try:
+        chunk_nodes._reference_image_crop_box(1920, 1080, "7:5")
+    except ValueError as exc:
+        assert "Unsupported" in str(exc)
+    else:
+        raise AssertionError("Unknown reference aspect ratios must be rejected")
+
+
 def test_hybrid_scheduler_supports_arbitrary_step_counts():
     expected = {
         1: "CK",
@@ -1310,11 +1326,17 @@ def test_reference_image_uses_long_edge_controls():
     inputs = chunk_nodes.MiniMaxH3LoadImageScaleStar7.INPUT_TYPES()["required"]
     assert "最长边" in inputs
     assert "允许小图放大" in inputs
+    assert "调整比例" in inputs
+    assert "目标比例" in inputs
     assert "缩放算法" not in inputs
     assert "scale_by" not in inputs
     assert inputs["最长边"][1]["default"] == 1280
     assert inputs["最长边"][1]["min"] == 0
     assert inputs["允许小图放大"][1]["default"] is False
+    assert inputs["调整比例"][1]["default"] is False
+    assert inputs["目标比例"][1]["default"] == "16:9"
+    assert "5:4" not in inputs["目标比例"][0]
+    assert "4:5" not in inputs["目标比例"][0]
     assert chunk_nodes._normalize_reference_max_long_edge(0) == 0
     assert chunk_nodes._normalize_reference_max_long_edge(1) == 1024
     assert chunk_nodes._normalize_reference_max_long_edge(1024) == 1024
@@ -1804,6 +1826,8 @@ def test_sla_attention_forward_cuda():
 
 
 if __name__ == "__main__":
+    test_reference_image_aspect_crop_uses_largest_centered_area()
+    test_reference_image_aspect_crop_rejects_unknown_ratios()
     test_hybrid_scheduler_supports_arbitrary_step_counts()
     test_hybrid_sampler_context_is_step_stable_across_h3_blocks()
     test_hybrid_attention_dispatch_reuses_existing_paths()

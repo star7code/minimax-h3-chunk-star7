@@ -28,7 +28,7 @@ Attention choices include preserving an upstream backend, Comfy Kitchen INT8, ar
 | 多种注意力后端 | 支持 `existing`、Comfy Kitchen INT8、SLA、Sol 和 CK/Sparse/CK Hybrid |
 | 架构专用稀疏内核 | SM75 使用随节点分发的原生 CUDA 内核；SM80+ 使用 Triton 或 NVIDIA 官方 Sol-Attn 路径 |
 | 数值检查与定位 | 在完整 Transformer block 和 H3 视频/音频输出处检查 NaN/Inf，并提供 QKV、attention、`out_proj`、MLP 分段诊断 |
-| 轻量辅助节点 | 附带参考图像、参考视频和提示词载入；支持将对应文件直接拖入节点，且不影响核心模型补丁 |
+| 轻量辅助节点 | 附带参考图像、参考视频和提示词载入；支持将对应文件直接拖入节点，参考图像可按常用横竖比例自动进行最大保留裁切，且不影响核心模型补丁 |
 
 ## 工作原理
 
@@ -148,7 +148,7 @@ git clone https://github.com/star7code/minimax-h3-chunk-star7.git
 | `MiniMax H3 显存分块加速 - Star7` | QKV/RoPE/MLP 分块、注意力输出显存保护、自动降档和注意力加速选择 |
 | `MiniMax H3 实时预览 - Star7` | 每个采样步骤后用 TAEH3 显示覆盖完整时间轴的循环动画 |
 | `参考视频载入 - Star7` | 支持直接拖入视频，完成载入、时间范围裁切和最长边限制，输出同一时间窗的画面与音频 |
-| `参考图像载入 - Star7` | 支持直接拖入图片，在一个节点中完成载入、最长边限制和可选小图放大 |
+| `参考图像载入 - Star7` | 支持直接拖入图片，在一个节点中完成载入、最长边限制、可选小图放大及常用横竖比例的最大保留裁切 |
 | `提示词载入 - Star7` | 支持拖入图片、视频或工作流 JSON，自动提取长文本并保留候选词 |
 
 三个载入节点均支持将对应文件直接拖到节点上完成载入；它们都是独立工具，不会向模型注入注意力或精度补丁。

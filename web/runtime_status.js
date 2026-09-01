@@ -134,7 +134,10 @@ const IMAGE_LOAD_SCALE_TEXT = {
             image: "Image",
             "最长边": "Maximum long edge",
             "允许小图放大": "Allow small image upscale",
+            "调整比例": "Crop to aspect ratio",
+            "目标比例": "Target aspect ratio",
         },
+        landscapeSuffix: " (Landscape)",
         outputs: ["image", "mask"],
     },
     zh: {
@@ -143,7 +146,10 @@ const IMAGE_LOAD_SCALE_TEXT = {
             image: "图片",
             "最长边": "最长边限制",
             "允许小图放大": "允许小图放大",
+            "调整比例": "调整比例",
+            "目标比例": "目标比例",
         },
+        landscapeSuffix: "（横版）",
         outputs: ["图片", "遮罩"],
     },
 };
@@ -706,6 +712,39 @@ function localizeImageLoadScaleNode(node) {
     node.outputs?.forEach((output, index) => {
         if (text.outputs[index]) output.localized_name = text.outputs[index];
     });
+    const ratio = node.widgets?.find((item) => item.name === "目标比例");
+    if (ratio) {
+        ratio.options ??= {};
+        ratio.options.getOptionLabel = (value) => {
+            const [width, height] = String(value).split(":").map(Number);
+            return width > height ? `${value}${text.landscapeSuffix}` : String(value);
+        };
+    }
+    refreshImageAspectControls(node);
+}
+
+function refreshImageAspectControls(node) {
+    const toggle = node.widgets?.find((widget) => widget.name === "调整比例");
+    const ratio = node.widgets?.find((widget) => widget.name === "目标比例");
+    if (!toggle || !ratio) return;
+    const visible = toggle.value === true || toggle.value === 1 || toggle.value === "true";
+    setCompactWidgetVisible(ratio, visible);
+    node.setDirtyCanvas?.(true, true);
+}
+
+function installImageAspectControls(node) {
+    const toggle = node.widgets?.find((widget) => widget.name === "调整比例");
+    if (!toggle) return;
+    if (!node.__star7ImageAspectInstalled) {
+        node.__star7ImageAspectInstalled = true;
+        const originalCallback = toggle.callback;
+        toggle.callback = function () {
+            const result = originalCallback?.apply(this, arguments);
+            refreshImageAspectControls(node);
+            return result;
+        };
+    }
+    refreshImageAspectControls(node);
 }
 
 function localizeWorkflowExportNode(node) {
@@ -1135,6 +1174,7 @@ app.registerExtension({
         }
         if (node.comfyClass === IMAGE_LOAD_SCALE_NODE_NAME || node.type === IMAGE_LOAD_SCALE_NODE_NAME) {
             localizeImageLoadScaleNode(node);
+            installImageAspectControls(node);
             installReferenceMediaDrop(node, "image");
             return;
         }
@@ -1157,6 +1197,7 @@ app.registerExtension({
         }
         if (node.comfyClass === IMAGE_LOAD_SCALE_NODE_NAME || node.type === IMAGE_LOAD_SCALE_NODE_NAME) {
             localizeImageLoadScaleNode(node);
+            installImageAspectControls(node);
             installReferenceMediaDrop(node, "image");
             return;
         }
@@ -1205,12 +1246,32 @@ app.registerExtension({
                 if (!text.labels[name] || !Array.isArray(spec)) continue;
                 spec[1] ??= {};
                 spec[1].display_name = text.labels[name];
+                if (name === "调整比例") {
+                    spec[1].label_on = language() === "zh" ? "开启" : "On";
+                    spec[1].label_off = language() === "zh" ? "关闭" : "Off";
+                }
+                if (name === "目标比例") {
+                    spec[1].getOptionLabel = (value) => {
+                        const [width, height] = String(value).split(":").map(Number);
+                        return width > height
+                            ? `${value}${text.landscapeSuffix}` : String(value);
+                    };
+                }
             }
             const original = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 original?.apply(this, arguments);
                 localizeImageLoadScaleNode(this);
+                installImageAspectControls(this);
                 installReferenceMediaDrop(this, "image");
+            };
+            const originalConfigure = nodeType.prototype.configure;
+            nodeType.prototype.configure = function () {
+                const result = originalConfigure?.apply(this, arguments);
+                localizeImageLoadScaleNode(this);
+                installImageAspectControls(this);
+                installReferenceMediaDrop(this, "image");
+                return result;
             };
             return;
         }
@@ -1310,6 +1371,7 @@ app.registerExtension({
                 }
                 if (node.comfyClass === IMAGE_LOAD_SCALE_NODE_NAME || node.type === IMAGE_LOAD_SCALE_NODE_NAME) {
                     localizeImageLoadScaleNode(node);
+                    installImageAspectControls(node);
                     node.setDirtyCanvas?.(true, true);
                     continue;
                 }

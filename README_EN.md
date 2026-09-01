@@ -63,7 +63,7 @@ Sparse attention is not guaranteed to outperform CK at every resolution, duratio
 |---|---|
 | `MiniMax H3 VRAM Chunk Acceleration - Star7` | QKV/RoPE/MLP chunking, targeted OOM reduction, and attention selection |
 | `Reference Video Load - Star7` | Drag-and-drop video loading, time-range trimming, long-edge limiting, synchronized video/audio output |
-| `Reference Image Load - Star7` | Drag-and-drop image loading, long-edge limiting, and optional upscale |
+| `Reference Image Load - Star7` | Drag-and-drop loading, long-edge limiting, optional upscale, and maximum-area centered cropping for common landscape/portrait ratios |
 | `Prompt Load - Star7` | Extract prompts from dropped image, video, or workflow JSON files and retain alternative candidates |
 | `Video and Workflow Export - Star7` | Export video alone or with embedded/separate workflow metadata |
 
