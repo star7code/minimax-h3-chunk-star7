@@ -443,7 +443,7 @@ class MiniMaxH3LivePreviewStar7:
     RETURN_NAMES = ("model",)
     FUNCTION = "patch"
     CATEGORY = "Star7/MiniMax H3"
-    DESCRIPTION = "在 H3 采样步骤结束后显示覆盖完整时间轴的 TAEH3 动态预览，可选择只显示第一步。"
+    DESCRIPTION = "Shows a lightweight TAEH3 animation across the full H3 video timeline after each eligible sampling step."
 
     def patch(
         self,
@@ -473,4 +473,4 @@ class MiniMaxH3LivePreviewStar7:
 
 
 NODE_CLASS_MAPPINGS = {"MiniMaxH3LivePreviewStar7": MiniMaxH3LivePreviewStar7}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3LivePreviewStar7": "MiniMax H3 实时预览 - Star7"}
+NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3LivePreviewStar7": "MiniMax H3 Live Preview - Star7"}

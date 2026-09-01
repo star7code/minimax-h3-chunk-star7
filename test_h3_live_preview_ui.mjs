@@ -4,6 +4,7 @@ import vm from "node:vm";
 
 let extension;
 let previewEvent;
+let locale = "en-US";
 const elements = [];
 const drawnFrames = [];
 
@@ -96,6 +97,14 @@ const context = {
         },
     },
     app: {
+        ui: {
+            settings: {
+                getSettingValue(name) {
+                    assert.equal(name, "Comfy.Locale");
+                    return locale;
+                },
+            },
+        },
         graph: { getNodeById(id) { return id === 42 ? graphNode : null; } },
         registerExtension(value) { extension = value; },
     },
@@ -128,9 +137,24 @@ vm.runInNewContext(source, context);
 
 class PreviewNodeType {}
 PreviewNodeType.prototype.onNodeCreated = function () {};
-await extension.beforeRegisterNodeDef(PreviewNodeType, { name: "MiniMaxH3LivePreviewStar7" });
+const nodeData = {
+    name: "MiniMaxH3LivePreviewStar7",
+    input: {
+        required: {
+            preview_frames: ["INT", {}],
+            preview_resolution: [["256", "384", "512"], {}],
+            first_step_only: ["BOOLEAN", {}],
+        },
+    },
+};
+await extension.beforeRegisterNodeDef(PreviewNodeType, nodeData);
+assert.equal(nodeData.display_name, "MiniMax H3 Live Preview - Star7");
+assert.equal(nodeData.input.required.preview_frames[1].display_name, "Temporal sample frames");
 Object.setPrototypeOf(graphNode, PreviewNodeType.prototype);
 graphNode.onNodeCreated();
+assert.equal(graphNode.title, "MiniMax H3 Live Preview - Star7");
+assert.equal(graphNode.widgets[0].label, "Temporal sample frames");
+assert.equal(graphNode.widgets[2].label, "Show first-step preview only");
 
 previewEvent({
     detail: {

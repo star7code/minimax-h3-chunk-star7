@@ -109,8 +109,8 @@ Restart ComfyUI after installing or updating.
 
 ## Example workflow
 
-- [General workflow — English](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-English.json): English canvas labels and notes; supports selecting an existing backend, CK, or the matching SM75/SM80+ sparse path.
-- [General workflow — Chinese](examples/workflows/MiniMax-H3-Activation-Chunk-Star7.json)
+- [General workflow — English](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-English.json): fully translated canvas labels and notes; one graph covers SM75, SM80+, CK, sparse, precision-protection, reference-loading, and live-preview paths.
+- [通用工作流（中文）](examples/workflows/MiniMax-H3-Activation-Chunk-Star7.json)
 
 ## Recorded 1.0MP / 10-second result
 

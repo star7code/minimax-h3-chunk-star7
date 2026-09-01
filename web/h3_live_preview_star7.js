@@ -5,6 +5,30 @@ const NODE_NAME = "MiniMaxH3LivePreviewStar7";
 const EVENT_NAME = "star7_h3_live_preview";
 const PREVIEW_FRAME_DURATION_MS = 167;
 
+const PREVIEW_TEXT = {
+    en: {
+        title: "MiniMax H3 Live Preview - Star7",
+        model: "Model",
+        frames: "Temporal sample frames",
+        resolution: "Preview long edge",
+        firstStepOnly: "Show first-step preview only",
+    },
+    zh: {
+        title: "MiniMax H3 实时预览 - Star7",
+        model: "模型",
+        frames: "时间轴采样帧数",
+        resolution: "预览长边",
+        firstStepOnly: "只显示第一步预览",
+    },
+};
+
+function language() {
+    const locale = app.ui?.settings?.getSettingValue?.("Comfy.Locale")
+        ?? globalThis.navigator?.language
+        ?? "en";
+    return String(locale).toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
 function installPreviewScrubberStyle() {
     if (document.getElementById("star7-h3-preview-scrubber-style")) return;
     const style = document.createElement("style");
@@ -66,21 +90,21 @@ function installPreviewScrubberStyle() {
     document.head.appendChild(style);
 }
 
-function localizeNode(node, chinese) {
-    if (!chinese) return;
-    node.title = "MiniMax H3 实时预览 - Star7";
+function localizeNode(node) {
+    const text = PREVIEW_TEXT[language()];
+    node.title = text.title;
 
     const modelInput = node.inputs?.find((input) => input.name === "model");
     const modelOutput = node.outputs?.find((output) => output.name === "model");
-    if (modelInput) modelInput.label = "模型";
-    if (modelOutput) modelOutput.label = "模型";
+    if (modelInput) modelInput.label = modelInput.localized_name = text.model;
+    if (modelOutput) modelOutput.label = modelOutput.localized_name = text.model;
 
     const framesWidget = node.widgets?.find((widget) => widget.name === "preview_frames");
     const resolutionWidget = node.widgets?.find((widget) => widget.name === "preview_resolution");
     const firstStepWidget = node.widgets?.find((widget) => widget.name === "first_step_only");
-    if (framesWidget) framesWidget.label = "时间轴采样帧数";
-    if (resolutionWidget) resolutionWidget.label = "预览长边";
-    if (firstStepWidget) firstStepWidget.label = "只显示第一步预览";
+    if (framesWidget) framesWidget.label = framesWidget.localized_name = text.frames;
+    if (resolutionWidget) resolutionWidget.label = resolutionWidget.localized_name = text.resolution;
+    if (firstStepWidget) firstStepWidget.label = firstStepWidget.localized_name = text.firstStepOnly;
 }
 
 function findNode(graph, qualifiedId) {
@@ -105,18 +129,36 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData?.name !== NODE_NAME) return;
 
+        const text = PREVIEW_TEXT[language()];
+        nodeData.display_name = text.title;
+        const labels = {
+            preview_frames: text.frames,
+            preview_resolution: text.resolution,
+            first_step_only: text.firstStepOnly,
+        };
+        for (const [name, spec] of Object.entries(nodeData.input?.required ?? {})) {
+            if (!labels[name] || !Array.isArray(spec)) continue;
+            spec[1] ??= {};
+            spec[1].display_name = labels[name];
+            if (name === "first_step_only") {
+                spec[1].label_on = language() === "zh" ? "开启" : "On";
+                spec[1].label_off = language() === "zh" ? "关闭" : "Off";
+            }
+        }
+
         const original = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const result = original?.apply(this, arguments);
-            const chinese = true;
+            const chinese = language() === "zh";
 
-            this.title = chinese ? "MiniMax H3 实时预览 - Star7" : "MiniMax H3 Live Preview - Star7";
+            this.title = PREVIEW_TEXT[language()].title;
+            localizeNode(this);
 
             const originalConfigure = this.onConfigure;
             this.onConfigure = function () {
                 const configureResult = originalConfigure?.apply(this, arguments);
                 setTimeout(() => {
-                    localizeNode(this, chinese);
+                    localizeNode(this);
                     this.setDirtyCanvas?.(true, true);
                 }, 0);
                 return configureResult;
@@ -125,7 +167,7 @@ app.registerExtension({
             setTimeout(() => {
                 const framesWidget = this.widgets?.find((widget) => widget.name === "preview_frames");
                 if (framesWidget && Number(framesWidget.value) < 4) framesWidget.value = 25;
-                localizeNode(this, chinese);
+                localizeNode(this);
                 this.setDirtyCanvas?.(true, true);
             }, 250);
 

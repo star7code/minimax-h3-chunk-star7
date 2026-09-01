@@ -55,8 +55,9 @@ class MockNode {
             { name: "auto_halve_on_oom", value: true },
             { name: "verbose", value: true },
             { name: "mlp_chunk_tokens", value: 4096 },
+            { name: "disable_dynamic_prefetch", value: "auto" },
             { name: "qkv_chunk_tokens", value: 4096 },
-            { name: "disable_dynamic_prefetch", value: true },
+            { name: "out_proj_chunk_tokens", value: 4096 },
             { name: "reuse_mlp_weights", value: true },
             { name: "attention_backend", value: "existing" },
         ];
@@ -89,7 +90,8 @@ const nodeData = {
             verbose: "BOOLEAN",
             mlp_chunk_tokens: "INT",
             qkv_chunk_tokens: "INT",
-            disable_dynamic_prefetch: "BOOLEAN",
+            out_proj_chunk_tokens: "INT",
+            disable_dynamic_prefetch: ["auto", "off"],
             reuse_mlp_weights: "BOOLEAN",
             attention_backend: ["existing", "comfy_kitchen_int8"],
         }).map(([name, type]) => [name, [type, {}]])),
@@ -116,7 +118,8 @@ node.configure({
         true,
         4096,
         4096,
-        true,
+        4096,
+        "auto",
         true,
         "comfy_kitchen_int8",
     ],
@@ -128,7 +131,7 @@ assert.equal(
 );
 assert.equal(
     node.widgets.find((widget) => widget.name === "disable_dynamic_prefetch")?.value,
-    "实验功能已移除",
+    "自动",
 );
 assert.equal(node.title, "MiniMax H3 显存分块加速 - Star7");
 assert.equal(
@@ -137,13 +140,14 @@ assert.equal(
 );
 assert.equal(
     node.widgets.find((widget) => widget.name === "disable_dynamic_prefetch")?.label,
-    "提前加载下一层（实验功能已移除）",
+    "注意力输出显存保护",
 );
 assert.deepEqual(
     node.widgets.filter((widget) => !widget.__star7StatusName).map((widget) => widget.name),
     [
         "mlp_chunk_tokens",
         "qkv_chunk_tokens",
+        "out_proj_chunk_tokens",
         "chunk_tokens",
         "auto_halve_on_oom",
         "verbose",
@@ -172,6 +176,8 @@ corrupted.configure({
         4096,
         "MLP status",
         4096,
+        4096,
+        "auto",
         true,
         "comfy_kitchen_int8",
     ],
@@ -182,8 +188,10 @@ corrupted.configure({
         verbose: "RoPE status",
         mlp_chunk_tokens: 4096,
         "MLP 当前使用": "MLP status",
-        disable_dynamic_prefetch: 4096,
-        reuse_mlp_weights: "MLP status",
+        qkv_chunk_tokens: 4096,
+        out_proj_chunk_tokens: 4096,
+        disable_dynamic_prefetch: "auto",
+        reuse_mlp_weights: true,
         attention_backend: "comfy_kitchen_int8",
     },
 });
@@ -199,7 +207,8 @@ assert.deepEqual(restored, {
     verbose: true,
     mlp_chunk_tokens: 4096,
     qkv_chunk_tokens: 4096,
-    disable_dynamic_prefetch: "实验功能已移除",
+    out_proj_chunk_tokens: 4096,
+    disable_dynamic_prefetch: "自动",
     reuse_mlp_weights: true,
     attention_backend: "comfy_kitchen_int8",
 });
@@ -208,7 +217,7 @@ const serialized = {};
 corrupted.onSerialize(serialized);
 assert.equal(
     JSON.stringify(serialized.widgets_values),
-    JSON.stringify([8192, true, true, 4096, 4096, "Experimental feature removed", true, "comfy_kitchen_int8"]),
+    JSON.stringify([8192, true, true, 4096, 4096, 4096, "auto", true, "comfy_kitchen_int8"]),
 );
 assert.equal(
     JSON.stringify(serialized.widgets_values_named),
@@ -218,7 +227,8 @@ assert.equal(
         verbose: true,
         mlp_chunk_tokens: 4096,
         qkv_chunk_tokens: 4096,
-        disable_dynamic_prefetch: "Experimental feature removed",
+        out_proj_chunk_tokens: 4096,
+        disable_dynamic_prefetch: "auto",
         reuse_mlp_weights: true,
         attention_backend: "comfy_kitchen_int8",
     }),
@@ -242,6 +252,8 @@ statusHandler({
         effective_mlp: 2048,
         configured_qkv: 4096,
         effective_qkv: 4096,
+        configured_out_proj: 4096,
+        effective_out_proj: 4096,
     },
 });
 assert.match(
@@ -268,6 +280,8 @@ statusHandler({
         effective_mlp: 4096,
         configured_qkv: 0,
         effective_qkv: 51773,
+        configured_out_proj: 4096,
+        effective_out_proj: 4096,
         reason: "qkv_oom",
     },
 });
@@ -294,6 +308,8 @@ statusHandler({
         effective_mlp: 2048,
         configured_qkv: 4096,
         effective_qkv: 4096,
+        configured_out_proj: 4096,
+        effective_out_proj: 4096,
     },
 });
 
@@ -307,7 +323,7 @@ assert.equal(
 );
 assert.equal(
     corrupted.widgets.find((widget) => widget.name === "disable_dynamic_prefetch")?.value,
-    "Experimental feature removed",
+    "Auto",
 );
 assert.match(
     corrupted.widgets.find(
@@ -328,6 +344,8 @@ statusHandler({
         effective_mlp: 2048,
         configured_qkv: 4096,
         effective_qkv: 4096,
+        configured_out_proj: 4096,
+        effective_out_proj: 4096,
         reason: "sequence_limit",
     },
 });

@@ -1,8 +1,8 @@
 {
-  "id": "bf0c7ef3-26b7-49be-940c-1074883d334e",
+  "id": "038d88d9-b955-406e-84fb-36bfa323aa02",
   "revision": 0,
-  "last_node_id": 359,
-  "last_link_id": 469,
+  "last_node_id": 365,
+  "last_link_id": 474,
   "nodes": [
     {
       "id": 118,
@@ -20,7 +20,7 @@
       "mode": 0,
       "inputs": [],
       "outputs": [],
-      "title": "Size Reference",
+      "title": "Resolution reference",
       "properties": {
         "ue_properties": {
           "version": "7.5.2",
@@ -206,7 +206,7 @@
       "flags": {
         "collapsed": false
       },
-      "order": 29,
+      "order": 32,
       "mode": 0,
       "inputs": [
         {
@@ -224,7 +224,7 @@
       ],
       "outputs": [
         {
-          "label": "Image",
+          "label": "Images",
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
@@ -257,7 +257,7 @@
       "flags": {
         "collapsed": false
       },
-      "order": 30,
+      "order": 33,
       "mode": 0,
       "inputs": [
         {
@@ -295,378 +295,6 @@
       }
     },
     {
-      "id": 126,
-      "type": "BasicScheduler",
-      "pos": [
-        -2273.1132362451435,
-        5640.659016154795
-      ],
-      "size": [
-        256.8949683004355,
-        106.93975081853569
-      ],
-      "flags": {},
-      "order": 26,
-      "mode": 0,
-      "inputs": [
-        {
-          "label": "Model",
-          "name": "model",
-          "type": "MODEL",
-          "link": 341
-        },
-        {
-          "name": "scheduler",
-          "type": "COMBO",
-          "widget": {
-            "name": "scheduler"
-          }
-        },
-        {
-          "name": "steps",
-          "type": "INT",
-          "widget": {
-            "name": "steps"
-          }
-        },
-        {
-          "name": "denoise",
-          "type": "FLOAT",
-          "widget": {
-            "name": "denoise"
-          }
-        }
-      ],
-      "outputs": [
-        {
-          "label": "Sigmas",
-          "name": "SIGMAS",
-          "type": "SIGMAS",
-          "links": [
-            235
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.30.1",
-        "Node name for S&R": "BasicScheduler",
-        "ue_properties": {
-          "version": "7.5.2",
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "simple",
-        4,
-        1
-      ],
-      "widgets_values_named": {
-        "scheduler": "simple",
-        "steps": 4,
-        "denoise": 1
-      }
-    },
-    {
-      "id": 327,
-      "type": "MiniMaxH3LoadImageScaleStar7",
-      "pos": [
-        -2297.7381018474953,
-        5898.1488103082
-      ],
-      "size": [
-        270,
-        362
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 4,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            453
-          ]
-        },
-        {
-          "name": "mask",
-          "type": "MASK",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "minimax-h3-chunk-star7",
-        "ver": "75d863dff6a7e15cbfa52f5b7d90ff1af153000d",
-        "Node name for S&R": "MiniMaxH3LoadImageScaleStar7",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.5.2"
-        }
-      },
-      "widgets_values": [
-        "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
-        1280,
-        false,
-        "image"
-      ],
-      "widgets_values_named": {
-        "image": "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
-        "最长边": 1280,
-        "允许小图放大": false,
-        "upload": "image"
-      },
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
-      "id": 303,
-      "type": "MiniMaxH3FP16LoaderStar7",
-      "pos": [
-        -1953.644255279386,
-        5132.111592998878
-      ],
-      "size": [
-        383.7333697844946,
-        68.98107103879283
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "links": [
-            458
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "minimax-h3-fp16-exact-star7",
-        "ver": "2a57ff5af7249516a75860486b3d17c1a3ee6bbf",
-        "Node name for S&R": "MiniMaxH3FP16LoaderStar7",
-        "aux_id": "star7code/minimax-h3-fp16-exact-star7",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.5.2"
-        }
-      },
-      "widgets_values": [
-        "minimax-h3\\minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors"
-      ],
-      "widgets_values_named": {
-        "unet_name": "minimax-h3\\minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors"
-      },
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
-      "id": 326,
-      "type": "MiniMaxH3LoadImageScaleStar7",
-      "pos": [
-        -2595.901149752986,
-        5900.040721426359
-      ],
-      "size": [
-        270,
-        362
-      ],
-      "flags": {},
-      "order": 6,
-      "mode": 4,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            452
-          ]
-        },
-        {
-          "name": "mask",
-          "type": "MASK",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "minimax-h3-chunk-star7",
-        "ver": "75d863dff6a7e15cbfa52f5b7d90ff1af153000d",
-        "Node name for S&R": "MiniMaxH3LoadImageScaleStar7",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.5.2"
-        }
-      },
-      "widgets_values": [
-        "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
-        1280,
-        false,
-        "image"
-      ],
-      "widgets_values_named": {
-        "image": "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
-        "最长边": 1280,
-        "允许小图放大": false,
-        "upload": "image"
-      },
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
-      "id": 342,
-      "type": "MiniMaxH3ReferenceVideoLoadStar7",
-      "pos": [
-        -2451.1565307964747,
-        6410.950289118959
-      ],
-      "size": [
-        402.7538139032181,
-        922.0067802723877
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 4,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "reference_video",
-          "type": "IMAGE",
-          "links": [
-            466
-          ]
-        },
-        {
-          "name": "reference_audio",
-          "type": "AUDIO",
-          "links": [
-            467
-          ]
-        },
-        {
-          "name": "frame_count",
-          "type": "INT",
-          "links": null
-        },
-        {
-          "name": "report",
-          "type": "STRING",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "minimax-h3-chunk-star7",
-        "ver": "5870ad7fed2f53180d633c36d3e23448aafb93bd",
-        "Node name for S&R": "MiniMaxH3ReferenceVideoLoadStar7",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.5.2"
-        }
-      },
-      "widgets_values": [
-        "微信视频2026-08-23_192308_734.mp4",
-        960,
-        false,
-        false,
-        0,
-        8.533,
-        "image"
-      ],
-      "widgets_values_named": {
-        "video": "微信视频2026-08-23_192308_734.mp4",
-        "max_long_edge": 960,
-        "allow_upscale": false,
-        "trim_enabled": false,
-        "trim_start_seconds": 0,
-        "trim_end_seconds": 8.533,
-        "upload": "image"
-      },
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
-      "id": 134,
-      "type": "ComfyMathExpression",
-      "pos": [
-        -1499.7857186943982,
-        5713.567191223458
-      ],
-      "size": [
-        360,
-        160
-      ],
-      "flags": {
-        "collapsed": true
-      },
-      "order": 22,
-      "mode": 0,
-      "inputs": [
-        {
-          "label": "values.a",
-          "name": "values.a",
-          "type": "FLOAT,INT,BOOLEAN",
-          "link": 250
-        },
-        {
-          "name": "values.b",
-          "shape": 7,
-          "type": "FLOAT,INT,BOOLEAN"
-        },
-        {
-          "label": "expression",
-          "name": "expression",
-          "type": "STRING",
-          "widget": {
-            "name": "expression"
-          }
-        }
-      ],
-      "outputs": [
-        {
-          "label": "FLOAT",
-          "name": "FLOAT",
-          "type": "FLOAT"
-        },
-        {
-          "label": "INT",
-          "name": "INT",
-          "type": "INT",
-          "links": [
-            380
-          ]
-        },
-        {
-          "label": "BOOL",
-          "name": "BOOL",
-          "type": "BOOLEAN"
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.30.1",
-        "Node name for S&R": "ComfyMathExpression",
-        "ue_properties": {
-          "version": "7.5.2",
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17"
-      ],
-      "widgets_values_named": {
-        "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17"
-      }
-    },
-    {
       "id": 313,
       "type": "MiniMaxH3SigmaShift",
       "pos": [
@@ -678,7 +306,7 @@
         85.88756150174777
       ],
       "flags": {},
-      "order": 23,
+      "order": 25,
       "mode": 0,
       "inputs": [
         {
@@ -692,7 +320,7 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            442
+            473
           ]
         }
       ],
@@ -729,7 +357,7 @@
         85.60179641564173
       ],
       "flags": {},
-      "order": 8,
+      "order": 4,
       "mode": 0,
       "inputs": [
         {
@@ -761,11 +389,11 @@
         }
       },
       "widgets_values": [
-        40589757143026,
+        1101889673118132,
         "randomize"
       ],
       "widgets_values_named": {
-        "noise_seed": 40589757143026,
+        "noise_seed": 1101889673118132,
         "control_after_generate": "randomize"
       }
     },
@@ -781,7 +409,7 @@
         107.09810710387865
       ],
       "flags": {},
-      "order": 9,
+      "order": 5,
       "mode": 0,
       "inputs": [
         {
@@ -846,72 +474,6 @@
       }
     },
     {
-      "id": 355,
-      "type": "MarkdownNote",
-      "pos": [
-        -1948.463654813829,
-        6576.976297068163
-      ],
-      "size": [
-        391.4873280206767,
-        117.70200797323378
-      ],
-      "flags": {},
-      "order": 10,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "title": "Prompt",
-      "properties": {
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "version": "7.5.2",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "Prompt quality is important. You can ask an AI assistant to follow the official MiniMax H3 skills when writing a prompt, and upload the intended reference media to the assistant as well.\n\nOfficial skills:\nhttps://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills"
-      ],
-      "widgets_values_named": {
-        "text": "Prompt quality is important. You can ask an AI assistant to follow the official MiniMax H3 skills when writing a prompt, and upload the intended reference media to the assistant as well.\n\nOfficial skills:\nhttps://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills"
-      },
-      "color": "#432",
-      "bgcolor": "#653"
-    },
-    {
-      "id": 354,
-      "type": "MarkdownNote",
-      "pos": [
-        -3206.5512928498742,
-        6339.091867069035
-      ],
-      "size": [
-        274.3103547420527,
-        134.84181110816007
-      ],
-      "flags": {},
-      "order": 11,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "title": "Reference Loading Notes",
-      "properties": {
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "version": "7.5.2",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "Limiting the reference video's long edge can substantially reduce CLIP visual-encoding time, generation time, and VRAM usage. Adjust it according to the desired reference detail. QKV chunking reduces projection workspace pressure, so a larger reference resolution can still be tested when VRAM permits.\n\nA long-edge limit of 0 keeps the source resolution.\n\nFor MiniMax H3 reference conditioning, keep the selected video range within the model's supported duration."
-      ],
-      "widgets_values_named": {
-        "text": "Limiting the reference video's long edge can substantially reduce CLIP visual-encoding time, generation time, and VRAM usage. Adjust it according to the desired reference detail. QKV chunking reduces projection workspace pressure, so a larger reference resolution can still be tested when VRAM permits.\n\nA long-edge limit of 0 keeps the source resolution.\n\nFor MiniMax H3 reference conditioning, keep the selected video range within the model's supported duration."
-      },
-      "color": "#432",
-      "bgcolor": "#653"
-    },
-    {
       "id": 339,
       "type": "Star7VideoWorkflowExport",
       "pos": [
@@ -923,7 +485,7 @@
         58
       ],
       "flags": {},
-      "order": 32,
+      "order": 35,
       "mode": 0,
       "inputs": [
         {
@@ -961,16 +523,16 @@
       ],
       "size": [
         612.1946041983429,
-        1376.5485230813322
+        1413.9502875570172
       ],
       "flags": {
         "collapsed": false
       },
-      "order": 31,
+      "order": 34,
       "mode": 0,
       "inputs": [
         {
-          "label": "Image",
+          "label": "Images",
           "name": "images",
           "type": "IMAGE",
           "link": 410
@@ -1044,7 +606,7 @@
       ],
       "outputs": [
         {
-          "label": "Filename",
+          "label": "Filenames",
           "name": "Filenames",
           "type": "VHS_FILENAMES",
           "links": [
@@ -1075,13 +637,13 @@
         "save_output": true,
         "videopreview": {
           "params": {
-            "filename": "minimax-h3-star7_00025-audio.mp4",
-            "subfolder": "MiniMax-h3\\2026-08-28",
+            "filename": "minimax-h3-star7_00009-audio.mp4",
+            "subfolder": "MiniMax-h3\\2026-09-01",
             "type": "output",
             "format": "video/nvenc_h264-mp4",
             "frame_rate": 24,
-            "workflow": "minimax-h3-star7_00025.png",
-            "fullpath": "D:\\ComfyUI-aki-v1.7\\ComfyUI\\output\\MiniMax-h3\\2026-08-28\\minimax-h3-star7_00025-audio.mp4"
+            "workflow": "minimax-h3-star7_00009.png",
+            "fullpath": "D:\\ComfyUI-aki-v1.7\\ComfyUI\\output\\MiniMax-h3\\2026-09-01\\minimax-h3-star7_00009-audio.mp4"
           },
           "paused": false
         }
@@ -1099,35 +661,35 @@
         "save_output": true,
         "videopreview": {
           "params": {
-            "filename": "minimax-h3-star7_00025-audio.mp4",
-            "subfolder": "MiniMax-h3\\2026-08-28",
+            "filename": "minimax-h3-star7_00009-audio.mp4",
+            "subfolder": "MiniMax-h3\\2026-09-01",
             "type": "output",
             "format": "video/nvenc_h264-mp4",
             "frame_rate": 24,
-            "workflow": "minimax-h3-star7_00025.png",
-            "fullpath": "D:\\ComfyUI-aki-v1.7\\ComfyUI\\output\\MiniMax-h3\\2026-08-28\\minimax-h3-star7_00025-audio.mp4"
+            "workflow": "minimax-h3-star7_00009.png",
+            "fullpath": "D:\\ComfyUI-aki-v1.7\\ComfyUI\\output\\MiniMax-h3\\2026-09-01\\minimax-h3-star7_00009-audio.mp4"
           },
           "paused": false
         }
       }
     },
     {
-      "id": 356,
+      "id": 352,
       "type": "MarkdownNote",
       "pos": [
-        59.268241495611896,
-        5247.077547290584
+        -1951.651968812093,
+        4854.186734913696
       ],
       "size": [
-        258.2325786731802,
-        204.65038562724658
+        381.2181978150069,
+        216.9601840350424
       ],
       "flags": {},
-      "order": 12,
+      "order": 6,
       "mode": 0,
       "inputs": [],
       "outputs": [],
-      "title": "Export Notes",
+      "title": "Model loading and precision protection",
       "properties": {
         "ue_properties": {
           "widget_ue_connectable": {},
@@ -1136,142 +698,266 @@
         }
       },
       "widgets_values": [
-        "The export helper can embed the workflow in the generated video. A video produced this way can later be dropped onto Prompt Load - Star7 to recover the prompt used for that run.\n\nMessaging platforms may recompress the video and remove embedded workflow metadata. The Video only mode does not store a workflow.\n\nVideo + workflow PNG also creates a compact workflow image using the first video frame, which can serve as a visual workflow template card."
+        "This workflow uses MiniMax H3 FP16 Exact Loader - Star7 and selects a safe compute policy across NVIDIA architectures: protected FP16 on SM75 and BF16 on SM80+. It also corrects an FP16 UNet setting accidentally forced by the launcher, so separate RTX 20-series and newer-GPU workflows are no longer required.\n\nIf you replace it with ComfyUI's default UNET Loader, do not force FP16 UNet on SM80+.\n\nModel mirror: https://pan.quark.cn/s/27f28ba550dc\n\nInstall missing nodes through ComfyUI Manager so they can be updated normally:\n\nhttps://github.com/star7code/minimax-h3-chunk-star7.git\n\nhttps://github.com/star7code/minimax-h3-fp16-exact-star7.git\n\nhttps://github.com/T8mars/comfyui-minimax-h3-audio-T8.git"
       ],
       "widgets_values_named": {
-        "text": "The export helper can embed the workflow in the generated video. A video produced this way can later be dropped onto Prompt Load - Star7 to recover the prompt used for that run.\n\nMessaging platforms may recompress the video and remove embedded workflow metadata. The Video only mode does not store a workflow.\n\nVideo + workflow PNG also creates a compact workflow image using the first video frame, which can serve as a visual workflow template card."
+        "text": "This workflow uses MiniMax H3 FP16 Exact Loader - Star7 and selects a safe compute policy across NVIDIA architectures: protected FP16 on SM75 and BF16 on SM80+. It also corrects an FP16 UNet setting accidentally forced by the launcher, so separate RTX 20-series and newer-GPU workflows are no longer required.\n\nIf you replace it with ComfyUI's default UNET Loader, do not force FP16 UNet on SM80+.\n\nModel mirror: https://pan.quark.cn/s/27f28ba550dc\n\nInstall missing nodes through ComfyUI Manager so they can be updated normally:\n\nhttps://github.com/star7code/minimax-h3-chunk-star7.git\n\nhttps://github.com/star7code/minimax-h3-fp16-exact-star7.git\n\nhttps://github.com/T8mars/comfyui-minimax-h3-audio-T8.git"
       },
       "color": "#432",
       "bgcolor": "#653"
     },
     {
-      "id": 351,
-      "type": "MarkdownNote",
+      "id": 303,
+      "type": "MiniMaxH3FP16LoaderStar7",
       "pos": [
-        -1064.2774548171355,
-        4904.803097518878
+        -1953.644255279386,
+        5132.111592998878
       ],
       "size": [
-        429.60486930430784,
-        157.26190375192436
+        388.0516723102595,
+        68.98107103879283
       ],
       "flags": {},
-      "order": 13,
+      "order": 7,
       "mode": 0,
       "inputs": [],
-      "outputs": [],
-      "title": "MiniMax H3 Sigma Shift and Chunking Notes",
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            458
+          ]
+        }
+      ],
       "properties": {
+        "cnr_id": "minimax-h3-fp16-exact-star7",
+        "ver": "2a57ff5af7249516a75860486b3d17c1a3ee6bbf",
+        "Node name for S&R": "MiniMaxH3FP16LoaderStar7",
+        "aux_id": "star7code/minimax-h3-fp16-exact-star7",
         "ue_properties": {
           "widget_ue_connectable": {},
-          "version": "7.5.2",
-          "input_ue_unconnectable": {}
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
         }
       },
       "widgets_values": [
-        "Set Sigma Shift according to the LoRA. Common starting values are 6 / 3 for a 4-step LoRA and 12 / 3 for an 8-step LoRA. Bypass the Sigma Shift node to restore the default 12 / 3 setting.\n\nCK generally prioritizes quality, while Sol and SLA trade approximation for higher throughput. In the recorded 1.0MP, 10-second, 4-step image-to-video case, complete-task times were 620.32 seconds for CK, 442.57 seconds for Sol All-INT8, and 325.51 seconds for SLA All-INT8.\n\nHybrid attention provides a quality/performance balance by using CK at protected sampling steps and sparse attention in the middle steps.\n\nOn the tested 22GB RTX 2080 Ti, QKV, RoPE, and MLP can start at 8192. Lower only the stage that needs additional VRAM headroom."
+        "minimax-h3\\minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors"
       ],
       "widgets_values_named": {
-        "text": "Set Sigma Shift according to the LoRA. Common starting values are 6 / 3 for a 4-step LoRA and 12 / 3 for an 8-step LoRA. Bypass the Sigma Shift node to restore the default 12 / 3 setting.\n\nCK generally prioritizes quality, while Sol and SLA trade approximation for higher throughput. In the recorded 1.0MP, 10-second, 4-step image-to-video case, complete-task times were 620.32 seconds for CK, 442.57 seconds for Sol All-INT8, and 325.51 seconds for SLA All-INT8.\n\nHybrid attention provides a quality/performance balance by using CK at protected sampling steps and sparse attention in the middle steps.\n\nOn the tested 22GB RTX 2080 Ti, QKV, RoPE, and MLP can start at 8192. Lower only the stage that needs additional VRAM headroom."
+        "unet_name": "minimax-h3\\minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors"
       },
-      "color": "#432",
-      "bgcolor": "#653"
+      "color": "#223",
+      "bgcolor": "#335"
     },
     {
-      "id": 359,
-      "type": "MarkdownNote",
+      "id": 342,
+      "type": "MiniMaxH3ReferenceVideoLoadStar7",
       "pos": [
-        -1499.1495875463515,
-        4903.41155254441
+        -2450.2849820401566,
+        6465.822889649641
       ],
       "size": [
-        398.1094173695477,
-        155.58892982523685
+        402.7538139032181,
+        922.0067802723877
       ],
       "flags": {},
-      "order": 14,
-      "mode": 0,
+      "order": 8,
+      "mode": 4,
       "inputs": [],
-      "outputs": [],
-      "title": "LoRA Notes",
+      "outputs": [
+        {
+          "name": "reference_video",
+          "type": "IMAGE",
+          "links": [
+            466
+          ]
+        },
+        {
+          "name": "reference_audio",
+          "type": "AUDIO",
+          "links": [
+            467
+          ]
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "links": null
+        }
+      ],
       "properties": {
+        "cnr_id": "minimax-h3-chunk-star7",
+        "ver": "5870ad7fed2f53180d633c36d3e23448aafb93bd",
+        "Node name for S&R": "MiniMaxH3ReferenceVideoLoadStar7",
         "ue_properties": {
           "widget_ue_connectable": {},
-          "version": "7.5.2",
-          "input_ue_unconnectable": {}
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
         }
       },
       "widgets_values": [
-        "In current testing, larryvrh's minimax_h3_turbo_v4_step600 produces a more natural appearance on real people. The original LoRA requires the author's dedicated loader; using an incompatible loader may cause blur or structural damage. The converted minimax_h3_turbo_v4_step600_comfyui_T8-convert version can be loaded with the standard LoRA loader.\n\nWarnings produced by v4_step600 with a pruned base model usually refer to modules that exist in the full model but are absent from the pruned checkpoint. Verify the applied-key count and output quality for the selected base model."
+        "微信视频2026-08-23_192308_734.mp4",
+        736,
+        false,
+        false,
+        0,
+        8.533,
+        "image"
       ],
       "widgets_values_named": {
-        "text": "In current testing, larryvrh's minimax_h3_turbo_v4_step600 produces a more natural appearance on real people. The original LoRA requires the author's dedicated loader; using an incompatible loader may cause blur or structural damage. The converted minimax_h3_turbo_v4_step600_comfyui_T8-convert version can be loaded with the standard LoRA loader.\n\nWarnings produced by v4_step600 with a pruned base model usually refer to modules that exist in the full model but are absent from the pruned checkpoint. Verify the applied-key count and output quality for the selected base model."
+        "video": "微信视频2026-08-23_192308_734.mp4",
+        "max_long_edge": 736,
+        "allow_upscale": false,
+        "trim_enabled": false,
+        "trim_start_seconds": 0,
+        "trim_end_seconds": 8.533,
+        "upload": "image"
       },
-      "color": "#432",
-      "bgcolor": "#653"
+      "color": "#223",
+      "bgcolor": "#335"
     },
     {
-      "id": 128,
-      "type": "BasicGuider",
+      "id": 311,
+      "type": "LoraLoaderModelOnly",
       "pos": [
-        -1050.764756868687,
-        5636.134767389012
+        -1507.63280737303,
+        5136.03240232569
       ],
       "size": [
-        397.33564153189445,
-        61.098107103879556
+        406.64914761743876,
+        84.19621420775911
       ],
       "flags": {},
-      "order": 27,
+      "order": 23,
       "mode": 0,
       "inputs": [
         {
-          "label": "Model",
           "name": "model",
           "type": "MODEL",
-          "link": 342
-        },
-        {
-          "label": "Conditioning",
-          "name": "conditioning",
-          "type": "CONDITIONING",
-          "link": 386
+          "link": 458
         }
       ],
       "outputs": [
         {
-          "label": "Guider",
-          "name": "GUIDER",
-          "type": "GUIDER",
+          "name": "MODEL",
+          "type": "MODEL",
           "links": [
-            233
+            459
           ]
         }
       ],
       "properties": {
         "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "LoraLoaderModelOnly",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        "minimax-h3\\turbo\\minimax_h3_turbo_v4_step600_comfyui_T8-convert.safetensors",
+        1
+      ],
+      "widgets_values_named": {
+        "lora_name": "minimax-h3\\turbo\\minimax_h3_turbo_v4_step600_comfyui_T8-convert.safetensors",
+        "strength_model": 1
+      }
+    },
+    {
+      "id": 134,
+      "type": "ComfyMathExpression",
+      "pos": [
+        -1502.171516054428,
+        5713.5671912234575
+      ],
+      "size": [
+        360,
+        160
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 24,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "values.a",
+          "name": "values.a",
+          "type": "FLOAT,INT,BOOLEAN",
+          "link": 250
+        },
+        {
+          "name": "values.b",
+          "shape": 7,
+          "type": "FLOAT,INT,BOOLEAN"
+        },
+        {
+          "label": "expression",
+          "name": "expression",
+          "type": "STRING",
+          "widget": {
+            "name": "expression"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "FLOAT",
+          "name": "FLOAT",
+          "type": "FLOAT"
+        },
+        {
+          "label": "INT",
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            380
+          ]
+        },
+        {
+          "label": "BOOL",
+          "name": "BOOL",
+          "type": "BOOLEAN"
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
         "ver": "0.30.1",
-        "Node name for S&R": "BasicGuider",
+        "Node name for S&R": "ComfyMathExpression",
         "ue_properties": {
           "version": "7.5.2",
           "widget_ue_connectable": {},
           "input_ue_unconnectable": {}
         }
+      },
+      "widgets_values": [
+        "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17"
+      ],
+      "widgets_values_named": {
+        "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17"
       }
     },
     {
       "id": 127,
       "type": "SamplerCustomAdvanced",
       "pos": [
-        -1055.3303039957661,
-        5760.6408688715255
+        -1052.7962516996856,
+        5755.572659877078
       ],
       "size": [
-        405.3262699148638,
-        382.14524050039927
+        398.08809652245816,
+        338
       ],
       "flags": {},
-      "order": 28,
+      "order": 31,
       "mode": 0,
       "inputs": [
         {
@@ -1330,42 +1016,298 @@
           "widget_ue_connectable": {},
           "input_ue_unconnectable": {}
         }
-      }
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
     },
     {
-      "id": 311,
-      "type": "LoraLoaderModelOnly",
+      "id": 128,
+      "type": "BasicGuider",
       "pos": [
-        -1507.63280737303,
-        5136.03240232569
+        -1049.9780333164954,
+        5640.855238353375
       ],
       "size": [
-        406.64914761743876,
-        84.19621420775911
+        397.33564153189445,
+        61.098107103879556
       ],
       "flags": {},
-      "order": 21,
+      "order": 30,
       "mode": 0,
       "inputs": [
         {
+          "label": "Model",
           "name": "model",
           "type": "MODEL",
-          "link": 458
+          "link": 470
+        },
+        {
+          "label": "Conditioning",
+          "name": "conditioning",
+          "type": "CONDITIONING",
+          "link": 386
         }
       ],
       "outputs": [
         {
-          "name": "MODEL",
-          "type": "MODEL",
+          "label": "Guider",
+          "name": "GUIDER",
+          "type": "GUIDER",
           "links": [
-            459
+            233
           ]
         }
       ],
       "properties": {
         "cnr_id": "comfy-core",
-        "ver": "0.33.0",
-        "Node name for S&R": "LoraLoaderModelOnly",
+        "ver": "0.30.1",
+        "Node name for S&R": "BasicGuider",
+        "ue_properties": {
+          "version": "7.5.2",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        }
+      }
+    },
+    {
+      "id": 126,
+      "type": "BasicScheduler",
+      "pos": [
+        -2279.732765290656,
+        5641.982892874099
+      ],
+      "size": [
+        256.8949683004355,
+        106.93975081853569
+      ],
+      "flags": {},
+      "order": 28,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "Model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 471
+        },
+        {
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          }
+        },
+        {
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          }
+        },
+        {
+          "name": "denoise",
+          "type": "FLOAT",
+          "widget": {
+            "name": "denoise"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "Sigmas",
+          "name": "SIGMAS",
+          "type": "SIGMAS",
+          "links": [
+            235
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.30.1",
+        "Node name for S&R": "BasicScheduler",
+        "ue_properties": {
+          "version": "7.5.2",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "simple",
+        4,
+        1
+      ],
+      "widgets_values_named": {
+        "scheduler": "simple",
+        "steps": 4,
+        "denoise": 1
+      }
+    },
+    {
+      "id": 361,
+      "type": "MarkdownNote",
+      "pos": [
+        -1050.1792906835037,
+        6577.758906806422
+      ],
+      "size": [
+        400.723439448623,
+        146.60082992875596
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Live Preview",
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.5.2",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "Live Preview uses an approximately 22MB TAEH3 decoder under ComfyUI\\models\\vae_approx. Both taeh3.safetensors and taeh3_decoder.safetensors are accepted.\n\nWhen the decoder is missing, the node races the HF mirror and the pinned official GitHub source in the background, verifies the file, and starts previewing at the next eligible sampling step. Generation never waits for the download. Manual installation is only a fallback for network failures.\n\nThe preview overhead is small but not zero. Reduce the temporal sample count or preview long edge, or bypass the node when preview is unnecessary."
+      ],
+      "widgets_values_named": {
+        "text": "Live Preview uses an approximately 22MB TAEH3 decoder under ComfyUI\\models\\vae_approx. Both taeh3.safetensors and taeh3_decoder.safetensors are accepted.\n\nWhen the decoder is missing, the node races the HF mirror and the pinned official GitHub source in the background, verifies the file, and starts previewing at the next eligible sampling step. Generation never waits for the download. Manual installation is only a fallback for network failures.\n\nThe preview overhead is small but not zero. Reduce the temporal sample count or preview long edge, or bypass the node when preview is unnecessary."
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 351,
+      "type": "MarkdownNote",
+      "pos": [
+        -1063.4907312649439,
+        4850.517832688459
+      ],
+      "size": [
+        413.6744060206963,
+        225.7085382583573
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Sigma Shift and chunk acceleration",
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.5.2",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "The attention path must match the GPU architecture: use an SM75 path on RTX 20-series/SM75 GPUs and an SM80+ path on SM80 or newer GPUs. CK INT8 is the architecture-neutral baseline. An incompatible architecture stops with a clear error instead of silently substituting another backend. If CK on SM80+ reports unprotected FP16 before sampling, check the launcher precision settings or keep the FP16 Exact Loader in this workflow so it can correct the model precision.\n\nUse the Sigma Shift values published with the LoRA. Common starting points are 6 / 3 for 4-step LoRAs and 12 / 3 for 8-step LoRAs. Bypass Sigma Shift to restore the default 12 / 3 behavior.\n\nUnder the same 1.0MP, 10-second, 24fps, 4-step reference-image workflow, CK INT8 measured 119.50 seconds/step and 620.32 seconds total; Sol SM75 All-INT8 measured 88.71 seconds/step and 442.57 seconds; SLA SM75 All-INT8 measured 60.83 seconds/step and 325.51 seconds. Sparse paths are faster, but quality depends on the content and settings. Hybrid combines CK and a sparse path on complete sampling steps.\n\n8192 is a practical starting point for the chunk controls. A stage is reduced only after that stage runs out of VRAM. Keep Attention output memory protection on Auto for normal use."
+      ],
+      "widgets_values_named": {
+        "text": "The attention path must match the GPU architecture: use an SM75 path on RTX 20-series/SM75 GPUs and an SM80+ path on SM80 or newer GPUs. CK INT8 is the architecture-neutral baseline. An incompatible architecture stops with a clear error instead of silently substituting another backend. If CK on SM80+ reports unprotected FP16 before sampling, check the launcher precision settings or keep the FP16 Exact Loader in this workflow so it can correct the model precision.\n\nUse the Sigma Shift values published with the LoRA. Common starting points are 6 / 3 for 4-step LoRAs and 12 / 3 for 8-step LoRAs. Bypass Sigma Shift to restore the default 12 / 3 behavior.\n\nUnder the same 1.0MP, 10-second, 24fps, 4-step reference-image workflow, CK INT8 measured 119.50 seconds/step and 620.32 seconds total; Sol SM75 All-INT8 measured 88.71 seconds/step and 442.57 seconds; SLA SM75 All-INT8 measured 60.83 seconds/step and 325.51 seconds. Sparse paths are faster, but quality depends on the content and settings. Hybrid combines CK and a sparse path on complete sampling steps.\n\n8192 is a practical starting point for the chunk controls. A stage is reduced only after that stage runs out of VRAM. Keep Attention output memory protection on Auto for normal use."
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 356,
+      "type": "MarkdownNote",
+      "pos": [
+        52.604588423237196,
+        5247.077547290584
+      ],
+      "size": [
+        264.8962317455549,
+        200.84253904932757
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Workflow export",
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.5.2",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "The export node can embed the workflow directly in the video. Dropping that video onto Prompt Load later restores the prompt used for generation.\n\nMessaging and social platforms may recompress videos and remove embedded metadata, so send the original file when the workflow must be preserved. Video only does not write workflow metadata.\n\nVideo + workflow PNG also creates a compact workflow PNG using the first video frame as its cover, which is useful as a visual workflow template card."
+      ],
+      "widgets_values_named": {
+        "text": "The export node can embed the workflow directly in the video. Dropping that video onto Prompt Load later restores the prompt used for generation.\n\nMessaging and social platforms may recompress videos and remove embedded metadata, so send the original file when the workflow must be preserved. Video only does not write workflow metadata.\n\nVideo + workflow PNG also creates a compact workflow PNG using the first video frame as its cover, which is useful as a visual workflow template card."
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 355,
+      "type": "MarkdownNote",
+      "pos": [
+        -1953.2234368899,
+        6575.072373779204
+      ],
+      "size": [
+        393.85170115584435,
+        117.70200797323378
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Prompt guidance",
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.5.2",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "Prompt quality directly affects shot structure, motion, subject consistency, and sound design. An AI assistant can follow MiniMax's official Skill to draft the prompt; provide the reference image or video as well so it can describe the source accurately.\n\nOfficial Skill:\nhttps://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills"
+      ],
+      "widgets_values_named": {
+        "text": "Prompt quality directly affects shot structure, motion, subject consistency, and sound design. An AI assistant can follow MiniMax's official Skill to draft the prompt; provide the reference image or video as well so it can describe the source accurately.\n\nOfficial Skill:\nhttps://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills"
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 327,
+      "type": "MiniMaxH3LoadImageScaleStar7",
+      "pos": [
+        -2297.7381018474953,
+        5891.068125470191
+      ],
+      "size": [
+        272.7372778138242,
+        425.9011799564396
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            453
+          ]
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "minimax-h3-chunk-star7",
+        "ver": "75d863dff6a7e15cbfa52f5b7d90ff1af153000d",
+        "Node name for S&R": "MiniMaxH3LoadImageScaleStar7",
         "ue_properties": {
           "widget_ue_connectable": {},
           "input_ue_unconnectable": {},
@@ -1373,20 +1315,228 @@
         }
       },
       "widgets_values": [
-        "minimax-h3\\turbo\\minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
-        1
+        "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
+        1280,
+        false,
+        false,
+        "16:9",
+        "image"
       ],
       "widgets_values_named": {
-        "lora_name": "minimax-h3\\turbo\\minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
-        "strength_model": 1
-      }
+        "image": "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
+        "最长边": 1280,
+        "允许小图放大": false,
+        "调整比例": false,
+        "目标比例": "16:9",
+        "upload": "image"
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 326,
+      "type": "MiniMaxH3LoadImageScaleStar7",
+      "pos": [
+        -2599.0481303958936,
+        5889.813055945441
+      ],
+      "size": [
+        277.7308545909186,
+        424.56824299295295
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            452
+          ]
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "minimax-h3-chunk-star7",
+        "ver": "75d863dff6a7e15cbfa52f5b7d90ff1af153000d",
+        "Node name for S&R": "MiniMaxH3LoadImageScaleStar7",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
+        1280,
+        false,
+        false,
+        "16:9",
+        "image"
+      ],
+      "widgets_values_named": {
+        "image": "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
+        "最长边": 1280,
+        "允许小图放大": false,
+        "调整比例": false,
+        "目标比例": "16:9",
+        "upload": "image"
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 363,
+      "type": "MiniMaxH3ActivationChunkStar7",
+      "pos": [
+        -1053.9592144906908,
+        5281.095981493498
+      ],
+      "size": [
+        399.1225358967961,
+        301.807846577919
+      ],
+      "flags": {},
+      "order": 27,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 473
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            471,
+            472
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "minimax-h3-chunk-star7",
+        "ver": "ec35fe2a344bd5e66dc545000a64d33a9087ff10",
+        "Node name for S&R": "MiniMaxH3ActivationChunkStar7",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        8192,
+        true,
+        true,
+        8192,
+        8192,
+        4096,
+        "auto",
+        true,
+        "comfy_kitchen_int8"
+      ],
+      "widgets_values_named": {
+        "chunk_tokens": 8192,
+        "auto_halve_on_oom": true,
+        "verbose": true,
+        "mlp_chunk_tokens": 8192,
+        "qkv_chunk_tokens": 8192,
+        "out_proj_chunk_tokens": 4096,
+        "disable_dynamic_prefetch": "auto",
+        "reuse_mlp_weights": true,
+        "attention_backend": "comfy_kitchen_int8"
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 360,
+      "type": "MiniMaxH3LivePreviewStar7",
+      "pos": [
+        -1050.8138086135978,
+        6149.449119459819
+      ],
+      "size": [
+        402.4892666748184,
+        380.43740244297624
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 29,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "Model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 472
+        },
+        {
+          "name": "preview_frames",
+          "type": "INT",
+          "widget": {
+            "name": "preview_frames"
+          }
+        },
+        {
+          "name": "preview_resolution",
+          "type": "COMBO",
+          "widget": {
+            "name": "preview_resolution"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "Model",
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            470
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "minimax-h3-live-preview-star7",
+        "ver": "f5c280b57bd70149922fee0242a28dd30baef036",
+        "Node name for S&R": "MiniMaxH3LivePreviewStar7",
+        "aux_id": "star7code/minimax-h3-live-preview-star7",
+        "ue_properties": {
+          "version": "7.5.2",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        25,
+        "512",
+        false,
+        ""
+      ],
+      "widgets_values_named": {
+        "preview_frames": 25,
+        "preview_resolution": "512",
+        "first_step_only": false,
+        "preview": ""
+      },
+      "color": "#223",
+      "bgcolor": "#335"
     },
     {
       "id": 341,
       "type": "MiniMaxH3ReferenceVideoLoadStar7",
       "pos": [
-        -2872.951350870982,
-        6414.171282287298
+        -2872.079802114664,
+        6469.04388281798
       ],
       "size": [
         380.6489178789552,
@@ -1434,7 +1584,7 @@
       },
       "widgets_values": [
         "微信视频2026-08-23_192308_734.mp4",
-        960,
+        736,
         false,
         false,
         0,
@@ -1443,7 +1593,7 @@
       ],
       "widgets_values_named": {
         "video": "微信视频2026-08-23_192308_734.mp4",
-        "max_long_edge": 960,
+        "max_long_edge": 736,
         "allow_upscale": false,
         "trim_enabled": false,
         "trim_start_seconds": 0,
@@ -1454,20 +1604,255 @@
       "bgcolor": "#335"
     },
     {
+      "id": 354,
+      "type": "MarkdownNote",
+      "pos": [
+        -3210.7399240855852,
+        6395.638216185367
+      ],
+      "size": [
+        274.3103547420527,
+        134.84181110816007
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Reference video",
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.5.2",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "Limiting the reference video's longest edge reduces vision-encoding time, generation time, and VRAM use. Set the limit to 0 to keep the source resolution.\n\nThe trim range follows the selected video's actual duration and accepts any valid start and end time; there is no fixed 15-second UI cap. Downstream processing uses only the portion that is actually available.\n\nQKV chunking reduces long-sequence temporary VRAM peaks, but it does not replace a sensible reference resolution."
+      ],
+      "widgets_values_named": {
+        "text": "Limiting the reference video's longest edge reduces vision-encoding time, generation time, and VRAM use. Set the limit to 0 to keep the source resolution.\n\nThe trim range follows the selected video's actual duration and accepts any valid start and end time; there is no fixed 15-second UI cap. Downstream processing uses only the portion that is actually available.\n\nQKV chunking reduces long-sequence temporary VRAM peaks, but it does not replace a sensible reference resolution."
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 365,
+      "type": "MarkdownNote",
+      "pos": [
+        -3228.421550786264,
+        5836.256025695117
+      ],
+      "size": [
+        291.86577169579084,
+        135.49203157862485
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Reference image",
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.5.2",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "The maximum-long-edge limit reduces reference-image resolution, vision-encoding time, and VRAM pressure. Set it to 0 to keep the original size.\n\nFor first/last-frame conditioning, enable Crop to aspect ratio and select the same ratio as the generated video. The node takes the largest centered crop to avoid later stretching. Ordinary reference images do not require forced cropping."
+      ],
+      "widgets_values_named": {
+        "text": "The maximum-long-edge limit reduces reference-image resolution, vision-encoding time, and VRAM pressure. Set it to 0 to keep the original size.\n\nFor first/last-frame conditioning, enable Crop to aspect ratio and select the same ratio as the generated video. The node takes the largest centered crop to avoid later stretching. Ordinary reference images do not require forced cropping."
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 359,
+      "type": "MarkdownNote",
+      "pos": [
+        -1501.1002132411588,
+        4853.346112131877
+      ],
+      "size": [
+        397.23357197060875,
+        221.62999796652275
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "LoRA compatibility",
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.5.2",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "The original LarryVRH minimax_h3_turbo_v4_step600 requires the author's dedicated LoRA loader. Loading it through a generic LoRA node can blur or break the result.\n\nThe minimax_h3_turbo_v4_step600_comfyui_T8-convert variant works with ComfyUI's standard LoRA loader. A full-model LoRA may include layers that do not exist in a pruned checkpoint; the current chunk node applies the compatible layers and collapses mismatch reporting into one concise notice instead of flooding the log."
+      ],
+      "widgets_values_named": {
+        "text": "The original LarryVRH minimax_h3_turbo_v4_step600 requires the author's dedicated LoRA loader. Loading it through a generic LoRA node can blur or break the result.\n\nThe minimax_h3_turbo_v4_step600_comfyui_T8-convert variant works with ComfyUI's standard LoRA loader. A full-model LoRA may include layers that do not exist in a pruned checkpoint; the current chunk node applies the compatible layers and collapses mismatch reporting into one concise notice instead of flooding the log."
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 115,
+      "type": "ResolutionSelector",
+      "pos": [
+        -2285.2192883940256,
+        5180.469354275225
+      ],
+      "size": [
+        270.6818381158014,
+        126.36236058871236
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "showAdvanced": false,
+      "inputs": [
+        {
+          "label": "aspect_ratio",
+          "name": "aspect_ratio",
+          "type": "COMBO",
+          "widget": {
+            "name": "aspect_ratio"
+          }
+        },
+        {
+          "label": "megapixels",
+          "name": "megapixels",
+          "type": "FLOAT",
+          "widget": {
+            "name": "megapixels"
+          }
+        },
+        {
+          "label": "multiple",
+          "name": "multiple",
+          "type": "INT",
+          "widget": {
+            "name": "multiple"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "width",
+          "name": "width",
+          "type": "INT",
+          "links": [
+            403
+          ]
+        },
+        {
+          "label": "height",
+          "name": "height",
+          "type": "INT",
+          "links": [
+            402
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.30.1",
+        "Node name for S&R": "ResolutionSelector",
+        "ue_properties": {
+          "version": "7.5.2",
+          "widget_ue_connectable": {
+            "aspect_ratio": true,
+            "megapixels": true,
+            "multiple": true
+          },
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "9:16 (Portrait Widescreen)",
+        1,
+        32
+      ],
+      "widgets_values_named": {
+        "aspect_ratio": "9:16 (Portrait Widescreen)",
+        "megapixels": 1,
+        "multiple": 32
+      }
+    },
+    {
+      "id": 135,
+      "type": "PrimitiveFloat",
+      "pos": [
+        -2280.906700721484,
+        5449.229635923019
+      ],
+      "size": [
+        250.9085327575615,
+        64.54529507358893
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "value",
+          "name": "value",
+          "type": "FLOAT",
+          "widget": {
+            "name": "value"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "FLOAT",
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            250
+          ]
+        }
+      ],
+      "title": "Float (duration)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.30.1",
+        "Node name for S&R": "PrimitiveFloat",
+        "ue_properties": {
+          "version": "7.5.2",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        10
+      ],
+      "widgets_values_named": {
+        "value": 10
+      }
+    },
+    {
       "id": 325,
       "type": "MiniMaxH3LoadImageScaleStar7",
       "pos": [
-        -2893.8308652032574,
-        5903.57501199988
+        -2893.0441416510657,
+        5890.987132645317
       ],
       "size": [
-        270,
-        362
+        264.352969297654,
+        422
       ],
       "flags": {
         "collapsed": false
       },
-      "order": 16,
+      "order": 21,
       "mode": 4,
       "inputs": [],
       "outputs": [
@@ -1498,12 +1883,16 @@
         "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
         1280,
         false,
+        false,
+        "16:9",
         "image"
       ],
       "widgets_values_named": {
         "image": "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
         "最长边": 1280,
         "允许小图放大": false,
+        "调整比例": false,
+        "目标比例": "16:9",
         "upload": "image"
       },
       "color": "#223",
@@ -1521,7 +1910,7 @@
         756
       ],
       "flags": {},
-      "order": 24,
+      "order": 26,
       "mode": 0,
       "inputs": [
         {
@@ -1639,7 +2028,7 @@
           "widget": {
             "name": "prompt"
           },
-          "link": 469
+          "link": 474
         },
         {
           "name": "width",
@@ -1725,11 +2114,11 @@
         }
       },
       "widgets_values": [
-        "# MiniMax H3 无参考图版本提示词\n\nintegrated_multimodal_description: [Shot 1] Cinematic, high-end 3D anime realism. An extreme close shot opens on a young woman leaning intensely toward the camera. She has lavender hair with loose strands falling across her face, soft freckles, focused amber-brown eyes, and black tactical outerwear. Behind her is a blurred urban street in daylight, with trees filtering soft natural light and a dark purple luminous mass pulsing ominously in the distance. She is already reaching toward the lens as the shot begins.\n\nThe camera holds close and shakes slightly with small amplitude, as if the viewer has just fallen backward onto the pavement. In the first second, her gloved hand moves into clearer focus as she reaches toward the viewer with urgency rather than aggression. She leans even closer, her brows tightening, and says in a low, breath-caught voice (S1): <d>[Chinese] 抓住我。</d>\n\nWithout cutting, the camera is pulled forward a small distance as if her hand has made contact. At around 00:02.500, the frame steadies slightly while strands of her lavender hair sway across her cheek. She turns her eyes briefly past the viewer’s shoulder toward the glowing disturbance in the background, then snaps her gaze back. Her breathing becomes more visible in her shoulders and parted lips.\n\nAt around 00:04.500, she braces, shifts one knee forward just out of frame, and exerts force to pull the viewer upright; the camera rises with her in one continuous motion. As the camera lifts, the background opens a little, revealing more of the empty street, drifting dust, and the ominous pulsing purple light behind her.\n\nAt around 00:06.000, she steps half a pace closer to shield the viewer, placing herself between the lens and the distant threat. Her expression softens for a beat without losing tension. She keeps one hand near the viewer as if making sure they are steady, then says with controlled urgency (S1): <d>[Chinese] 别回头，跟我走。</d>\n\nIn the final second, she begins to guide the viewer to move with her; the camera starts to pivot slightly to the right as if preparing to run beside her, while the purple glow flickers behind her shoulder and her lavender hair catches the changing light before the shot ends mid-motion.\n\noverall_soundscape: A quiet outdoor city ambience runs underneath the shot, with distant wind through roadside trees and faint urban street hush. Close to the camera, her clothing shifts softly, her movement causes light scuffs against the ground, and her breathing is audible during the pull-up motion. A low unstable energy hum pulses from the distant purple disturbance near the end.\n\nnon_diegetic_music: Sparse low electronic pulses begin almost immediately, joined by restrained string textures at a slow tempo. The music grows slightly in intensity after she says the second line, then holds tension without reaching a full climax.\n",
+        "",
         1344,
         768,
         124,
-        "Ref2VA — 参考生音视频",
+        "auto",
         "native",
         1,
         false,
@@ -1740,11 +2129,11 @@
         false
       ],
       "widgets_values_named": {
-        "prompt": "# MiniMax H3 无参考图版本提示词\n\nintegrated_multimodal_description: [Shot 1] Cinematic, high-end 3D anime realism. An extreme close shot opens on a young woman leaning intensely toward the camera. She has lavender hair with loose strands falling across her face, soft freckles, focused amber-brown eyes, and black tactical outerwear. Behind her is a blurred urban street in daylight, with trees filtering soft natural light and a dark purple luminous mass pulsing ominously in the distance. She is already reaching toward the lens as the shot begins.\n\nThe camera holds close and shakes slightly with small amplitude, as if the viewer has just fallen backward onto the pavement. In the first second, her gloved hand moves into clearer focus as she reaches toward the viewer with urgency rather than aggression. She leans even closer, her brows tightening, and says in a low, breath-caught voice (S1): <d>[Chinese] 抓住我。</d>\n\nWithout cutting, the camera is pulled forward a small distance as if her hand has made contact. At around 00:02.500, the frame steadies slightly while strands of her lavender hair sway across her cheek. She turns her eyes briefly past the viewer’s shoulder toward the glowing disturbance in the background, then snaps her gaze back. Her breathing becomes more visible in her shoulders and parted lips.\n\nAt around 00:04.500, she braces, shifts one knee forward just out of frame, and exerts force to pull the viewer upright; the camera rises with her in one continuous motion. As the camera lifts, the background opens a little, revealing more of the empty street, drifting dust, and the ominous pulsing purple light behind her.\n\nAt around 00:06.000, she steps half a pace closer to shield the viewer, placing herself between the lens and the distant threat. Her expression softens for a beat without losing tension. She keeps one hand near the viewer as if making sure they are steady, then says with controlled urgency (S1): <d>[Chinese] 别回头，跟我走。</d>\n\nIn the final second, she begins to guide the viewer to move with her; the camera starts to pivot slightly to the right as if preparing to run beside her, while the purple glow flickers behind her shoulder and her lavender hair catches the changing light before the shot ends mid-motion.\n\noverall_soundscape: A quiet outdoor city ambience runs underneath the shot, with distant wind through roadside trees and faint urban street hush. Close to the camera, her clothing shifts softly, her movement causes light scuffs against the ground, and her breathing is audible during the pull-up motion. A low unstable energy hum pulses from the distant purple disturbance near the end.\n\nnon_diegetic_music: Sparse low electronic pulses begin almost immediately, joined by restrained string textures at a slow tempo. The music grows slightly in intensity after she says the second line, then holds tension without reaching a full climax.\n",
+        "prompt": "",
         "width": 1344,
         "height": 768,
         "length": 124,
-        "task_type": "Ref2VA — 参考生音视频",
+        "task_type": "auto",
         "audio_mode": "native",
         "audio_denoise_strength": 1,
         "add_source_as_reference": false,
@@ -1767,7 +2156,7 @@
         839.0655070963785
       ],
       "flags": {},
-      "order": 17,
+      "order": 22,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -1775,7 +2164,7 @@
           "name": "prompt",
           "type": "STRING",
           "links": [
-            469
+            474
           ]
         }
       ],
@@ -1790,248 +2179,15 @@
         }
       },
       "widgets_values": [
-        "# MiniMax H3 Prompt Without References\n\nintegrated_multimodal_description: [Shot 1] Cinematic, high-end 3D anime realism. An extreme close shot opens on a young woman leaning intensely toward the camera. She has lavender hair with loose strands falling across her face, soft freckles, focused amber-brown eyes, and black tactical outerwear. Behind her is a blurred urban street in daylight, with trees filtering soft natural light and a dark purple luminous mass pulsing ominously in the distance. She is already reaching toward the lens as the shot begins.\n\nThe camera holds close and shakes slightly with small amplitude, as if the viewer has just fallen backward onto the pavement. In the first second, her gloved hand moves into clearer focus as she reaches toward the viewer with urgency rather than aggression. She leans even closer, her brows tightening, and says in a low, breath-caught voice (S1): <d>[Chinese] 抓住我。</d>\n\nWithout cutting, the camera is pulled forward a small distance as if her hand has made contact. At around 00:02.500, the frame steadies slightly while strands of her lavender hair sway across her cheek. She turns her eyes briefly past the viewer’s shoulder toward the glowing disturbance in the background, then snaps her gaze back. Her breathing becomes more visible in her shoulders and parted lips.\n\nAt around 00:04.500, she braces, shifts one knee forward just out of frame, and exerts force to pull the viewer upright; the camera rises with her in one continuous motion. As the camera lifts, the background opens a little, revealing more of the empty street, drifting dust, and the ominous pulsing purple light behind her.\n\nAt around 00:06.000, she steps half a pace closer to shield the viewer, placing herself between the lens and the distant threat. Her expression softens for a beat without losing tension. She keeps one hand near the viewer as if making sure they are steady, then says with controlled urgency (S1): <d>[Chinese] 别回头，跟我走。</d>\n\nIn the final second, she begins to guide the viewer to move with her; the camera starts to pivot slightly to the right as if preparing to run beside her, while the purple glow flickers behind her shoulder and her lavender hair catches the changing light before the shot ends mid-motion.\n\noverall_soundscape: A quiet outdoor city ambience runs underneath the shot, with distant wind through roadside trees and faint urban street hush. Close to the camera, her clothing shifts softly, her movement causes light scuffs against the ground, and her breathing is audible during the pull-up motion. A low unstable energy hum pulses from the distant purple disturbance near the end.\n\nnon_diegetic_music: Sparse low electronic pulses begin almost immediately, joined by restrained string textures at a slow tempo. The music grows slightly in intensity after she says the second line, then holds tension without reaching a full climax.\n",
+        "integrated_multimodal_description:\n\nCreate a 10-second vertical 9:16 live-action, cinematic, photorealistic comedy video.\n\nThe humor should feel natural, fast, and deadpan rather than exaggerated.\n\n<Subject 1> (S1) is a young Chinese man in his 20s, wearing casual clothes and sitting alone at a small outdoor café table.\n\n<Subject 2> is a fat orange cat sitting on the chair opposite him.\n\n[Shot 1]\n\nVertical 9:16 composition.\n\nA static medium two-shot.\n\n<Subject 1> sits at the café table with a cup of coffee.\n\nAcross from him, <Subject 2> sits upright on a chair like a person, staring seriously at him.\n\n<Subject 1> looks at the cat and speaks in a frustrated tone:\n\n<d>[Chinese] 我跟你说，公司最近真的太过分了。</d>\n\nThe cat remains completely still and keeps staring at him.\n\n[Shot 2] At 00:04.500, the camera cuts to a close-up of the orange cat.\n\nThe cat slowly blinks once.\n\nWithout changing its serious expression, it raises one paw and gently pushes the café bill across the table toward <Subject 1>.\n\n[Shot 3] At 00:07.000, reverse close-up on <Subject 1>.\n\nHe looks down at the bill.\n\nHis expression immediately changes.\n\nHe looks back at the cat and says:\n\n<d>[Chinese] 你不是来安慰我的吗？</d>\n\n[Shot 4] At 00:08.500, cut back to the cat.\n\nThe cat calmly turns its head away and looks toward the street.\n\nHold the deadpan reaction for the final second.\n\nEnd abruptly.\n\noverall_soundscape:\n\nNatural outdoor café ambience with distant traffic, soft conversation, light wind, cup contact, and subtle table sounds.\n\nKeep the cat completely silent.\n\nThe paper bill sliding across the table should be clearly audible and become the main comedic sound cue.\n\nnon_diegetic_music:\n\nVery light playful pizzicato strings.\n\nKeep the music low during the dialogue.\n\nAdd one short comedic plucked note when the cat pushes the bill toward <Subject 1>.\n\nStop the music abruptly at the end.",
         ""
       ],
       "widgets_values_named": {
-        "prompt": "# MiniMax H3 Prompt Without References\n\nintegrated_multimodal_description: [Shot 1] Cinematic, high-end 3D anime realism. An extreme close shot opens on a young woman leaning intensely toward the camera. She has lavender hair with loose strands falling across her face, soft freckles, focused amber-brown eyes, and black tactical outerwear. Behind her is a blurred urban street in daylight, with trees filtering soft natural light and a dark purple luminous mass pulsing ominously in the distance. She is already reaching toward the lens as the shot begins.\n\nThe camera holds close and shakes slightly with small amplitude, as if the viewer has just fallen backward onto the pavement. In the first second, her gloved hand moves into clearer focus as she reaches toward the viewer with urgency rather than aggression. She leans even closer, her brows tightening, and says in a low, breath-caught voice (S1): <d>[Chinese] 抓住我。</d>\n\nWithout cutting, the camera is pulled forward a small distance as if her hand has made contact. At around 00:02.500, the frame steadies slightly while strands of her lavender hair sway across her cheek. She turns her eyes briefly past the viewer’s shoulder toward the glowing disturbance in the background, then snaps her gaze back. Her breathing becomes more visible in her shoulders and parted lips.\n\nAt around 00:04.500, she braces, shifts one knee forward just out of frame, and exerts force to pull the viewer upright; the camera rises with her in one continuous motion. As the camera lifts, the background opens a little, revealing more of the empty street, drifting dust, and the ominous pulsing purple light behind her.\n\nAt around 00:06.000, she steps half a pace closer to shield the viewer, placing herself between the lens and the distant threat. Her expression softens for a beat without losing tension. She keeps one hand near the viewer as if making sure they are steady, then says with controlled urgency (S1): <d>[Chinese] 别回头，跟我走。</d>\n\nIn the final second, she begins to guide the viewer to move with her; the camera starts to pivot slightly to the right as if preparing to run beside her, while the purple glow flickers behind her shoulder and her lavender hair catches the changing light before the shot ends mid-motion.\n\noverall_soundscape: A quiet outdoor city ambience runs underneath the shot, with distant wind through roadside trees and faint urban street hush. Close to the camera, her clothing shifts softly, her movement causes light scuffs against the ground, and her breathing is audible during the pull-up motion. A low unstable energy hum pulses from the distant purple disturbance near the end.\n\nnon_diegetic_music: Sparse low electronic pulses begin almost immediately, joined by restrained string textures at a slow tempo. The music grows slightly in intensity after she says the second line, then holds tension without reaching a full climax.\n",
+        "prompt": "integrated_multimodal_description:\n\nCreate a 10-second vertical 9:16 live-action, cinematic, photorealistic comedy video.\n\nThe humor should feel natural, fast, and deadpan rather than exaggerated.\n\n<Subject 1> (S1) is a young Chinese man in his 20s, wearing casual clothes and sitting alone at a small outdoor café table.\n\n<Subject 2> is a fat orange cat sitting on the chair opposite him.\n\n[Shot 1]\n\nVertical 9:16 composition.\n\nA static medium two-shot.\n\n<Subject 1> sits at the café table with a cup of coffee.\n\nAcross from him, <Subject 2> sits upright on a chair like a person, staring seriously at him.\n\n<Subject 1> looks at the cat and speaks in a frustrated tone:\n\n<d>[Chinese] 我跟你说，公司最近真的太过分了。</d>\n\nThe cat remains completely still and keeps staring at him.\n\n[Shot 2] At 00:04.500, the camera cuts to a close-up of the orange cat.\n\nThe cat slowly blinks once.\n\nWithout changing its serious expression, it raises one paw and gently pushes the café bill across the table toward <Subject 1>.\n\n[Shot 3] At 00:07.000, reverse close-up on <Subject 1>.\n\nHe looks down at the bill.\n\nHis expression immediately changes.\n\nHe looks back at the cat and says:\n\n<d>[Chinese] 你不是来安慰我的吗？</d>\n\n[Shot 4] At 00:08.500, cut back to the cat.\n\nThe cat calmly turns its head away and looks toward the street.\n\nHold the deadpan reaction for the final second.\n\nEnd abruptly.\n\noverall_soundscape:\n\nNatural outdoor café ambience with distant traffic, soft conversation, light wind, cup contact, and subtle table sounds.\n\nKeep the cat completely silent.\n\nThe paper bill sliding across the table should be clearly audible and become the main comedic sound cue.\n\nnon_diegetic_music:\n\nVery light playful pizzicato strings.\n\nKeep the music low during the dialogue.\n\nAdd one short comedic plucked note when the cat pushes the bill toward <Subject 1>.\n\nStop the music abruptly at the end.",
         "star7_prompt_import_actions": ""
       },
       "color": "#223",
       "bgcolor": "#335"
-    },
-    {
-      "id": 115,
-      "type": "ResolutionSelector",
-      "pos": [
-        -2285.2192883940256,
-        5180.469354275225
-      ],
-      "size": [
-        270.6818381158014,
-        126.36236058871236
-      ],
-      "flags": {},
-      "order": 18,
-      "mode": 0,
-      "showAdvanced": false,
-      "inputs": [
-        {
-          "label": "aspect_ratio",
-          "name": "aspect_ratio",
-          "type": "COMBO",
-          "widget": {
-            "name": "aspect_ratio"
-          }
-        },
-        {
-          "label": "megapixels",
-          "name": "megapixels",
-          "type": "FLOAT",
-          "widget": {
-            "name": "megapixels"
-          }
-        },
-        {
-          "label": "multiple",
-          "name": "multiple",
-          "type": "INT",
-          "widget": {
-            "name": "multiple"
-          }
-        }
-      ],
-      "outputs": [
-        {
-          "label": "width",
-          "name": "width",
-          "type": "INT",
-          "links": [
-            403
-          ]
-        },
-        {
-          "label": "height",
-          "name": "height",
-          "type": "INT",
-          "links": [
-            402
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.30.1",
-        "Node name for S&R": "ResolutionSelector",
-        "ue_properties": {
-          "version": "7.5.2",
-          "widget_ue_connectable": {
-            "aspect_ratio": true,
-            "megapixels": true,
-            "multiple": true
-          },
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "9:16 (Portrait Widescreen)",
-        1,
-        32
-      ],
-      "widgets_values_named": {
-        "aspect_ratio": "9:16 (Portrait Widescreen)",
-        "megapixels": 1,
-        "multiple": 32
-      }
-    },
-    {
-      "id": 135,
-      "type": "PrimitiveFloat",
-      "pos": [
-        -2276.273059479423,
-        5449.229635923019
-      ],
-      "size": [
-        250.9085327575615,
-        64.54529507358893
-      ],
-      "flags": {},
-      "order": 19,
-      "mode": 0,
-      "inputs": [
-        {
-          "label": "value",
-          "name": "value",
-          "type": "FLOAT",
-          "widget": {
-            "name": "value"
-          }
-        }
-      ],
-      "outputs": [
-        {
-          "label": "FLOAT",
-          "name": "FLOAT",
-          "type": "FLOAT",
-          "links": [
-            250
-          ]
-        }
-      ],
-      "title": "Float (duration)",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.30.1",
-        "Node name for S&R": "PrimitiveFloat",
-        "ue_properties": {
-          "version": "7.5.2",
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        10
-      ],
-      "widgets_values_named": {
-        "value": 10
-      }
-    },
-    {
-      "id": 299,
-      "type": "MiniMaxH3ActivationChunkStar7",
-      "pos": [
-        -1056.4875580132548,
-        5279.65312976069
-      ],
-      "size": [
-        410,
-        298
-      ],
-      "flags": {},
-      "order": 25,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 442
-        }
-      ],
-      "outputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "links": [
-            341,
-            342
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "minimax-h3-chunk-star7",
-        "ver": "32802bfe36bf2e3bdaf7472ed3b003a91ad975f8",
-        "Node name for S&R": "MiniMaxH3ActivationChunkStar7",
-        "ue_properties": {
-          "version": "7.5.2",
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        8192,
-        true,
-        true,
-        8192,
-        8192,
-        "Experimental feature removed",
-        true,
-        "comfy_kitchen_int8"
-      ],
-      "widgets_values_named": {
-        "chunk_tokens": 8192,
-        "auto_halve_on_oom": true,
-        "verbose": true,
-        "mlp_chunk_tokens": 8192,
-        "qkv_chunk_tokens": 8192,
-        "disable_dynamic_prefetch": "Experimental feature removed",
-        "reuse_mlp_weights": true,
-        "attention_backend": "comfy_kitchen_int8"
-      },
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
-      "id": 352,
-      "type": "MarkdownNote",
-      "pos": [
-        -1950.7583229284187,
-        4883.968359743578
-      ],
-      "size": [
-        377.8548825175975,
-        185.25758016884356
-      ],
-      "flags": {},
-      "order": 20,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "title": "Model Loading",
-      "properties": {
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "version": "7.5.2",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "RTX 20-series GPUs and other devices without efficient BF16 support should use MiniMax H3 Native FP16 Loader - Star7. See its GitHub page for the numerical-protection and quantization details. Newer architectures should use ComfyUI's standard UNET loader.\n\nModel download:\nhttps://pan.quark.cn/s/27f28ba550dc\n\nInstall missing nodes through ComfyUI Manager so they can be updated normally:\n\nhttps://github.com/star7code/minimax-h3-chunk-star7.git\n\nhttps://github.com/star7code/minimax-h3-fp16-exact-star7.git\n\nhttps://github.com/T8mars/comfyui-minimax-h3-audio-T8.git"
-      ],
-      "widgets_values_named": {
-        "text": "RTX 20-series GPUs and other devices without efficient BF16 support should use MiniMax H3 Native FP16 Loader - Star7. See its GitHub page for the numerical-protection and quantization details. Newer architectures should use ComfyUI's standard UNET loader.\n\nModel download:\nhttps://pan.quark.cn/s/27f28ba550dc\n\nInstall missing nodes through ComfyUI Manager so they can be updated normally:\n\nhttps://github.com/star7code/minimax-h3-chunk-star7.git\n\nhttps://github.com/star7code/minimax-h3-fp16-exact-star7.git\n\nhttps://github.com/T8mars/comfyui-minimax-h3-audio-T8.git"
-      },
-      "color": "#432",
-      "bgcolor": "#653"
     }
   ],
   "links": [
@@ -2106,22 +2262,6 @@
       150,
       1,
       "AUDIO"
-    ],
-    [
-      341,
-      299,
-      0,
-      126,
-      0,
-      "MODEL"
-    ],
-    [
-      342,
-      299,
-      0,
-      128,
-      0,
-      "MODEL"
     ],
     [
       380,
@@ -2204,14 +2344,6 @@
       "SAMPLER"
     ],
     [
-      442,
-      313,
-      0,
-      299,
-      0,
-      "MODEL"
-    ],
-    [
       449,
       325,
       0,
@@ -2292,7 +2424,39 @@
       "AUDIO"
     ],
     [
-      469,
+      470,
+      360,
+      0,
+      128,
+      0,
+      "MODEL"
+    ],
+    [
+      471,
+      363,
+      0,
+      126,
+      0,
+      "MODEL"
+    ],
+    [
+      472,
+      363,
+      0,
+      360,
+      0,
+      "MODEL"
+    ],
+    [
+      473,
+      313,
+      0,
+      363,
+      0,
+      "MODEL"
+    ],
+    [
+      474,
       334,
       0,
       275,
@@ -2303,19 +2467,19 @@
   "groups": [
     {
       "id": 6,
-      "title": "Duration / s",
+      "title": "Duration (seconds)",
       "bounding": [
-        -2289.6876063445566,
+        -2294.3212475866176,
         5363.335265342356,
-        283.499418935927,
-        184.3792319253098
+        286.14724509903135,
+        183.7172935656581
       ],
       "color": "#3f789e",
       "flags": {}
     },
     {
       "id": 7,
-      "title": "Aspect Ratio and Resolution",
+      "title": "Video aspect ratio and resolution",
       "bounding": [
         -2295.8348205471257,
         5093.4596492753535,
@@ -2327,34 +2491,34 @@
     },
     {
       "id": 8,
-      "title": "Sampling Steps",
+      "title": "Sampling steps",
       "bounding": [
-        -2285.8756914479054,
-        5568.417174642567,
-        279.20549476367023,
-        204.93917767856055
+        -2293.157195215318,
+        5565.107410119813,
+        281.85332092677436,
+        206.92506548201254
       ],
       "color": "#3f789e",
       "flags": {}
     },
     {
       "id": 9,
-      "title": "Reference Image (drag and drop supported; press Ctrl+B to bypass when unused)",
+      "title": "Reference image (drop a file here; Ctrl+B to bypass)",
       "bounding": [
         -2912.437701754306,
         5807.582220109461,
-        902.4217354874897,
-        475.2177977888505
+        903.3736709856419,
+        527.2293420940969
       ],
       "color": "#8A8",
       "flags": {}
     },
     {
       "id": 10,
-      "title": "Reference Video (drag and drop supported; press Ctrl+B to bypass when unused)",
+      "title": "Reference video (drop a file here; Ctrl+B to bypass)",
       "bounding": [
-        -2912.052212772293,
-        6306.403884488551,
+        -2911.180664015975,
+        6361.276485019233,
         901.2651898492643,
         1053.0785671622498
       ],
@@ -2377,10 +2541,10 @@
     "frontendVersion": "1.51.9",
     "VHS_latentpreview": false,
     "ds": {
-      "scale": 0.9853250057791951,
+      "scale": 0.7247295000000085,
       "offset": [
-        2967.4415965740473,
-        -5086.661205597645
+        3189.2763152334605,
+        -5293.320476865468
       ]
     },
     "anomalous_hashes": {
@@ -2396,12 +2560,11 @@
         "hash": "",
         "size": 20970379632
       },
-      "311_minimax-h3\\turbo\\minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors": {
+      "311_minimax-h3\\turbo\\minimax_h3_turbo_v4_step600_comfyui_T8-convert.safetensors": {
         "hash": "",
-        "size": 1956192992
+        "size": 779858903
       }
     }
   },
   "version": 0.4
 }
-

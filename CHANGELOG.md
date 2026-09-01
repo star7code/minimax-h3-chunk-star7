@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.12.10 - 2026-09-01
+
+- Replaced the architecture-specific example set with one universal Chinese
+  workflow and one fully translated English workflow. Both retain identical
+  node IDs, links, backend values, and precision-protection behavior.
+- Updated workflow notes for SM75/SM80+ precision selection, current reference
+  trimming, TAEH3 mirror fallback, LoRA compatibility, and exact benchmark
+  conditions.
+- Fixed H3 Live Preview localization so English environments no longer receive
+  a hard-coded Chinese title or widget labels.
+
 ## 2.12.9 - 2026-09-01
 
 - Added compatibility with both `taeh3.safetensors` and

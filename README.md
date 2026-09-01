@@ -300,9 +300,8 @@ STAR7_SLA_LONG_SELF_TEST=1
 
 ## 示例工作流
 
-- [通用工作流](examples/workflows/MiniMax-H3-Activation-Chunk-Star7.json)：适合自行选择原生、Sage、CK 或 SM80+ 路径。
-- [通用工作流（English）](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-English.json)：英文画布标签与说明版本。
-- [RTX 20 系工作流](examples/workflows/MiniMax-H3-Activation-Chunk-RTX20-Star7.json)：使用 Native FP16 Loader，并默认采用 Sol SM75 All-INT8。
+- [通用工作流（中文）](examples/workflows/MiniMax-H3-Activation-Chunk-Star7.json)：同一工作流适配 SM75、SM80+ 等不同架构，并包含精度保护、分块、实时预览和参考载入说明。
+- [General workflow (English)](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-English.json)：完整英文画布标签与说明版本，节点内部 ID 保持兼容。
 
 示例中的参考条件来自 [T8mars/comfyui-minimax-h3-audio-T8](https://github.com/T8mars/comfyui-minimax-h3-audio-T8)。仓库不包含可能涉及版权或隐私的参考素材，导入工作流后请替换占位文件。
 
