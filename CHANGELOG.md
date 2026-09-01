@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.12.9 - 2026-09-01
+
+- Added compatibility with both `taeh3.safetensors` and
+  `taeh3_decoder.safetensors` decoder filenames, validating the required
+  24-channel TAEHV layout before use.
+- The automatic preview-decoder download now races the HF domestic mirror and
+  the pinned official source using isolated temporary files, then falls back
+  to the remaining mirrors with SHA-256 verification. Sampling remains
+  non-blocking and only one canonical decoder file is kept.
+
 ## 2.12.8 - 2026-09-01
 
 - Added a compact hover-only timeline to H3 Live Preview. Dragging pauses the

@@ -27,11 +27,26 @@ except ImportError:
 LOG_PREFIX = "[H3 Live Preview - Star7]"
 EVENT_NAME = "star7_h3_live_preview"
 TAEH3_FILENAME = "taeh3.safetensors"
-TAEH3_URL = (
+# Accept the official filename and the decoder-suffixed alias used by some
+# ComfyUI model packs. The official name remains the preferred one.
+TAEH3_FILENAMES = (
+    "taeh3.safetensors",
+    "taeh3_decoder.safetensors",
+)
+TAEH3_OFFICIAL_URL = (
     "https://raw.githubusercontent.com/madebyollin/taehv/"
     "62f7591f59dfbb4c3c02b7a621d180a9eeaba26c/"
     "safetensors/taeh3.safetensors"
 )
+TAEH3_URLS = (
+    "https://hf-mirror.com/suanyu/taeh3-star7/resolve/main/taeh3.safetensors",
+    TAEH3_OFFICIAL_URL,
+    "https://huggingface.co/suanyu/taeh3-star7/resolve/main/taeh3.safetensors",
+    f"https://ghproxy.net/{TAEH3_OFFICIAL_URL}",
+    f"https://gh-proxy.com/{TAEH3_OFFICIAL_URL}",
+)
+# Compatibility name for integrations that imported the original constant.
+TAEH3_URL = TAEH3_OFFICIAL_URL
 TAEH3_SHA256 = "4fd022bfcab08772fe0536b17ea1a3bbb5625be11e397868d1c5d891863d4c13"
 
 
@@ -59,7 +74,7 @@ class TAEH3BackgroundDownload:
             return self._done, self._error
 
     def _run(self):
-        part_path = None
+        failures = []
         try:
             directories = folder_paths.get_folder_paths("vae_approx")
             if not directories:
@@ -67,33 +82,72 @@ class TAEH3BackgroundDownload:
             directory = directories[0]
             os.makedirs(directory, exist_ok=True)
             final_path = os.path.join(directory, TAEH3_FILENAME)
-            part_path = final_path + ".star7-download"
-            digest = hashlib.sha256()
-            with urllib.request.urlopen(TAEH3_URL, timeout=30) as response, open(
-                part_path, "wb"
-            ) as output:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    output.write(chunk)
-                    digest.update(chunk)
-            actual = digest.hexdigest().lower()
-            if actual != TAEH3_SHA256:
-                raise RuntimeError(
-                    f"taeh3.safetensors SHA256 mismatch: expected {TAEH3_SHA256}, got {actual}"
+
+            # Race the preferred domestic mirror and the official source. Each
+            # attempt has its own temporary file; only the first SHA-256-valid
+            # result is atomically moved into place.
+            winner = threading.Event()
+            winner_lock = threading.Lock()
+
+            def download_one(index, url):
+                part_path = f"{final_path}.star7-download-{index}"
+                try:
+                    digest = hashlib.sha256()
+                    with urllib.request.urlopen(url, timeout=30) as response, open(
+                        part_path, "wb"
+                    ) as output:
+                        while True:
+                            chunk = response.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            output.write(chunk)
+                            digest.update(chunk)
+                    actual = digest.hexdigest().lower()
+                    if actual != TAEH3_SHA256:
+                        raise RuntimeError(
+                            f"SHA256 mismatch (got {actual[:12]}…)"
+                        )
+                    with winner_lock:
+                        if winner.is_set():
+                            return False
+                        os.replace(part_path, final_path)
+                        winner.set()
+                    logging.info("%s decoder downloaded from %s", LOG_PREFIX, url)
+                    return True
+                except Exception as error:
+                    failures.append(f"{url}: {error}")
+                    return False
+                finally:
+                    try:
+                        os.remove(part_path)
+                    except OSError:
+                        pass
+
+            preferred = list(TAEH3_URLS[:2])
+            workers = []
+            for index, url in enumerate(preferred):
+                worker = threading.Thread(
+                    target=download_one, args=(index, url), daemon=True
                 )
-            os.replace(part_path, final_path)
-            part_path = None
+                workers.append(worker)
+                worker.start()
+            for worker in workers:
+                worker.join()
+
+            # If both preferred sources failed, try the remaining mirrors in
+            # priority order before reporting a non-critical preview failure.
+            if not winner.is_set():
+                for index, url in enumerate(TAEH3_URLS[2:], start=2):
+                    if download_one(index, url):
+                        break
+                else:
+                    raise RuntimeError(
+                        "all download sources failed; " + "; ".join(failures)
+                    )
             with self._lock:
                 self._done = True
             logging.info("%s taeh3.safetensors background download completed", LOG_PREFIX)
         except Exception as error:
-            if part_path is not None:
-                try:
-                    os.remove(part_path)
-                except OSError:
-                    pass
             with self._lock:
                 self._error = str(error)
             logging.warning("%s taeh3.safetensors download failed: %s", LOG_PREFIX, error)
@@ -218,15 +272,27 @@ def send_status(node_id, run_id, status, message=None, total=None):
 
 
 def load_taeh3():
-    path = folder_paths.get_full_path("vae_approx", TAEH3_FILENAME)
-    if path is None:
-        raise FileNotFoundError("taeh3.safetensors not found in models/vae_approx")
-    state_dict = comfy.utils.load_torch_file(path, safe_load=True)
-    vae = comfy.sd.VAE(sd=state_dict)
-    vae.throw_exception_if_invalid()
-    if vae.latent_channels != 24 or vae.first_stage_model.__class__.__name__ != "TAEHV":
-        raise ValueError("taeh3.safetensors is not a 24-channel TAEHV decoder")
-    return vae
+    paths = []
+    for filename in TAEH3_FILENAMES:
+        path = folder_paths.get_full_path("vae_approx", filename)
+        if path is not None and path not in paths:
+            paths.append(path)
+    if not paths:
+        names = " or ".join(TAEH3_FILENAMES)
+        raise FileNotFoundError(f"{names} not found in models/vae_approx")
+
+    last_error = None
+    for path in paths:
+        try:
+            state_dict = comfy.utils.load_torch_file(path, safe_load=True)
+            vae = comfy.sd.VAE(sd=state_dict)
+            vae.throw_exception_if_invalid()
+            if vae.latent_channels != 24 or vae.first_stage_model.__class__.__name__ != "TAEHV":
+                raise ValueError("decoder is not a 24-channel TAEHV decoder")
+            return vae
+        except Exception as error:
+            last_error = error
+    raise ValueError(f"no compatible 24-channel TAEHV decoder found ({last_error})")
 
 
 def load_taeh3_or_start_download():
