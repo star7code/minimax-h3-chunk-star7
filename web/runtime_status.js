@@ -17,11 +17,15 @@ const REAL_WIDGET_DEFAULTS = {
     // keep their historical behavior. Fresh node defaults come from Python.
     mlp_chunk_tokens: 4096,
     qkv_chunk_tokens: 4096,
-    disable_dynamic_prefetch: "Experimental feature removed",
+    out_proj_chunk_tokens: 4096,
+    disable_dynamic_prefetch: "auto",
     reuse_mlp_weights: true,
     attention_backend: "comfy_kitchen_int8",
 };
 const REAL_WIDGET_NAMES = Object.keys(REAL_WIDGET_DEFAULTS);
+const LEGACY_REAL_WIDGET_NAMES = REAL_WIDGET_NAMES.filter(
+    (name) => name !== "out_proj_chunk_tokens",
+);
 
 const TEXT = {
     en: {
@@ -33,21 +37,24 @@ const TEXT = {
             verbose: "Show runtime details",
             mlp_chunk_tokens: "MLP chunk size (main VRAM control)",
             qkv_chunk_tokens: "QKV chunk size",
-            disable_dynamic_prefetch: "Preload next block (experimental feature removed)",
+            out_proj_chunk_tokens: "out_proj fallback chunk size",
+            disable_dynamic_prefetch: "Attention output memory protection",
             reuse_mlp_weights: "Reuse chunked weights (faster)",
-            attention_backend: "Attention method",
+            attention_backend: "Attention acceleration method",
         },
         tooltips: {
             chunk_tokens: "0 tries full-sequence RoPE first. With automatic reduction enabled, only a RoPE VRAM error makes it retry with a smaller chunk. Usually keep 8192.",
-            auto_halve_on_oom: "Retries only the failing RoPE, MLP, or QKV stage with a smaller chunk. It cannot reduce model weights, attention buffers, or other fixed allocations.",
+            auto_halve_on_oom: "Retries only the failing RoPE, MLP, or QKV stage with a smaller chunk. Attention output protection is controlled independently. It cannot reduce model weights, attention buffers, or other fixed allocations.",
             verbose: "Shows actual chunk sizes, automatic reductions, and active QKV/MLP weight modes in the console.",
             mlp_chunk_tokens: "0 tries full-sequence MLP first. With automatic reduction enabled, an MLP VRAM error is retried with a smaller chunk. Otherwise this is the main VRAM control.",
             qkv_chunk_tokens: "Controls the temporary QKV projection workspace. 0 tries the full sequence first; with automatic reduction enabled, only a QKV projection VRAM error reduces this stage.",
-            disable_dynamic_prefetch: "Legacy workflow field only. This experimental feature has been removed and is always disabled.",
+            out_proj_chunk_tokens: "Fallback workspace control for H3 out_proj. Eligible SM75 TensorWise INT8 uses the full fused CUTLASS contraction without a full INT32 buffer; this value is used only when fused execution is unavailable or the upstream full projection runs out of VRAM.",
+            disable_dynamic_prefetch: "Auto keeps normal workloads on full out_proj and uses an internal bounded tile only when a long sequence lacks safe headroom. Off restores the incoming out_proj behavior.",
             reuse_mlp_weights: "Reuses isolated QKV/MLP weight snapshots across token chunks. Falls back safely if a snapshot runs out of VRAM.",
             attention_backend: "Select the incoming backend, CK INT8, or the matching SM75/SM80+ SLA, Sol, or Hybrid path. Architecture-specific sparse modes stop on failure instead of substituting another backend. All-INT8 prioritizes throughput and should be quality-tested for the target workflow.",
         },
-        removedValue: "Experimental feature removed",
+        protectionAuto: "Auto",
+        protectionOff: "Off",
         current: (label, value) => `${label} in use: ${value} (configured)`,
         limited: (label, value, configured) => `${label} in use: ${value} (set ${configured}, limited by video size)`,
         reduced: (label, value, configured) => `${label} auto-reduced to: ${value} (set ${configured})`,
@@ -65,21 +72,24 @@ const TEXT = {
             verbose: "显示运行详情",
             mlp_chunk_tokens: "MLP 分块大小（主要显存调节）",
             qkv_chunk_tokens: "QKV 分块大小（参考显存调节）",
-            disable_dynamic_prefetch: "提前加载下一层（实验功能已移除）",
+            out_proj_chunk_tokens: "out_proj 兜底分块（参考显存调节）",
+            disable_dynamic_prefetch: "注意力输出显存保护",
             reuse_mlp_weights: "复用分块权重（提速）",
-            attention_backend: "注意力计算方式",
+            attention_backend: "注意力加速方式",
         },
         tooltips: {
             chunk_tokens: "设为 0 会先尝试整段 RoPE；开启自动降档后，只有 RoPE 显存不足才缩小重试。通常保持 8192。",
-            auto_halve_on_oom: "只缩小发生显存不足的 RoPE、MLP 或 QKV 阶段并重试；模型权重、注意力固定缓冲等显存不会被误降。",
+            auto_halve_on_oom: "只缩小发生显存不足的 RoPE、MLP 或 QKV 阶段并重试；注意力输出显存保护由独立选项控制。模型权重、注意力固定缓冲等显存不会被误降。",
             verbose: "在控制台显示实际分块、是否自动降档以及 QKV/MLP 权重加速方式。",
             mlp_chunk_tokens: "设为 0 会先尝试整段 MLP；开启自动降档后，只有 MLP 显存不足才缩小重试。它仍是主要显存调节项。",
             qkv_chunk_tokens: "调节 QKV 投影的临时显存。设为 0 会先尝试整段计算；开启自动降档后，只有 QKV 投影显存不足才降低这一阶段。",
-            disable_dynamic_prefetch: "仅为兼容旧工作流保留，不再参与计算，功能始终关闭。",
+            out_proj_chunk_tokens: "用于 out_proj 的显存兜底。符合条件的 SM75 TensorWise INT8 会优先整段调用 fused CUTLASS，不生成完整 INT32 缓冲；仅在 fused 不可用或上游整段投影显存不足时使用此分块值。",
+            disable_dynamic_prefetch: "自动：普通任务保持整段 out_proj，长序列显存余量不足时才启用内部安全分块；关闭：恢复传入模型原始的 out_proj 行为。",
             reuse_mlp_weights: "在 token 块之间复用独立 QKV/MLP 权重快照；快照显存不足时自动切换安全流式路径。",
             attention_backend: "可选择传入模型已有后端、CK INT8，或与显卡架构对应的 SM75/SM80+ SLA、Sol、Hybrid 路径。架构专用稀疏模式失败时终止，不替换为其他后端；All-INT8 侧重吞吐，建议按目标工作流验证质量。",
         },
-        removedValue: "实验功能已移除",
+        protectionAuto: "自动",
+        protectionOff: "关闭",
         current: (label, value) => `${label} 实际使用：${value}（设定值）`,
         limited: (label, value, configured) => `${label} 实际使用：${value}（设定 ${configured}，视频规模只需要这么多）`,
         reduced: (label, value, configured) => `${label} 已自动降为：${value}（原设定 ${configured}）`,
@@ -170,6 +180,15 @@ function language() {
 
 function strings() {
     return TEXT[language()];
+}
+
+function normalizeProtectionValue(value) {
+    if (typeof value === "boolean") return "auto";
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (["off", "disabled", "false", "0", "关闭", "关"].includes(normalized)) {
+        return "off";
+    }
+    return "auto";
 }
 
 function localizeReferenceLoadNode(node) {
@@ -821,7 +840,9 @@ function localizeNode(node) {
         widget.options ??= {};
         widget.options.tooltip = text.tooltips[name];
         if (name === "disable_dynamic_prefetch") {
-            widget.value = text.removedValue;
+            const enabled = normalizeProtectionValue(widget.value) !== "off";
+            widget.options.values = [text.protectionAuto, text.protectionOff];
+            widget.value = enabled ? text.protectionAuto : text.protectionOff;
         }
     }
     const modelInput = node.inputs?.find((input) => input.name === "model");
@@ -884,6 +905,7 @@ function normalizeConfiguredInputs(node) {
         ["chunk_tokens", 8192],
         ["mlp_chunk_tokens", 8192],
         ["qkv_chunk_tokens", 8192],
+        ["out_proj_chunk_tokens", 4096],
     ]) {
         const widget = node.widgets?.find((item) => item.name === name);
         const numeric = Number(widget?.value);
@@ -896,7 +918,7 @@ function normalizeConfiguredInputs(node) {
 }
 
 function validSavedValue(name, value) {
-    if (name === "chunk_tokens" || name === "mlp_chunk_tokens" || name === "qkv_chunk_tokens") {
+    if (name === "chunk_tokens" || name === "mlp_chunk_tokens" || name === "qkv_chunk_tokens" || name === "out_proj_chunk_tokens") {
         const numeric = Number(value);
         return Number.isInteger(numeric) && (numeric === 0 || numeric >= 256);
     }
@@ -926,7 +948,6 @@ function validSavedValue(name, value) {
             || value === "sla_sm80+_qk_int8_pv_fp16";
     }
     if (name === "disable_dynamic_prefetch") {
-        // Old files contain a boolean here; it is now a non-functional label.
         return typeof value === "boolean" || typeof value === "string";
     }
     return typeof value === "boolean";
@@ -934,21 +955,27 @@ function validSavedValue(name, value) {
 
 function cleanSavedValues(info) {
     const named = info?.widgets_values_named ?? {};
-    const positional = Array.isArray(info?.widgets_values)
-        && info.widgets_values.length === REAL_WIDGET_NAMES.length
+    const rawPositional = Array.isArray(info?.widgets_values)
         ? info.widgets_values
         : [];
+    const positionalNames = rawPositional.length === REAL_WIDGET_NAMES.length
+        ? REAL_WIDGET_NAMES
+        : rawPositional.length === LEGACY_REAL_WIDGET_NAMES.length
+            ? LEGACY_REAL_WIDGET_NAMES
+            : [];
+    const positional = Object.fromEntries(
+        positionalNames.map((name, index) => [name, rawPositional[index]]),
+    );
     const values = REAL_WIDGET_NAMES.map((name, index) => {
-        if (name === "disable_dynamic_prefetch") {
-            return REAL_WIDGET_DEFAULTS[name];
-        }
         const namedValue = named[name];
         if (validSavedValue(name, namedValue)) {
-            return namedValue;
+            return name === "disable_dynamic_prefetch"
+                ? normalizeProtectionValue(namedValue) : namedValue;
         }
-        const positionalValue = positional[index];
+        const positionalValue = positional[name];
         if (validSavedValue(name, positionalValue)) {
-            return positionalValue;
+            return name === "disable_dynamic_prefetch"
+                ? normalizeProtectionValue(positionalValue) : positionalValue;
         }
         return REAL_WIDGET_DEFAULTS[name];
     });
@@ -963,10 +990,10 @@ function cleanSavedValues(info) {
 
 function serializeRealWidgets(node, info) {
     const values = REAL_WIDGET_NAMES.map((name) => {
-        if (name === "disable_dynamic_prefetch") {
-            return REAL_WIDGET_DEFAULTS[name];
-        }
         const value = node.widgets?.find((widget) => widget.name === name)?.value;
+        if (name === "disable_dynamic_prefetch") {
+            return normalizeProtectionValue(value);
+        }
         return validSavedValue(name, value) ? value : REAL_WIDGET_DEFAULTS[name];
     });
     info.widgets_values = values;
@@ -981,6 +1008,7 @@ function reorderDisplayWidgets(node) {
         "star7_mlp_runtime_status",
         "qkv_chunk_tokens",
         "star7_qkv_runtime_status",
+        "out_proj_chunk_tokens",
         "chunk_tokens",
         "star7_rope_runtime_status",
         "auto_halve_on_oom",
@@ -996,6 +1024,13 @@ function reorderDisplayWidgets(node) {
         return (rank.get(leftName) ?? displayOrder.length)
             - (rank.get(rightName) ?? displayOrder.length);
     });
+}
+
+function hideInternalOutProjWidget(node) {
+    const widget = node.widgets?.find((item) => item.name === "out_proj_chunk_tokens");
+    if (!widget) return;
+    widget.__star7InternalOutProj = true;
+    widget.computeSize = () => [0, -4];
 }
 
 function restoreSerializedWidgetOrder(node) {
@@ -1022,6 +1057,7 @@ function moveAfter(node, widget, anchorName) {
 function ensureStatusWidgets(node) {
     removeStatusWidgets(node);
     normalizeConfiguredInputs(node);
+    hideInternalOutProjWidget(node);
     const configuredRope = Number(
         node.widgets?.find((item) => item.name === "chunk_tokens")?.value ?? 8192,
     );
@@ -1031,13 +1067,17 @@ function ensureStatusWidgets(node) {
     const configuredQkv = Number(
         node.widgets?.find((item) => item.name === "qkv_chunk_tokens")?.value ?? 8192,
     );
+    const configuredOutProj = Number(
+        node.widgets?.find((item) => item.name === "out_proj_chunk_tokens")?.value ?? 4096,
+    );
     localizeNode(node);
     const text = strings();
     const runtime = node.__star7RuntimeDetail;
     const runtimeMatchesInputs = runtime
         && Number(runtime.configured_rope) === configuredRope
         && Number(runtime.configured_mlp) === configuredMlp
-        && Number(runtime.configured_qkv) === configuredQkv;
+        && Number(runtime.configured_qkv) === configuredQkv
+        && Number(runtime.configured_out_proj) === configuredOutProj;
     const effectiveRope = runtimeMatchesInputs
         ? Number(runtime.effective_rope) : configuredRope;
     const effectiveMlp = runtimeMatchesInputs

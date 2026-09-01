@@ -77,8 +77,14 @@ Chinese ComfyUI environments display Chinese node and control labels; other loca
 | `mlp_chunk_tokens` | MLP expanded-activation chunk limit; usually the primary VRAM control | `8192`, then `4096` when memory is tight |
 | `qkv_chunk_tokens` | QKV projection workspace chunk limit | `8192`, then lower when needed |
 | `auto_halve_on_oom` | Retry only the failed chunk stage at half size | `true` |
+| Attention output memory protection | Keep full `out_proj` with safe headroom; automatically tile risky long sequences | `Auto` |
 | `reuse_mlp_weights` | Reuse prepared QKV/MLP weight snapshots when safe | `true` |
-| `attention_backend` | Select existing, CK, SLA, Sol, or Hybrid attention | `comfy_kitchen_int8` |
+| Attention acceleration method | Select existing, CK, SLA, Sol, or Hybrid attention | `comfy_kitchen_int8` |
+
+Automatic downshift and attention-output protection are independent. The first
+handles recoverable QKV, RoPE, and MLP chunk OOMs; the second handles only the
+attention `out_proj` peak. Retired prefetch values in older workflows migrate
+to Auto, and the internal fallback tile is not exposed in the UI.
 
 For RTX 20-series GPUs, pair this project with [MiniMax H3 FP16 Exact Fix - Star7](https://github.com/star7code/minimax-h3-fp16-exact-star7). It adds FP16 numerical protection without converting CK/SLA/Sol INT8 attention calculations to FP16.
 

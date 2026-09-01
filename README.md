@@ -145,7 +145,7 @@ git clone https://github.com/star7code/minimax-h3-chunk-star7.git
 
 | 节点 | 用途 |
 |---|---|
-| `MiniMax H3 显存分块加速 - Star7` | QKV/RoPE/MLP 分块、自动降档和注意力选择 |
+| `MiniMax H3 显存分块加速 - Star7` | QKV/RoPE/MLP 分块、注意力输出显存保护、自动降档和注意力加速选择 |
 | `MiniMax H3 实时预览 - Star7` | 每个采样步骤后用 TAEH3 显示覆盖完整时间轴的循环动画 |
 | `参考视频载入 - Star7` | 支持直接拖入视频，完成载入、时间范围裁切和最长边限制，输出同一时间窗的画面与音频 |
 | `参考图像载入 - Star7` | 支持直接拖入图片，在一个节点中完成载入、最长边限制和可选小图放大 |
@@ -194,11 +194,15 @@ attention_backend = existing
 | `mlp_chunk_tokens` | MLP 扩展激活分块上限，通常是主要显存调节项 | `8192`；显存紧张时先降至 `4096` |
 | `qkv_chunk_tokens` | QKV 投影临时工作集 | `8192`；显存紧张时再降低 |
 | `auto_halve_on_oom` | 当前分块 OOM 时只对失败阶段减半重试，最低 `256` | `true` |
+| 注意力输出显存保护 | 显存充足时保持整段 `out_proj`；长序列自动采用内部安全分块 | `自动` |
 | `reuse_mlp_weights` | 安全时复用已准备的 QKV/MLP 权重快照，显存压力下改用 streamed 路径 | `true` |
-| `attention_backend` | 选择已有、CK、SLA、Sol 或 Hybrid 注意力 | `comfy_kitchen_int8` |
+| 注意力加速方式 | 选择已有、CK、SLA、Sol 或 Hybrid 注意力 | `comfy_kitchen_int8` |
 | `verbose` | 输出紧凑配置、首个同形状 block 和注意力路由信息 | `true` |
 
-`提前加载下一层（实验功能已移除）` 只为旧工作流保留字段位置，运行时始终关闭，不参与计算。
+注意力输出显存保护与自动降档互不重叠：前者仅处理 attention
+`out_proj`，后者处理 QKV、RoPE 和 MLP。旧工作流中的“提前加载下一层”
+字段会迁移为默认的“自动”，无需重新创建节点。内部 `out_proj` 分块大小不
+对用户显示。
 
 节点会分别显示 RoPE、MLP、QKV 的实际使用值：
 
@@ -279,7 +283,7 @@ FastH3 VSA 模型同样选择 `attention_backend=existing`：VSA 加速由上游
 
 ## 错误处理与日志
 
-- Chunk 的自动降档只处理当前 QKV/RoPE/MLP 分块的可恢复 OOM；完整 Q/K/V 分配、attention kernel 或模型加载 OOM 会在错误信息中单独区分。
+- Chunk 的自动降档只处理当前 QKV/RoPE/MLP 分块的可恢复 OOM；注意力输出显存保护独立处理 `out_proj` 峰值。完整 Q/K/V 分配、attention kernel 或模型加载 OOM 会在错误信息中单独区分。
 - 严格 SLA/Sol/Hybrid 不进行 CK 或 Sage 回退。环境、自检、架构或计算失败时，需根据错误信息选择其他后端并重新运行。
 - NaN/Inf 检查负责阻止损坏的 latent/音频继续进入 VAE 或 FFmpeg，不会把无效值替换成 0。它是检测与定位机制，不是 FP16 修复。
 - 首次异常会记录 block、token 行范围和 head；下次运行仅对目标 block 启用 QKV、attention、`out_proj` 和 MLP 分段诊断。SM100/SM120 会自动进行首次分段探测。

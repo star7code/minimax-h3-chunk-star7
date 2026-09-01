@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.12.6 - 2026-09-01
+
+- Replaced the retired prefetch placeholder with automatic attention-output
+  memory protection. Normal workloads keep full `out_proj`; risky long
+  sequences select an internal 4096/2048-token tile from live CUDA headroom.
+- Cached each `out_proj` policy by device and tensor shape, preventing every H3
+  block and sampling step from repeating the same full-projection OOM probe.
+  Protection logs are emitted once per shape and chunk output is preallocated.
+- Added a shape-scoped SM75 Comfy Kitchen TensorWise INT8 dispatch that prefers
+  the existing fused CUTLASS contraction for H3 `N=5376, K=7168`, with bounded
+  chunks only when full execution is unsafe or unavailable.
+- Added Auto/Off and 自动/关闭 workflow compatibility, renamed the visible
+  backend control to “Attention acceleration method / 注意力加速方式”, and kept
+  the internal fallback tile out of the UI.
+- Made per-step backend/timing summaries use progress-aware, permanent lines so
+  they remain vertically aligned without corrupting ComfyUI's live progress bar.
+- Added compatibility probing for Comfy Kitchen releases that expose INT8
+  attention without the optional availability helper.
+
 ## 2.12.5 - 2026-08-31
 
 - 所有注意力模式在 SM80+ 上都会于采样前检查 H3 的实际 compute dtype；由

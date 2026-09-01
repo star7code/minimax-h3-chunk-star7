@@ -3,6 +3,8 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
+import threading
 import time
 import uuid
 import weakref
@@ -14,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.12.5"
+NODE_VERSION = "2.12.6"
 FP16_EXACT_PATCH_FLAG = "star7_minimax_h3_fp16_exact_fix"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
@@ -75,23 +77,36 @@ _PROFILED_MLP_SHAPES = set()
 _LOGGED_SLA_SHAPES = set()
 _LOGGED_SOL_SHAPES = set()
 _PROFILED_QKV_STAGES = set()
+_LOGGED_OUT_PROJ_SHAPES = set()
 _LOGGED_SLA_ENVIRONMENTS = set()
 _LAST_FAILED_SLA_BLOCK = None
 _ADALN_EGRID = None
+_OUT_PROJ_TLS = threading.local()
+_ORIGINAL_CK_PREFER_TURING_FUSED = None
+_ORIGINAL_CK_TURING_QUANTIZED = None
+_PATCHED_CK_CUDA = None
+_SM75_OUT_PROJ_FUSED_SUPPORT = {}
 _CONFIG = {
     "chunk_tokens": 8192,
     "mlp_chunk_tokens": 8192,
     "qkv_chunk_tokens": 8192,
+    "out_proj_chunk_tokens": 4096,
     "effective_chunk_tokens": 8192,
     "effective_mlp_chunk_tokens": 8192,
     "effective_qkv_chunk_tokens": 8192,
+    "effective_out_proj_chunk_tokens": 4096,
     "status_effective_chunk_tokens": 8192,
     "status_effective_mlp_chunk_tokens": 8192,
     "status_effective_qkv_chunk_tokens": 8192,
+    "status_effective_out_proj_chunk_tokens": 4096,
     "status_sequence_rope": None,
     "status_sequence_mlp": None,
     "status_sequence_qkv": None,
+    "status_sequence_out_proj": None,
     "auto_halve_on_oom": True,
+    "out_proj_memory_protection": True,
+    "out_proj_policy": {},
+    "out_proj_protection_logged": set(),
     "auto_sla_probe": False,
     "verbose": True,
     "reuse_mlp_weights": True,
@@ -425,6 +440,10 @@ def _runtime_status_payload(reason: str) -> dict:
         "effective_mlp": int(_CONFIG["status_effective_mlp_chunk_tokens"]),
         "configured_qkv": int(_CONFIG["qkv_chunk_tokens"]),
         "effective_qkv": int(_CONFIG["status_effective_qkv_chunk_tokens"]),
+        "configured_out_proj": int(_CONFIG["out_proj_chunk_tokens"]),
+        "effective_out_proj": int(
+            _CONFIG["status_effective_out_proj_chunk_tokens"]
+        ),
         "reason": reason,
     }
 
@@ -453,6 +472,9 @@ def _remember_effective_chunk(kind: str, failed: int, effective: int) -> None:
     elif kind == "QKV":
         configured_key = "qkv_chunk_tokens"
         effective_key = "effective_qkv_chunk_tokens"
+    elif kind == "OUT_PROJ":
+        configured_key = "out_proj_chunk_tokens"
+        effective_key = "effective_out_proj_chunk_tokens"
     else:
         raise ValueError(f"unknown chunk kind: {kind}")
 
@@ -465,17 +487,18 @@ def _remember_effective_chunk(kind: str, failed: int, effective: int) -> None:
     if previous > 0:
         effective = min(previous, effective)
     _CONFIG[effective_key] = effective
-    status_key = (
-        "status_effective_chunk_tokens" if kind == "RoPE"
-        else "status_effective_mlp_chunk_tokens" if kind == "MLP"
-        else "status_effective_qkv_chunk_tokens"
-    )
-    sequence_key = (
-        "status_sequence_rope"
-        if kind == "RoPE"
-        else "status_sequence_mlp" if kind == "MLP"
-        else "status_sequence_qkv"
-    )
+    status_key = {
+        "RoPE": "status_effective_chunk_tokens",
+        "MLP": "status_effective_mlp_chunk_tokens",
+        "QKV": "status_effective_qkv_chunk_tokens",
+        "OUT_PROJ": "status_effective_out_proj_chunk_tokens",
+    }[kind]
+    sequence_key = {
+        "RoPE": "status_sequence_rope",
+        "MLP": "status_sequence_mlp",
+        "QKV": "status_sequence_qkv",
+        "OUT_PROJ": "status_sequence_out_proj",
+    }[kind]
     sequence = _CONFIG.get(sequence_key)
     _CONFIG[status_key] = min(effective, int(sequence)) if sequence else effective
     _LOG.warning(
@@ -494,11 +517,14 @@ def _configure_runtime(
     reuse_mlp_weights: bool,
     node_id=None,
     qkv_chunk_tokens: int = 8192,
+    out_proj_chunk_tokens: int = 4096,
+    out_proj_memory_protection=True,
 ) -> None:
     """Start a fresh runtime budget whenever the node inputs are re-executed."""
     configured_rope = int(chunk_tokens)
     configured_mlp = int(mlp_chunk_tokens)
     configured_qkv = int(qkv_chunk_tokens)
+    configured_out_proj = int(out_proj_chunk_tokens)
     # Older workflows may contain the pre-MLP field's zero placeholder.
     if configured_rope < 0:
         configured_rope = 8192
@@ -506,19 +532,30 @@ def _configure_runtime(
         configured_mlp = 4096
     if configured_qkv < 0:
         configured_qkv = 4096
+    if configured_out_proj < 0:
+        configured_out_proj = 4096
     _CONFIG["chunk_tokens"] = configured_rope
     _CONFIG["mlp_chunk_tokens"] = configured_mlp
     _CONFIG["qkv_chunk_tokens"] = configured_qkv
+    _CONFIG["out_proj_chunk_tokens"] = configured_out_proj
     _CONFIG["effective_chunk_tokens"] = configured_rope
     _CONFIG["effective_mlp_chunk_tokens"] = configured_mlp
     _CONFIG["effective_qkv_chunk_tokens"] = configured_qkv
+    _CONFIG["effective_out_proj_chunk_tokens"] = configured_out_proj
     _CONFIG["status_effective_chunk_tokens"] = configured_rope
     _CONFIG["status_effective_mlp_chunk_tokens"] = configured_mlp
     _CONFIG["status_effective_qkv_chunk_tokens"] = configured_qkv
+    _CONFIG["status_effective_out_proj_chunk_tokens"] = configured_out_proj
     _CONFIG["status_sequence_rope"] = None
     _CONFIG["status_sequence_mlp"] = None
     _CONFIG["status_sequence_qkv"] = None
+    _CONFIG["status_sequence_out_proj"] = None
     _CONFIG["auto_halve_on_oom"] = bool(auto_halve_on_oom)
+    _CONFIG["out_proj_memory_protection"] = _out_proj_protection_enabled(
+        out_proj_memory_protection
+    )
+    _CONFIG["out_proj_policy"] = {}
+    _CONFIG["out_proj_protection_logged"] = set()
     _CONFIG["verbose"] = bool(verbose)
     _CONFIG["reuse_mlp_weights"] = bool(reuse_mlp_weights)
     _CONFIG["node_id"] = str(node_id) if node_id is not None else None
@@ -542,6 +579,10 @@ def _set_sequence_status(
         learned_key = "effective_qkv_chunk_tokens"
         status_key = "status_effective_qkv_chunk_tokens"
         sequence_key = "status_sequence_qkv"
+    elif kind == "OUT_PROJ":
+        learned_key = "effective_out_proj_chunk_tokens"
+        status_key = "status_effective_out_proj_chunk_tokens"
+        sequence_key = "status_sequence_out_proj"
     else:
         raise ValueError(f"unknown chunk kind: {kind}")
 
@@ -913,6 +954,367 @@ def _make_chunked_h3_mlp_forward(upstream_forward=None):
     return forward
 
 
+def _install_ck_sm75_out_proj_dispatch() -> bool:
+    """Install a thread-local, shape-scoped override for CK's Turing heuristic."""
+    global _ORIGINAL_CK_PREFER_TURING_FUSED
+    global _ORIGINAL_CK_TURING_QUANTIZED, _PATCHED_CK_CUDA
+
+    try:
+        from comfy_kitchen.backends import cuda as ck_cuda
+    except (ImportError, AttributeError):
+        return False
+    if not all(
+        hasattr(ck_cuda, name)
+        for name in (
+            "_prefer_turing_fused_int8",
+            "_int8_linear_turing_quantized",
+        )
+    ):
+        return False
+    if _PATCHED_CK_CUDA is ck_cuda:
+        return True
+
+    prefer = ck_cuda._prefer_turing_fused_int8
+    quantized = ck_cuda._int8_linear_turing_quantized
+    prefer = getattr(prefer, "_star7_original", prefer)
+    quantized = getattr(quantized, "_star7_original", quantized)
+    _ORIGINAL_CK_PREFER_TURING_FUSED = prefer
+    _ORIGINAL_CK_TURING_QUANTIZED = quantized
+
+    def prefer_turing_fused(m: int, n: int, k: int) -> bool:
+        if (
+            getattr(_OUT_PROJ_TLS, "force_h3_out_proj", False)
+            and int(n) == 5376
+            and int(k) == 7168
+        ):
+            return True
+        return prefer(m, n, k)
+
+    def observed_turing_quantized(*args, **kwargs):
+        result = quantized(*args, **kwargs)
+        if getattr(_OUT_PROJ_TLS, "observe_h3_out_proj", False):
+            _OUT_PROJ_TLS.fused_h3_out_proj_used = result is not None
+        return result
+
+    prefer_turing_fused._star7_original = prefer
+    observed_turing_quantized._star7_original = quantized
+    ck_cuda._prefer_turing_fused_int8 = prefer_turing_fused
+    ck_cuda._int8_linear_turing_quantized = observed_turing_quantized
+    _PATCHED_CK_CUDA = ck_cuda
+    return True
+
+
+def _ck_int8_attention_available(ck_module=None) -> bool:
+    """Probe CK INT8 attention across releases with and without its helper."""
+    if ck_module is None:
+        try:
+            import comfy_kitchen as ck_module
+        except ImportError:
+            return False
+    availability = getattr(ck_module, "int8_attention_is_available", None)
+    if callable(availability):
+        try:
+            return bool(availability())
+        except (AttributeError, RuntimeError):
+            return False
+    # Some CK releases expose the dispatcher but omit the convenience probe.
+    # The dispatcher performs its own backend validation when it is called.
+    return callable(getattr(ck_module, "int8_attention", None))
+
+
+def _sm75_h3_out_proj_fused_candidate(linear, x: torch.Tensor) -> bool:
+    if x.ndim != 2 or x.device.type != "cuda" or x.shape[-1] != 7168:
+        return False
+    if int(getattr(linear, "in_features", -1)) != 7168:
+        return False
+    if int(getattr(linear, "out_features", -1)) != 5376:
+        return False
+    if str(getattr(linear, "quant_format", "")) != "int8_tensorwise":
+        return False
+    # Current ComfyUI exposes TensorWise INT8 as weight-only quantization and
+    # lets its QuantizedTensor layout quantize activations inside matmul. Older
+    # builds exposed the same CK path as input-and-weight. Both are eligible;
+    # None means dense weights, LoRA/dynamic patches, or another unsafe path.
+    try:
+        quantization_mode = _linear_quantization_mode(linear)
+    except (AttributeError, TypeError):
+        return False
+    if quantization_mode not in {"weight-only", "input-and-weight"}:
+        return False
+    try:
+        return torch.cuda.get_device_capability(x.device) == (7, 5)
+    except Exception:
+        return False
+
+
+def _call_h3_out_proj(
+    upstream_forward, x: torch.Tensor, *, force_sm75_fused: bool,
+) -> tuple[torch.Tensor, Optional[bool]]:
+    """Call the preserved Linear and report whether CK accepted its fused kernel."""
+    if not force_sm75_fused or not _install_ck_sm75_out_proj_dispatch():
+        return upstream_forward(x), None
+
+    previous_force = getattr(_OUT_PROJ_TLS, "force_h3_out_proj", False)
+    previous_observe = getattr(_OUT_PROJ_TLS, "observe_h3_out_proj", False)
+    previous_used = getattr(_OUT_PROJ_TLS, "fused_h3_out_proj_used", None)
+    _OUT_PROJ_TLS.force_h3_out_proj = True
+    _OUT_PROJ_TLS.observe_h3_out_proj = True
+    _OUT_PROJ_TLS.fused_h3_out_proj_used = None
+    try:
+        result = upstream_forward(x)
+        used = getattr(_OUT_PROJ_TLS, "fused_h3_out_proj_used", None)
+        return result, used
+    finally:
+        _OUT_PROJ_TLS.force_h3_out_proj = previous_force
+        _OUT_PROJ_TLS.observe_h3_out_proj = previous_observe
+        _OUT_PROJ_TLS.fused_h3_out_proj_used = previous_used
+
+
+def _out_proj_protection_enabled(value) -> bool:
+    """Normalize the new Auto/Off control and legacy prefetch placeholders."""
+    if isinstance(value, bool):
+        # The retired prefetch field was a boolean. Both legacy values migrate
+        # to the new default so old workflows gain the safe behavior.
+        return True
+    normalized = str(value).strip().lower()
+    return normalized not in {"off", "disabled", "false", "0", "关闭", "关"}
+
+
+def _out_proj_policy_key(
+    x: torch.Tensor, sequence: int, out_features: int, candidate: bool,
+) -> tuple:
+    device_index = x.device.index if x.device.type == "cuda" else None
+    capability = None
+    if x.device.type == "cuda":
+        try:
+            capability = torch.cuda.get_device_capability(x.device)
+        except Exception:
+            pass
+    return (
+        device_index, capability, str(x.dtype), int(sequence),
+        int(x.shape[-1]), int(out_features), bool(candidate),
+    )
+
+
+def _cuda_memory_snapshot(device: torch.device) -> tuple[Optional[int], int, int]:
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return None, 0, 0
+    try:
+        free_bytes, _ = torch.cuda.mem_get_info(device)
+        allocated = torch.cuda.memory_allocated(device)
+        reserved = torch.cuda.memory_reserved(device)
+        return int(free_bytes), int(allocated), int(reserved)
+    except Exception:
+        return None, 0, 0
+
+
+def _select_out_proj_policy(
+    x: torch.Tensor,
+    sequence: int,
+    out_features: int,
+    candidate: bool,
+) -> dict:
+    """Choose once per shape; avoid block-by-block full/OOM probing."""
+    free_bytes, allocated, reserved = _cuda_memory_snapshot(x.device)
+    if free_bytes is None or not candidate:
+        return {
+            "mode": "full", "chunk": int(sequence), "reason": "normal-full",
+            "free": free_bytes, "allocated": allocated, "reserved": reserved,
+        }
+
+    # SM75's generic TensorWise path can materialize an INT32 contraction.
+    # Account for that workspace, output, activation quantization and a stable
+    # allocator/offload margin. This selects full for ordinary sequences while
+    # routing empirically risky long sequences directly to bounded fused tiles.
+    gib = 1024 ** 3
+    output_bytes = int(sequence) * int(out_features) * int(x.element_size())
+    activation_bytes = int(sequence) * int(x.shape[-1])
+    int32_workspace = int(sequence) * int(out_features) * 4
+    safety_margin = int(1.5 * gib)
+    full_required = (
+        output_bytes + activation_bytes + int32_workspace + safety_margin
+    )
+    if free_bytes >= full_required:
+        return {
+            "mode": "full", "chunk": int(sequence), "reason": "headroom-full",
+            "free": free_bytes, "allocated": allocated, "reserved": reserved,
+            "required": full_required,
+        }
+
+    chunk = 4096
+    chunk_workspace = chunk * (
+        int(x.shape[-1]) + int(out_features) * (4 + int(x.element_size()))
+    )
+    if free_bytes < output_bytes + chunk_workspace + safety_margin:
+        chunk = 2048
+    return {
+        "mode": "chunk", "chunk": min(int(sequence), chunk),
+        "reason": "headroom-protection", "free": free_bytes,
+        "allocated": allocated, "reserved": reserved,
+        "required": full_required,
+    }
+
+
+def _log_out_proj_protection_once(policy_key: tuple, policy: dict) -> None:
+    logged = _CONFIG.setdefault("out_proj_protection_logged", set())
+    if policy_key in logged:
+        return
+    logged.add(policy_key)
+    _LOG.info(
+        "[Star7 H3 Chunk] Attention output memory protection active | "
+        "S=%d | mode=%s | internal=%d",
+        policy_key[3],
+        "fused-chunk" if policy_key[-1] else "chunk",
+        int(policy["chunk"]),
+    )
+    if _h3_memory_debug_enabled():
+        gib = 1024 ** 3
+        _LOG.info(
+            "[Star7 H3 Chunk] out_proj protection debug | reason=%s | "
+            "free=%.2fGiB | allocated=%.2fGiB | reserved=%.2fGiB | "
+            "full-estimate=%.2fGiB",
+            policy.get("reason", "unknown"),
+            (policy.get("free") or 0) / gib,
+            policy.get("allocated", 0) / gib,
+            policy.get("reserved", 0) / gib,
+            policy.get("required", 0) / gib,
+        )
+
+
+def _run_chunked_h3_out_proj(
+    self,
+    x: torch.Tensor,
+    upstream_forward,
+) -> torch.Tensor:
+    """Prefer full-sequence fused SM75 INT8, with bounded token chunks as fallback."""
+    if upstream_forward is None:
+        raise RuntimeError("Star7 H3 out_proj wrapper lost its upstream Linear forward")
+    if x.ndim != 2:
+        return upstream_forward(x)
+
+    if not bool(_CONFIG.get("out_proj_memory_protection", True)):
+        return upstream_forward(x)
+
+    sequence = int(x.shape[0])
+    _set_sequence_status("OUT_PROJ", sequence)
+    candidate = _sm75_h3_out_proj_fused_candidate(self, x)
+    device_index = x.device.index if x.device.type == "cuda" else None
+    support_key = (device_index, str(x.dtype), 5376, 7168)
+    known_fused = _SM75_OUT_PROJ_FUSED_SUPPORT.get(support_key)
+    out_features = int(getattr(self, "out_features", 5376))
+    policy_key = _out_proj_policy_key(x, sequence, out_features, candidate)
+    policies = _CONFIG.setdefault("out_proj_policy", {})
+    policy = policies.get(policy_key)
+    if policy is None:
+        policy = _select_out_proj_policy(
+            x, sequence, out_features, candidate
+        )
+        policies[policy_key] = policy
+    current_chunk = max(256, min(sequence, int(policy["chunk"])))
+    full_first = policy["mode"] == "full"
+    if not full_first:
+        _CONFIG["effective_out_proj_chunk_tokens"] = current_chunk
+        _CONFIG["status_effective_out_proj_chunk_tokens"] = current_chunk
+        _log_out_proj_protection_once(policy_key, policy)
+
+    if full_first:
+        try:
+            projected, fused_used = _call_h3_out_proj(
+                upstream_forward, x,
+                force_sm75_fused=bool(candidate and known_fused is not False),
+            )
+            if candidate:
+                # No observation also means we cannot prove that the large
+                # INT32-free contraction was selected. Treat it as unsupported
+                # for later blocks and use the bounded fallback there.
+                _SM75_OUT_PROJ_FUSED_SUPPORT[support_key] = bool(fused_used)
+            mode = (
+                "sm75-fused-full" if fused_used else
+                "sm75-generic-full" if candidate else "upstream-full"
+            )
+            shape_key = (sequence, x.shape[-1], projected.shape[-1], mode)
+            if _CONFIG["verbose"] and shape_key not in _LOGGED_OUT_PROJ_SHAPES:
+                _LOGGED_OUT_PROJ_SHAPES.add(shape_key)
+                _LOG.info(
+                    "[Star7 H3 Chunk] out_proj | S=%d | K=%d | N=%d | mode=%s",
+                    sequence, x.shape[-1], projected.shape[-1], mode,
+                )
+            return projected
+        except Exception as exc:
+            if not (_is_cuda_oom(exc) and sequence > 256):
+                raise
+            exc.__traceback__ = None
+            _clear_cuda_after_oom(x.device)
+            current_chunk = min(4096, max(256, sequence // 2))
+            policy = {
+                "mode": "chunk", "chunk": current_chunk,
+                "reason": "full-oom",
+            }
+            policies[policy_key] = policy
+            _CONFIG["effective_out_proj_chunk_tokens"] = current_chunk
+            _CONFIG["status_effective_out_proj_chunk_tokens"] = current_chunk
+            _log_out_proj_protection_once(policy_key, policy)
+
+    output = None
+    start = 0
+    calls = 0
+    fused_chunks = False
+    while start < sequence:
+        end = min(start + current_chunk, sequence)
+        result = None
+        try:
+            use_fused = bool(
+                candidate
+                and _SM75_OUT_PROJ_FUSED_SUPPORT.get(support_key) is not False
+            )
+            result, fused_used = _call_h3_out_proj(
+                upstream_forward, x[start:end], force_sm75_fused=use_fused,
+            )
+            if fused_used is not None:
+                _SM75_OUT_PROJ_FUSED_SUPPORT[support_key] = bool(fused_used)
+                fused_chunks = fused_chunks or bool(fused_used)
+            if output is None:
+                output = result.new_empty((sequence, result.shape[-1]))
+            output[start:end].copy_(result)
+            start = end
+            calls += 1
+            del result
+        except Exception as exc:
+            if not (_is_cuda_oom(exc) and current_chunk > 256):
+                raise
+            new_chunk = max(256, current_chunk // 2)
+            del result
+            exc.__traceback__ = None
+            _clear_cuda_after_oom(x.device)
+            current_chunk = new_chunk
+            policy["chunk"] = current_chunk
+            policy["reason"] = "chunk-oom"
+            _CONFIG["effective_out_proj_chunk_tokens"] = current_chunk
+            _CONFIG["status_effective_out_proj_chunk_tokens"] = current_chunk
+
+    mode = "sm75-fused-chunk" if fused_chunks else "chunk-fallback"
+    shape_key = (sequence, x.shape[-1], output.shape[-1], current_chunk, mode)
+    if _CONFIG["verbose"] and shape_key not in _LOGGED_OUT_PROJ_SHAPES:
+        _LOGGED_OUT_PROJ_SHAPES.add(shape_key)
+        _LOG.info(
+            "[Star7 H3 Chunk] out_proj | S=%d | K=%d | N=%d | "
+            "chunk=%d x %d | mode=%s",
+            sequence, x.shape[-1], output.shape[-1], current_chunk, calls, mode,
+        )
+    return output
+
+
+def _make_chunked_h3_out_proj_forward(upstream_forward):
+    upstream_forward = _weak_callable(upstream_forward)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return _run_chunked_h3_out_proj(self, x, upstream_forward)
+
+    forward._star7_wrapper_kind = "out-proj-chunk-upstream"
+    forward._star7_original_forward = upstream_forward
+    return forward
+
+
 def _sla_debug_block() -> Optional[int]:
     requested = os.environ.get("STAR7_SLA_DEBUG_BLOCK", "").strip()
     if requested:
@@ -1127,10 +1529,31 @@ def _step_timing_finish(
     extra = f" | mode={configured}"
     if configured in HYBRID_BACKEND_NAMES:
         extra += f" | guard_ratio={float(HYBRID_GUARD_RATIO):.4f}"
-    _LOG.info(
-        "[Star7 H3] step %d/%d -> %-8s | %7.2fs/it | blocks=%d%s",
+    message_args = (
         step_index + 1, total_steps, backend, elapsed_seconds,
         len(getattr(model, "blocks", ())), extra,
+    )
+    message = (
+        "[Star7 H3] step %d/%d -> %-8s | %7.2fs/it | blocks=%d%s"
+        % message_args
+    )
+    # tqdm redraws one console line with carriage returns. A normal logging
+    # write in the middle of that redraw leaves partial progress bars and can
+    # splice two messages together. Temporarily clear active bars, emit the
+    # regular logger record (so file logging is preserved), then redraw them.
+    try:
+        from tqdm.auto import tqdm
+        if getattr(tqdm, "_instances", None):
+            # ``tqdm.write`` permanently commits one complete line above the
+            # live progress bar, then redraws that bar below it. This keeps the
+            # four H3 step summaries vertically aligned and easy to compare.
+            tqdm.write(f"[INFO] {message}", file=sys.stderr)
+            return
+    except (ImportError, AttributeError, RuntimeError):
+        pass
+    _LOG.info(
+        "%s",
+        message,
     )
 
 
@@ -1316,6 +1739,7 @@ def _star7_wrapper_original(value, kind: str):
         "h3-output-finite": "_h3_output_finite_passthrough.<locals>.forward",
         "sla-segment-block": "_sla_segment_passthrough.<locals>.forward",
         "mlp-chunk-upstream": "_make_chunked_h3_mlp_forward.<locals>.forward",
+        "out-proj-chunk-upstream": "_make_chunked_h3_out_proj_forward.<locals>.forward",
     }
     while True:
         function = getattr(current, "__func__", current)
@@ -2103,6 +2527,8 @@ def install_patch(
     verbose: bool,
     mlp_chunk_tokens: int = 8192,
     qkv_chunk_tokens: int = 8192,
+    out_proj_chunk_tokens: int = 4096,
+    out_proj_memory_protection=True,
     reuse_mlp_weights: bool = True,
     node_id=None,
 ):
@@ -2128,6 +2554,8 @@ def install_patch(
     _configure_runtime(
         chunk_tokens, mlp_chunk_tokens, auto_halve_on_oom, verbose,
         reuse_mlp_weights, node_id, qkv_chunk_tokens=qkv_chunk_tokens,
+        out_proj_chunk_tokens=out_proj_chunk_tokens,
+        out_proj_memory_protection=out_proj_memory_protection,
     )
 
     # Keep the zero setting as a true control group: restore the exact public
@@ -2194,6 +2622,7 @@ def install_model_patch(
     attention_backend: str,
     node_id=None,
     qkv_chunk_tokens: int = 8192,
+    out_proj_chunk_tokens: int = 4096,
 ):
     attention_backend = {
         LEGACY_SM75_ALL_INT8_BACKEND_NAME: SM75_ALL_INT8_BACKEND_NAME,
@@ -2207,6 +2636,8 @@ def install_model_patch(
         verbose=verbose,
         mlp_chunk_tokens=mlp_chunk_tokens,
         qkv_chunk_tokens=qkv_chunk_tokens,
+        out_proj_chunk_tokens=out_proj_chunk_tokens,
+        out_proj_memory_protection=disable_dynamic_prefetch,
         reuse_mlp_weights=reuse_mlp_weights,
         node_id=node_id,
     )
@@ -2316,8 +2747,8 @@ def install_model_patch(
     if hybrid_attention:
         try:
             import comfy_kitchen
-            ck_available = comfy_kitchen.int8_attention_is_available()
-        except (ImportError, AttributeError, RuntimeError) as exc:
+            ck_available = _ck_int8_attention_available(comfy_kitchen)
+        except (ImportError, RuntimeError) as exc:
             raise RuntimeError(
                 "Star7 Hybrid Attention requires the existing "
                 f"comfy_kitchen_int8 path; it is unavailable: {exc}"
@@ -2395,8 +2826,8 @@ def install_model_patch(
     elif attention_backend == "comfy_kitchen_int8":
         try:
             import comfy_kitchen
-            ck_available = comfy_kitchen.int8_attention_is_available()
-        except (ImportError, AttributeError, RuntimeError) as exc:
+            ck_available = _ck_int8_attention_available(comfy_kitchen)
+        except (ImportError, RuntimeError) as exc:
             ck_available = False
             if verbose:
                 _LOG.warning(
@@ -2420,6 +2851,28 @@ def install_model_patch(
             )
     elif attention_backend != "existing":
         raise ValueError(f"unknown attention backend: {attention_backend}")
+
+    # Every supported attention backend converges on the same H3 output
+    # projection. Preserve its exact upstream Linear (including LoRA/dynamic
+    # patches), prefer the full SM75 fused INT8 contraction when eligible, and
+    # use bounded output storage only when that fused path is unavailable or
+    # the upstream full contraction reports OOM.
+    for index, block in enumerate(diffusion_model.blocks):
+        out_proj_path = f"diffusion_model.blocks.{index}.attn.out_proj.forward"
+        block.attn.out_proj._star7_block_index = index
+        upstream_out_proj = patched.object_patches.get(
+            out_proj_path, block.attn.out_proj.forward
+        )
+        upstream_out_proj = _star7_wrapper_original(
+            upstream_out_proj, "out-proj-chunk-upstream"
+        )
+        patched.add_object_patch(
+            out_proj_path,
+            _weak_method(
+                block.attn.out_proj,
+                _make_chunked_h3_out_proj_forward(upstream_out_proj),
+            ),
+        )
 
     # Chunk only controls token tiling. If another node already patched the MLP
     # (including FP16 Exact), invoke that exact upstream callable per tile rather
@@ -2492,11 +2945,12 @@ def install_model_patch(
         _LOG.info(
             "[Star7 H3 Chunk] Ready v%s | %s | attention=%s | "
             "model-precision=%s%s | "
-            "chunks(RoPE/MLP/QKV)=%d/%d/%d | chunk-weight-reuse=%s | "
+            "chunks(RoPE/MLP/QKV)=%d/%d/%d | attention-output-memory-protection=%s | chunk-weight-reuse=%s | "
             "block-cache=%s | finite-guard=model-output%s",
             NODE_VERSION, architecture, selected_attention, model_precision,
             precision_suffix,
             int(chunk_tokens), int(mlp_chunk_tokens), int(qkv_chunk_tokens),
+            "auto" if _out_proj_protection_enabled(disable_dynamic_prefetch) else "off",
             bool(reuse_mlp_weights), "external" if block_loop_cache else "none",
             "+sparse-block" if sla_attention else "",
         )
@@ -2602,11 +3056,10 @@ class MiniMaxH3ActivationChunkStar7:
                     },
                 ),
                 "disable_dynamic_prefetch": (
-                    "STRING",
+                    ["auto", "off", "Auto", "Off", "自动", "关闭"],
                     {
-                        "default": "Experimental feature removed",
-                        "multiline": False,
-                        "tooltip": "Legacy workflow field only. This experimental feature has been removed and no longer participates in computation.",
+                        "default": "auto",
+                        "tooltip": "Automatically protects H3 attention output projection memory on risky long sequences. Normal workloads keep the full projection; Off restores the incoming out_proj behavior.",
                     },
                 ),
                 "qkv_chunk_tokens": (
@@ -2617,6 +3070,16 @@ class MiniMaxH3ActivationChunkStar7:
                         "max": 65536,
                         "step": 256,
                         "tooltip": "H3 QKV projection workspace chunk. Zero tries the full sequence first; automatic reduction lowers only QKV after a QKV projection OOM.",
+                    },
+                ),
+                "out_proj_chunk_tokens": (
+                    "INT",
+                    {
+                        "default": 4096,
+                        "min": 0,
+                        "max": 65536,
+                        "step": 256,
+                        "tooltip": "Internal compatibility value retained for old workflows. Attention output memory protection selects its own safe tile automatically.",
                     },
                 ),
                 "reuse_mlp_weights": (
@@ -2653,7 +3116,7 @@ class MiniMaxH3ActivationChunkStar7:
     FUNCTION = "patch"
     CATEGORY = "Star7/MiniMax H3"
     DESCRIPTION = (
-        "MiniMax H3 model patch with independent QKV, split-half RoPE, and MLP activation "
+        "MiniMax H3 model patch with independent QKV, split-half RoPE, out_proj, and MLP activation "
         "chunking. It preserves INT8/ConvRot weights and the upstream DiT block structure "
         "for FP16/BF16, Sage, LoRA, and third-party compatibility. Attention can preserve "
         "the incoming backend or select CK INT8, architecture-specific SLA/Sol, and "
@@ -2663,14 +3126,16 @@ class MiniMaxH3ActivationChunkStar7:
 
     def patch(
         self, model, chunk_tokens=8192, auto_halve_on_oom=True, verbose=True,
-        mlp_chunk_tokens=8192, disable_dynamic_prefetch=True,
+        mlp_chunk_tokens=8192, disable_dynamic_prefetch="auto",
         qkv_chunk_tokens=8192,
+        out_proj_chunk_tokens=4096,
         reuse_mlp_weights=True, attention_backend="comfy_kitchen_int8", unique_id=None,
     ):
         return (install_model_patch(
             model, chunk_tokens, auto_halve_on_oom, verbose,
             mlp_chunk_tokens, disable_dynamic_prefetch, reuse_mlp_weights,
             attention_backend, unique_id, qkv_chunk_tokens=qkv_chunk_tokens,
+            out_proj_chunk_tokens=out_proj_chunk_tokens,
         ),)
 
 

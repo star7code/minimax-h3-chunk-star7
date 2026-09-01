@@ -737,6 +737,13 @@ def test_install_preserves_upstream_block_patch():
         key = f"diffusion_model.blocks.{index}.mlp.forward"
         assert key in patched.object_patches
         assert patched.object_patches[key].__func__.__name__ == "forward"
+        out_proj_key = (
+            f"diffusion_model.blocks.{index}.attn.out_proj.forward"
+        )
+        assert out_proj_key in patched.object_patches
+        assert patched.object_patches[out_proj_key].__func__._star7_wrapper_kind == (
+            "out-proj-chunk-upstream"
+        )
     wrapped_mlp = patched.object_patches[
         "diffusion_model.blocks.0.mlp.forward"
     ].__func__
@@ -763,6 +770,16 @@ def test_install_preserves_upstream_block_patch():
         guarded._star7_original_forward, "__func__", guarded._star7_original_forward
     )
     assert getattr(upstream, "_star7_wrapper_kind", None) is None
+    out_proj_wrapper = patched.object_patches[
+        "diffusion_model.blocks.0.attn.out_proj.forward"
+    ].__func__
+    assert out_proj_wrapper._star7_wrapper_kind == "out-proj-chunk-upstream"
+    out_proj_upstream = getattr(
+        out_proj_wrapper._star7_original_forward,
+        "__func__",
+        out_proj_wrapper._star7_original_forward,
+    )
+    assert getattr(out_proj_upstream, "_star7_wrapper_kind", None) is None
 
 
 def test_sm75_sla_does_not_install_fp16_exact_without_companion():
@@ -999,6 +1016,8 @@ def test_mlp_oom_value_is_reused_for_later_blocks():
             "effective_mlp": 512,
             "configured_qkv": original_config["qkv_chunk_tokens"],
             "effective_qkv": original_config["status_effective_qkv_chunk_tokens"],
+            "configured_out_proj": original_config["out_proj_chunk_tokens"],
+            "effective_out_proj": original_config["status_effective_out_proj_chunk_tokens"],
             "reason": "test",
         }
     finally:
@@ -1012,9 +1031,10 @@ def test_manual_settings_reset_learned_runtime_values():
         chunk_nodes._CONFIG["effective_chunk_tokens"] = 2048
         chunk_nodes._CONFIG["effective_mlp_chunk_tokens"] = 1024
         chunk_nodes._CONFIG["effective_qkv_chunk_tokens"] = 512
+        chunk_nodes._CONFIG["effective_out_proj_chunk_tokens"] = 256
         chunk_nodes._configure_runtime(
             3072, 1536, True, False, True, node_id=None,
-            qkv_chunk_tokens=2048,
+            qkv_chunk_tokens=2048, out_proj_chunk_tokens=1024,
         )
         assert chunk_nodes._CONFIG["chunk_tokens"] == 3072
         assert chunk_nodes._CONFIG["effective_chunk_tokens"] == 3072
@@ -1022,6 +1042,8 @@ def test_manual_settings_reset_learned_runtime_values():
         assert chunk_nodes._CONFIG["effective_mlp_chunk_tokens"] == 1536
         assert chunk_nodes._CONFIG["qkv_chunk_tokens"] == 2048
         assert chunk_nodes._CONFIG["effective_qkv_chunk_tokens"] == 2048
+        assert chunk_nodes._CONFIG["out_proj_chunk_tokens"] == 1024
+        assert chunk_nodes._CONFIG["effective_out_proj_chunk_tokens"] == 1024
     finally:
         chunk_nodes._CONFIG.clear()
         chunk_nodes._CONFIG.update(original_config)
@@ -1092,6 +1114,143 @@ def test_qkv_zero_prefers_full_then_learns_oom_chunk():
     finally:
         chunk_nodes._CONFIG.clear()
         chunk_nodes._CONFIG.update(original_config)
+
+
+def test_out_proj_full_first_oom_learns_preallocated_chunk_fallback():
+    attempts = []
+    original_config = chunk_nodes._CONFIG.copy()
+
+    class OutProj:
+        pass
+
+    def upstream(tensor):
+        attempts.append(int(tensor.shape[0]))
+        if tensor.shape[0] > 512:
+            raise RuntimeError("CUDA out of memory")
+        return torch.ones(tensor.shape[0], 3, dtype=tensor.dtype)
+
+    value = torch.zeros(1024, 4)
+    try:
+        chunk_nodes._CONFIG.update(
+            out_proj_chunk_tokens=0,
+            effective_out_proj_chunk_tokens=0,
+            status_effective_out_proj_chunk_tokens=0,
+            out_proj_memory_protection=True,
+            out_proj_policy={},
+            out_proj_protection_logged=set(),
+            auto_halve_on_oom=True,
+            verbose=False,
+            node_id=None,
+        )
+        first = chunk_nodes._run_chunked_h3_out_proj(
+            OutProj(), value, upstream
+        )
+        first_attempts = attempts.copy()
+        second = chunk_nodes._run_chunked_h3_out_proj(
+            OutProj(), value, upstream
+        )
+
+        assert first_attempts == [1024, 512, 512]
+        assert attempts[len(first_attempts):] == [512, 512]
+        assert first.shape == second.shape == (1024, 3)
+        assert torch.equal(first, second)
+        assert chunk_nodes._CONFIG["effective_out_proj_chunk_tokens"] == 512
+    finally:
+        chunk_nodes._CONFIG.clear()
+        chunk_nodes._CONFIG.update(original_config)
+
+
+def test_out_proj_protection_off_is_an_exact_passthrough():
+    attempts = []
+    original_config = chunk_nodes._CONFIG.copy()
+
+    class OutProj:
+        pass
+
+    def upstream(tensor):
+        attempts.append(int(tensor.shape[0]))
+        return tensor[:, :3].clone()
+
+    value = torch.zeros(1024, 4)
+    try:
+        chunk_nodes._CONFIG.update(
+            out_proj_memory_protection=False,
+            out_proj_policy={},
+            verbose=False,
+        )
+        result = chunk_nodes._run_chunked_h3_out_proj(
+            OutProj(), value, upstream
+        )
+        assert attempts == [1024]
+        assert result.shape == (1024, 3)
+        assert chunk_nodes._CONFIG["out_proj_policy"] == {}
+    finally:
+        chunk_nodes._CONFIG.clear()
+        chunk_nodes._CONFIG.update(original_config)
+
+
+def test_out_proj_auto_policy_protects_only_risky_long_sm75_shapes():
+    value = torch.zeros(1, 7168, dtype=torch.float16)
+    gib = 1024 ** 3
+    with mock.patch.object(
+        chunk_nodes, "_cuda_memory_snapshot",
+        return_value=(6 * gib, 14 * gib, 15 * gib),
+    ):
+        normal = chunk_nodes._select_out_proj_policy(
+            value, 75000, 5376, True
+        )
+        long = chunk_nodes._select_out_proj_policy(
+            value, 148162, 5376, True
+        )
+    assert normal["mode"] == "full"
+    assert long["mode"] == "chunk"
+    assert long["chunk"] in {2048, 4096}
+
+
+def test_out_proj_protection_migrates_legacy_prefetch_values_to_auto():
+    assert chunk_nodes._out_proj_protection_enabled(True)
+    assert chunk_nodes._out_proj_protection_enabled(False)
+    assert chunk_nodes._out_proj_protection_enabled("Experimental feature removed")
+    assert chunk_nodes._out_proj_protection_enabled("auto")
+    assert not chunk_nodes._out_proj_protection_enabled("off")
+    assert not chunk_nodes._out_proj_protection_enabled("关闭")
+
+
+def test_out_proj_protection_ui_is_auto_by_default():
+    required = chunk_nodes.MiniMaxH3ActivationChunkStar7.INPUT_TYPES()["required"]
+    choices = required["disable_dynamic_prefetch"][0]
+    assert {"auto", "off", "Auto", "Off", "自动", "关闭"}.issubset(choices)
+    assert required["disable_dynamic_prefetch"][1]["default"] == "auto"
+    assert required["out_proj_chunk_tokens"][1]["default"] == 4096
+
+
+def test_sm75_out_proj_candidate_accepts_current_weight_only_dispatch():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
+        return
+
+    linear = SimpleNamespace(
+        in_features=7168,
+        out_features=5376,
+        quant_format="int8_tensorwise",
+    )
+    value = torch.empty(1, 7168, device="cuda", dtype=torch.float16)
+    with mock.patch.object(
+        chunk_nodes, "_linear_quantization_mode", return_value="weight-only"
+    ):
+        assert chunk_nodes._sm75_h3_out_proj_fused_candidate(linear, value)
+
+
+def test_ck_attention_probe_supports_versions_without_availability_helper():
+    assert chunk_nodes._ck_int8_attention_available(
+        SimpleNamespace(int8_attention=lambda *args, **kwargs: None)
+    )
+    assert not chunk_nodes._ck_int8_attention_available(SimpleNamespace())
+    assert chunk_nodes._ck_int8_attention_available(
+        SimpleNamespace(
+            int8_attention_is_available=lambda: True,
+            int8_attention=lambda *args, **kwargs: None,
+        )
+    )
 
 
 def test_legacy_node_alias_is_deprecated():
@@ -1673,6 +1832,13 @@ if __name__ == "__main__":
     test_manual_settings_reset_learned_runtime_values()
     test_qkv_oom_status_uses_qkv_sequence_length()
     test_qkv_zero_prefers_full_then_learns_oom_chunk()
+    test_out_proj_full_first_oom_learns_preallocated_chunk_fallback()
+    test_out_proj_protection_off_is_an_exact_passthrough()
+    test_out_proj_auto_policy_protects_only_risky_long_sm75_shapes()
+    test_out_proj_protection_migrates_legacy_prefetch_values_to_auto()
+    test_out_proj_protection_ui_is_auto_by_default()
+    test_sm75_out_proj_candidate_accepts_current_weight_only_dispatch()
+    test_ck_attention_probe_supports_versions_without_availability_helper()
     test_legacy_node_alias_is_deprecated()
     test_new_activation_chunk_defaults_are_architecture_safe()
     test_sm75_qkv_resident_reuse_supports_configured_tiles()
