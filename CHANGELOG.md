@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.12.11 - 2026-09-02
+
+- 实时预览同时维护 `taeh3.safetensors` 与 `taeh3_decoder.safetensors`：
+  国内 HF 镜像和固定版本官方 GitHub 源并行准备，两个文件可共存，加载时选择
+  任意一个通过 SHA-256 且可识别为 24 通道 TAEHV 的副本。
+- 已有文件会在首次使用时快速校验；损坏副本只覆盖自身，不删除另一文件。
+  下载失败允许后续任务重试，且不会阻断视频生成。
+- 日志明确区分文件缺失、SHA-256 不匹配、下载源失败，以及文件正确但
+  ComfyUI 核心过旧、无法识别 H3 TAEHV 的情况。
+
 ## 2.12.10 - 2026-09-01
 
 - Replaced the architecture-specific example set with one universal Chinese

@@ -45,9 +45,62 @@ TAEH3_URLS = (
     f"https://ghproxy.net/{TAEH3_OFFICIAL_URL}",
     f"https://gh-proxy.com/{TAEH3_OFFICIAL_URL}",
 )
+# Keep both commonly used local filenames. They contain the same pinned decoder,
+# but are downloaded independently so one valid copy can recover the other.
+TAEH3_DOWNLOAD_TARGETS = (
+    (
+        "taeh3.safetensors",
+        (
+            "https://hf-mirror.com/suanyu/taeh3-star7/resolve/main/taeh3.safetensors",
+            "https://huggingface.co/suanyu/taeh3-star7/resolve/main/taeh3.safetensors",
+        ),
+    ),
+    (
+        "taeh3_decoder.safetensors",
+        (
+            TAEH3_OFFICIAL_URL,
+            f"https://ghproxy.net/{TAEH3_OFFICIAL_URL}",
+            f"https://gh-proxy.com/{TAEH3_OFFICIAL_URL}",
+        ),
+    ),
+)
 # Compatibility name for integrations that imported the original constant.
 TAEH3_URL = TAEH3_OFFICIAL_URL
 TAEH3_SHA256 = "4fd022bfcab08772fe0536b17ea1a3bbb5625be11e397868d1c5d891863d4c13"
+
+_TAEH3_HASH_CACHE = {}
+_TAEH3_HASH_LOCK = threading.Lock()
+_TAEH3_SELECTED_LOGGED = set()
+
+
+class TAEH3RepairRequired(RuntimeError):
+    pass
+
+
+class TAEH3CoreUnsupported(RuntimeError):
+    pass
+
+
+def validate_taeh3_file(path):
+    stat = os.stat(path)
+    signature = (stat.st_size, stat.st_mtime_ns)
+    with _TAEH3_HASH_LOCK:
+        cached = _TAEH3_HASH_CACHE.get(path)
+        if cached is not None and cached[0] == signature:
+            return cached[1], cached[2]
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    actual = digest.hexdigest().lower()
+    valid = actual == TAEH3_SHA256
+    with _TAEH3_HASH_LOCK:
+        _TAEH3_HASH_CACHE[path] = (signature, valid, actual)
+    return valid, actual
 
 
 class TAEH3BackgroundDownload:
@@ -56,13 +109,21 @@ class TAEH3BackgroundDownload:
         self._started = False
         self._done = False
         self._error = None
+        self._last_attempt = 0.0
 
     def start(self):
         with self._lock:
-            if self._started:
+            if self._done or self._started:
+                return
+            if self._error is not None and time.monotonic() - self._last_attempt < 60.0:
                 return
             self._started = True
-        logging.info("%s taeh3.safetensors missing; background download started", LOG_PREFIX)
+            self._error = None
+            self._last_attempt = time.monotonic()
+        logging.info(
+            "%s checking/downloading both TAEH3 filenames in the background",
+            LOG_PREFIX,
+        )
         threading.Thread(
             target=self._run,
             name="star7_taeh3_download",
@@ -74,83 +135,108 @@ class TAEH3BackgroundDownload:
             return self._done, self._error
 
     def _run(self):
-        failures = []
         try:
             directories = folder_paths.get_folder_paths("vae_approx")
             if not directories:
                 raise RuntimeError("ComfyUI has no models/vae_approx directory")
             directory = directories[0]
             os.makedirs(directory, exist_ok=True)
-            final_path = os.path.join(directory, TAEH3_FILENAME)
+            results = {}
+            results_lock = threading.Lock()
 
-            # Race the preferred domestic mirror and the official source. Each
-            # attempt has its own temporary file; only the first SHA-256-valid
-            # result is atomically moved into place.
-            winner = threading.Event()
-            winner_lock = threading.Lock()
-
-            def download_one(index, url):
-                part_path = f"{final_path}.star7-download-{index}"
+            def ensure_target(filename, urls):
+                final_path = os.path.join(directory, filename)
+                failures = []
                 try:
-                    digest = hashlib.sha256()
-                    with urllib.request.urlopen(url, timeout=30) as response, open(
-                        part_path, "wb"
-                    ) as output:
-                        while True:
-                            chunk = response.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            output.write(chunk)
-                            digest.update(chunk)
-                    actual = digest.hexdigest().lower()
-                    if actual != TAEH3_SHA256:
-                        raise RuntimeError(
-                            f"SHA256 mismatch (got {actual[:12]}…)"
+                    if os.path.isfile(final_path):
+                        valid, actual = validate_taeh3_file(final_path)
+                        if valid:
+                            logging.info("%s %s SHA256 verified", LOG_PREFIX, filename)
+                            with results_lock:
+                                results[filename] = (True, None)
+                            return
+                        logging.warning(
+                            "%s %s SHA256 mismatch (%s…); only this invalid copy will be replaced",
+                            LOG_PREFIX,
+                            filename,
+                            actual[:12],
                         )
-                    with winner_lock:
-                        if winner.is_set():
-                            return False
-                        os.replace(part_path, final_path)
-                        winner.set()
-                    logging.info("%s decoder downloaded from %s", LOG_PREFIX, url)
-                    return True
-                except Exception as error:
-                    failures.append(f"{url}: {error}")
-                    return False
-                finally:
-                    try:
-                        os.remove(part_path)
-                    except OSError:
-                        pass
 
-            preferred = list(TAEH3_URLS[:2])
+                    for index, url in enumerate(urls):
+                        part_path = f"{final_path}.star7-download-{threading.get_ident()}-{index}"
+                        try:
+                            digest = hashlib.sha256()
+                            with urllib.request.urlopen(url, timeout=30) as response, open(
+                                part_path, "wb"
+                            ) as output:
+                                while True:
+                                    chunk = response.read(1024 * 1024)
+                                    if not chunk:
+                                        break
+                                    output.write(chunk)
+                                    digest.update(chunk)
+                            actual = digest.hexdigest().lower()
+                            if actual != TAEH3_SHA256:
+                                raise RuntimeError(f"SHA256 mismatch (got {actual[:12]}…)")
+                            os.replace(part_path, final_path)
+                            logging.info(
+                                "%s %s downloaded and SHA256 verified from %s",
+                                LOG_PREFIX,
+                                filename,
+                                url,
+                            )
+                            with results_lock:
+                                results[filename] = (True, None)
+                            return
+                        except Exception as error:
+                            failures.append(f"{url}: {error}")
+                        finally:
+                            try:
+                                os.remove(part_path)
+                            except OSError:
+                                pass
+                    with results_lock:
+                        results[filename] = (False, "; ".join(failures))
+                except Exception as error:
+                    with results_lock:
+                        results[filename] = (False, str(error))
+
             workers = []
-            for index, url in enumerate(preferred):
+            for filename, urls in TAEH3_DOWNLOAD_TARGETS:
                 worker = threading.Thread(
-                    target=download_one, args=(index, url), daemon=True
+                    target=ensure_target,
+                    args=(filename, urls),
+                    name=f"star7_{filename}_download",
+                    daemon=True,
                 )
                 workers.append(worker)
                 worker.start()
             for worker in workers:
                 worker.join()
 
-            # If both preferred sources failed, try the remaining mirrors in
-            # priority order before reporting a non-critical preview failure.
-            if not winner.is_set():
-                for index, url in enumerate(TAEH3_URLS[2:], start=2):
-                    if download_one(index, url):
-                        break
-                else:
-                    raise RuntimeError(
-                        "all download sources failed; " + "; ".join(failures)
-                    )
+            succeeded = [name for name, result in results.items() if result[0]]
+            failed = [f"{name}: {result[1]}" for name, result in results.items() if not result[0]]
+            if not succeeded:
+                raise RuntimeError("both decoder downloads failed; " + "; ".join(failed))
+            if failed:
+                logging.warning(
+                    "%s one decoder copy is available; secondary copy failed: %s",
+                    LOG_PREFIX,
+                    "; ".join(failed),
+                )
             with self._lock:
                 self._done = True
-            logging.info("%s taeh3.safetensors background download completed", LOG_PREFIX)
+                self._started = False
+            logging.info(
+                "%s TAEH3 background preparation completed; available: %s",
+                LOG_PREFIX,
+                ", ".join(succeeded),
+            )
         except Exception as error:
             with self._lock:
                 self._error = str(error)
-            logging.warning("%s taeh3.safetensors download failed: %s", LOG_PREFIX, error)
+                self._started = False
+            logging.warning("%s TAEH3 automatic download failed: %s", LOG_PREFIX, error)
 
 
 _TAEH3_DOWNLOAD = TAEH3BackgroundDownload()
@@ -281,24 +367,50 @@ def load_taeh3():
         names = " or ".join(TAEH3_FILENAMES)
         raise FileNotFoundError(f"{names} not found in models/vae_approx")
 
-    last_error = None
+    invalid_files = []
     for path in paths:
         try:
+            valid, actual = validate_taeh3_file(path)
+            if not valid:
+                invalid_files.append(
+                    f"{os.path.basename(path)} SHA256 mismatch ({actual[:12]}…)"
+                )
+                continue
             state_dict = comfy.utils.load_torch_file(path, safe_load=True)
             vae = comfy.sd.VAE(sd=state_dict)
             vae.throw_exception_if_invalid()
             if vae.latent_channels != 24 or vae.first_stage_model.__class__.__name__ != "TAEHV":
-                raise ValueError("decoder is not a 24-channel TAEHV decoder")
+                raise TAEH3CoreUnsupported(
+                    "TAEH3 SHA256 is valid, but this ComfyUI core cannot create a 24-channel TAEHV decoder; update ComfyUI core"
+                )
+            filename = os.path.basename(path)
+            if filename not in _TAEH3_SELECTED_LOGGED:
+                _TAEH3_SELECTED_LOGGED.add(filename)
+                logging.info(
+                    "%s using %s (SHA256 verified, 24-channel TAEHV)",
+                    LOG_PREFIX,
+                    filename,
+                )
             return vae
+        except TAEH3CoreUnsupported:
+            raise
         except Exception as error:
-            last_error = error
-    raise ValueError(f"no compatible 24-channel TAEHV decoder found ({last_error})")
+            raise TAEH3CoreUnsupported(
+                f"{os.path.basename(path)} SHA256 is valid, but this ComfyUI core failed to load 24-channel TAEHV ({error}); update ComfyUI core"
+            ) from error
+    raise TAEH3RepairRequired(
+        "no SHA256-valid TAEH3 decoder found; " + "; ".join(invalid_files)
+    )
 
 
 def load_taeh3_or_start_download():
     try:
-        return load_taeh3(), None
-    except FileNotFoundError:
+        vae = load_taeh3()
+        # Fill the alternate filename in the background without delaying preview.
+        _TAEH3_DOWNLOAD.start()
+        return vae, None
+    except (FileNotFoundError, TAEH3RepairRequired) as error:
+        logging.warning("%s %s; starting verified background repair", LOG_PREFIX, error)
         _TAEH3_DOWNLOAD.start()
         done, error = _TAEH3_DOWNLOAD.state()
         if error is not None:
