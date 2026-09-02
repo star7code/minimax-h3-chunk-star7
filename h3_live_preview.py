@@ -616,10 +616,12 @@ class MiniMaxH3LivePreviewStar7:
         return {
             "required": {
                 "model": ("MODEL",),
-                "preview_enabled": ("BOOLEAN", {"default": True}),
                 "preview_frames": ("INT", {"default": 25, "min": 4, "max": 64, "step": 1}),
                 "preview_resolution": (["256", "384", "512"], {"default": "512"}),
                 "first_step_only": ("BOOLEAN", {"default": False}),
+                # Append new serialized widgets after the original v1 fields.
+                # The frontend presents a non-serialized mirror at the top.
+                "preview_enabled": ("BOOLEAN", {"default": True}),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -633,10 +635,10 @@ class MiniMaxH3LivePreviewStar7:
     def patch(
         self,
         model,
-        preview_enabled,
         preview_frames,
         preview_resolution,
         first_step_only=False,
+        preview_enabled=True,
         unique_id=None,
     ):
         # Disabled means truly absent: no model clone, sampler wrapper, decoder

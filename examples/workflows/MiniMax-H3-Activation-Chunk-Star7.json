@@ -1481,13 +1481,6 @@
           "link": 472
         },
         {
-          "name": "preview_enabled",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "preview_enabled"
-          }
-        },
-        {
           "name": "preview_frames",
           "type": "INT",
           "widget": {
@@ -1499,6 +1492,13 @@
           "type": "COMBO",
           "widget": {
             "name": "preview_resolution"
+          }
+        },
+        {
+          "name": "preview_enabled",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "preview_enabled"
           }
         }
       ],
@@ -1524,10 +1524,10 @@
         }
       },
       "widgets_values": [
-        true,
         25,
         "512",
         false,
+        true,
         ""
       ],
       "widgets_values_named": {

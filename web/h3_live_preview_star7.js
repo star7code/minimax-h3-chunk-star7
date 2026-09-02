@@ -103,9 +103,13 @@ function localizeNode(node) {
 
     const framesWidget = node.widgets?.find((widget) => widget.name === "preview_frames");
     const enabledWidget = node.widgets?.find((widget) => widget.name === "preview_enabled");
+    const enabledMirror = node.widgets?.find(
+        (widget) => widget.name === "__star7_preview_enabled_ui"
+    );
     const resolutionWidget = node.widgets?.find((widget) => widget.name === "preview_resolution");
     const firstStepWidget = node.widgets?.find((widget) => widget.name === "first_step_only");
     if (enabledWidget) enabledWidget.label = enabledWidget.localized_name = text.enabled;
+    if (enabledMirror) enabledMirror.label = enabledMirror.localized_name = text.enabled;
     if (framesWidget) framesWidget.label = framesWidget.localized_name = text.frames;
     if (resolutionWidget) resolutionWidget.label = resolutionWidget.localized_name = text.resolution;
     if (firstStepWidget) firstStepWidget.label = firstStepWidget.localized_name = text.firstStepOnly;
@@ -120,6 +124,26 @@ function findNode(graph, qualifiedId) {
         current = owner.subgraph;
     }
     return current?.getNodeById?.(Number(parts.at(-1))) ?? null;
+}
+
+function repairPreviewWidgetValues(configuration) {
+    if (!Array.isArray(configuration?.widgets_values)) return;
+    const values = configuration.widgets_values;
+    if (typeof values[0] === "boolean") {
+        // Short-lived 2.12.16 order: enabled, frames, resolution, first-step.
+        const enabled = values[0];
+        const original = values.slice(1);
+        configuration.widgets_values = [
+            original[0], original[1], original[2], enabled,
+            ...original.slice(3),
+        ];
+    } else if (typeof values[3] !== "boolean") {
+        // Original v1 order, optionally followed by the DOM preview placeholder.
+        configuration.widgets_values = [
+            values[0], values[1], values[2], true,
+            ...values.slice(3),
+        ];
+    }
 }
 
 api.addEventListener(EVENT_NAME, (event) => {
@@ -151,6 +175,27 @@ app.registerExtension({
             }
         }
 
+        // LiteGraph assigns widgets_values before invoking onConfigure. Repair
+        // positional data at the configure entry point so no wrong value ever
+        // reaches a widget, even transiently.
+        const originalNodeConfigure = nodeType.prototype.configure;
+        nodeType.prototype.configure = function (configuration) {
+            repairPreviewWidgetValues(configuration);
+            const mirrors = [];
+            for (let index = (this.widgets?.length ?? 0) - 1; index >= 0; index -= 1) {
+                if (this.widgets[index]?.name !== "__star7_preview_enabled_ui") continue;
+                mirrors.unshift(this.widgets[index]);
+                this.widgets.splice(index, 1);
+            }
+            try {
+                return originalNodeConfigure?.apply(this, arguments);
+            } finally {
+                // Positional assignment must see only serialized schema
+                // widgets. Put the visual-only switch back afterwards.
+                this.widgets?.unshift?.(...mirrors);
+            }
+        };
+
         const original = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const result = original?.apply(this, arguments);
@@ -161,14 +206,6 @@ app.registerExtension({
 
             const originalConfigure = this.onConfigure;
             this.onConfigure = function () {
-                const configuration = arguments[0];
-                // v1 workflows contain the original three widget values. The
-                // new switch is visually first, so prepend its default during
-                // migration instead of shifting frames/resolution/step-only.
-                if (Array.isArray(configuration?.widgets_values)
-                    && typeof configuration.widgets_values[0] !== "boolean") {
-                    configuration.widgets_values = [true, ...configuration.widgets_values];
-                }
                 const configureResult = originalConfigure?.apply(this, arguments);
                 setTimeout(() => {
                     localizeNode(this);
@@ -445,32 +482,60 @@ app.registerExtension({
             document.addEventListener("visibilitychange", visibilityHandler);
             globalThis.addEventListener?.("pageshow", pageshowHandler);
 
-            const enabledWidget = this.widgets?.find((widget) => widget.name === "preview_enabled");
-            if (enabledWidget) {
-                const originalEnabledCallback = enabledWidget.callback;
-                enabledWidget.callback = (value) => {
-                    originalEnabledCallback?.call(enabledWidget, value);
-                    if (!value) {
-                        stopPlayback();
-                        image.style.display = "none";
-                        canvas.style.display = "none";
-                        placeholder.style.display = "flex";
-                        placeholder.textContent = chinese ? "实时预览已关闭" : "Live preview is off";
-                        status.style.color = "#999";
-                        status.textContent = chinese ? "实时预览已关闭" : "Live preview is off";
-                    } else {
-                        placeholder.textContent = chinese
-                            ? "首个采样步骤完成后显示动态预览"
-                            : "Animation appears after the first sampling step";
-                        status.style.color = "#d5d5d5";
-                        status.textContent = chinese ? "等待采样…" : "Waiting for sampling…";
-                        void restoreVisiblePreview();
-                    }
-                    this.setDirtyCanvas?.(true, true);
-                };
-                if (!enabledWidget.value) {
-                    enabledWidget.callback(false);
+            const applyEnabledState = (value) => {
+                if (!value) {
+                    stopPlayback();
+                    image.style.display = "none";
+                    canvas.style.display = "none";
+                    placeholder.style.display = "flex";
+                    placeholder.textContent = chinese ? "实时预览已关闭" : "Live preview is off";
+                    status.style.color = "#999";
+                    status.textContent = chinese ? "实时预览已关闭" : "Live preview is off";
+                } else {
+                    placeholder.textContent = chinese
+                        ? "首个采样步骤完成后显示动态预览"
+                        : "Animation appears after the first sampling step";
+                    status.style.color = "#d5d5d5";
+                    status.textContent = chinese ? "等待采样…" : "Waiting for sampling…";
+                    void restoreVisiblePreview();
                 }
+                this.setDirtyCanvas?.(true, true);
+            };
+            const serializedEnabledWidget = this.widgets?.find(
+                (widget) => widget.name === "preview_enabled"
+            );
+            if (serializedEnabledWidget) {
+                const originalEnabledCallback = serializedEnabledWidget.callback;
+                const enabledMirror = this.addWidget(
+                    "toggle",
+                    "__star7_preview_enabled_ui",
+                    Boolean(serializedEnabledWidget.value),
+                    (value) => {
+                        serializedEnabledWidget.value = Boolean(value);
+                        originalEnabledCallback?.call(serializedEnabledWidget, value);
+                        applyEnabledState(Boolean(value));
+                    },
+                    { serialize: false },
+                );
+                enabledMirror.options ??= {};
+                enabledMirror.options.serialize = false;
+                enabledMirror.label = enabledMirror.localized_name = PREVIEW_TEXT[language()].enabled;
+
+                // Keep the real widget in schema order for serialization, but
+                // draw only the mirror at the top of the node.
+                serializedEnabledWidget.hidden = true;
+                serializedEnabledWidget.computeSize = () => [0, -4];
+                const mirrorIndex = this.widgets.indexOf(enabledMirror);
+                if (mirrorIndex >= 0) {
+                    this.widgets.splice(mirrorIndex, 1);
+                    this.widgets.unshift(enabledMirror);
+                }
+                serializedEnabledWidget.callback = (value) => {
+                    enabledMirror.value = Boolean(value);
+                    originalEnabledCallback?.call(serializedEnabledWidget, value);
+                    applyEnabledState(Boolean(value));
+                };
+                if (!serializedEnabledWidget.value) applyEnabledState(false);
             }
 
             this.addDOMWidget("preview", "star7_h3_preview", root, { serialize: false });

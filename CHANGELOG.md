@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.12.17 - 2026-09-03
+
+- Fixed Live Preview widget-value migration. The serialized order remains the
+  original `frames / resolution / first-step-only` sequence, with the new
+  enable switch appended after it, so opening v1 workflows cannot shift every
+  setting into the wrong widget.
+- Kept `Show preview` visually at the top through a non-serialized mirror
+  switch. Both original workflows and workflows briefly saved by 2.12.16 are
+  repaired before LiteGraph assigns positional widget values; the mirror is
+  temporarily excluded from that assignment and restored afterwards.
+
 ## 2.12.16 - 2026-09-03
 
 - Renamed the compact UI control to `输出显存保护（可能降速）` /
