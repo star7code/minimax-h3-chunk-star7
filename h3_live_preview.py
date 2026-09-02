@@ -433,12 +433,36 @@ def decode_preview(vae, video, frame_count, resolution):
         frames = F.interpolate(frames, size=(height, width), mode="bilinear", align_corners=False)
     frames = frames.unsqueeze(2).contiguous()
 
-    memory_required = vae.memory_used_decode(frames.shape, vae.vae_dtype)
+    # Decode one sampled instant at a time.  TAEH3 is tiny, while batching all
+    # 25 previews can temporarily reserve enough activation memory to evict a
+    # portion of the actively sampling H3 model on tighter cards.
+    decode_shape = (1,) + tuple(frames.shape[1:])
+    memory_required = vae.memory_used_decode(decode_shape, vae.vae_dtype)
     loaded = comfy.model_management.loaded_models(only_currently_used=True)
     loaded.append(vae.patcher)
     comfy.model_management.load_models_gpu(loaded, memory_required=memory_required)
 
-    rgb = vae.decode(frames)
+    # Do not call VAE.decode() here.  Its public path performs another
+    # load_models_gpu([vae]) call which can offload the actively sampling H3
+    # model; the next diffusion step then has to reload many gigabytes.  The
+    # model was prepared above together with all currently-used models, so a
+    # direct TAEH3 decode preserves H3 residency and removes that per-step
+    # unload/reload penalty.
+    with comfy.model_management.cuda_device_context(vae.device):
+        decoded = []
+        for frame in frames.split(1, dim=0):
+            sample = frame.to(device=vae.device, dtype=vae.vae_dtype)
+            rgb_frame = vae.first_stage_model.decode(sample)
+            rgb_frame = vae.process_output(rgb_frame)
+            decoded.append(
+                rgb_frame.to(
+                    device=vae.output_device,
+                    dtype=vae.vae_output_dtype(),
+                    copy=True,
+                )
+            )
+        rgb = torch.cat(decoded, dim=0)
+    rgb = rgb.movedim(1, -1)
     if rgb.ndim == 5:
         rgb = rgb[:, rgb.shape[1] // 2]
     if rgb.ndim != 4 or rgb.shape[-1] != 3:

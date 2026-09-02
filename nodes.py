@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.12.8"
+NODE_VERSION = "2.12.13"
 FP16_EXACT_PATCH_FLAG = "star7_minimax_h3_fp16_exact_fix"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
@@ -1136,6 +1136,10 @@ def _select_out_proj_policy(
     )
     if free_bytes >= full_required:
         return {
+            # Normal workloads must preserve the incoming Linear exactly.  In
+            # particular, forcing CK's SM75 fused heuristic here can be slower
+            # than the upstream route even though no memory protection is
+            # needed.
             "mode": "full", "chunk": int(sequence), "reason": "headroom-full",
             "free": free_bytes, "allocated": allocated, "reserved": reserved,
             "required": full_required,
@@ -1148,7 +1152,10 @@ def _select_out_proj_policy(
     if free_bytes < output_bytes + chunk_workspace + safety_margin:
         chunk = 2048
     return {
-        "mode": "chunk", "chunk": min(int(sequence), chunk),
+        # Try the workspace-free SM75 fused full projection before falling
+        # back to token chunks.  This keeps long sequences fast when the
+        # installed Comfy-Kitchen build supports the H3 contraction.
+        "mode": "protected-full", "chunk": min(int(sequence), chunk),
         "reason": "headroom-protection", "free": free_bytes,
         "allocated": allocated, "reserved": reserved,
         "required": full_required,
@@ -1211,7 +1218,7 @@ def _run_chunked_h3_out_proj(
         )
         policies[policy_key] = policy
     current_chunk = max(256, min(sequence, int(policy["chunk"])))
-    full_first = policy["mode"] == "full"
+    full_first = policy["mode"] in {"full", "protected-full"}
     if not full_first:
         _CONFIG["effective_out_proj_chunk_tokens"] = current_chunk
         _CONFIG["status_effective_out_proj_chunk_tokens"] = current_chunk
@@ -1219,9 +1226,14 @@ def _run_chunked_h3_out_proj(
 
     if full_first:
         try:
+            force_fused = bool(
+                policy["mode"] == "protected-full"
+                and candidate
+                and known_fused is not False
+            )
             projected, fused_used = _call_h3_out_proj(
                 upstream_forward, x,
-                force_sm75_fused=bool(candidate and known_fused is not False),
+                force_sm75_fused=force_fused,
             )
             if candidate:
                 # No observation also means we cannot prove that the large
@@ -1230,7 +1242,8 @@ def _run_chunked_h3_out_proj(
                 _SM75_OUT_PROJ_FUSED_SUPPORT[support_key] = bool(fused_used)
             mode = (
                 "sm75-fused-full" if fused_used else
-                "sm75-generic-full" if candidate else "upstream-full"
+                "protected-upstream-full" if policy["mode"] == "protected-full" else
+                "upstream-full"
             )
             shape_key = (sequence, x.shape[-1], projected.shape[-1], mode)
             if _CONFIG["verbose"] and shape_key not in _LOGGED_OUT_PROJ_SHAPES:

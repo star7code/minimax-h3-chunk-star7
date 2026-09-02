@@ -1219,8 +1219,48 @@ def test_out_proj_auto_policy_protects_only_risky_long_sm75_shapes():
             value, 148162, 5376, True
         )
     assert normal["mode"] == "full"
-    assert long["mode"] == "chunk"
+    assert long["mode"] == "protected-full"
     assert long["chunk"] in {2048, 4096}
+
+
+def test_out_proj_normal_headroom_never_forces_sm75_fused_dispatch():
+    original_config = chunk_nodes._CONFIG.copy()
+    calls = []
+
+    class OutProj:
+        in_features = 7168
+        out_features = 5376
+        quant_format = "int8_tensorwise"
+
+    value = torch.zeros(16, 7168, dtype=torch.float16)
+
+    def upstream(tensor):
+        calls.append(int(tensor.shape[0]))
+        return torch.zeros(tensor.shape[0], 5376, dtype=tensor.dtype)
+
+    try:
+        chunk_nodes._CONFIG.update(
+            out_proj_memory_protection=True,
+            out_proj_policy={},
+            out_proj_protection_logged=set(),
+            verbose=False,
+        )
+        with mock.patch.object(
+            chunk_nodes, "_select_out_proj_policy",
+            return_value={"mode": "full", "chunk": 16, "reason": "headroom-full"},
+        ), mock.patch.object(
+            chunk_nodes, "_sm75_h3_out_proj_fused_candidate", return_value=True,
+        ), mock.patch.object(
+            chunk_nodes, "_call_h3_out_proj", wraps=chunk_nodes._call_h3_out_proj,
+        ) as dispatch:
+            result = chunk_nodes._run_chunked_h3_out_proj(OutProj(), value, upstream)
+
+        assert result.shape == (16, 5376)
+        assert calls == [16]
+        assert dispatch.call_args.kwargs["force_sm75_fused"] is False
+    finally:
+        chunk_nodes._CONFIG.clear()
+        chunk_nodes._CONFIG.update(original_config)
 
 
 def test_out_proj_protection_migrates_legacy_prefetch_values_to_auto():
@@ -1859,6 +1899,7 @@ if __name__ == "__main__":
     test_out_proj_full_first_oom_learns_preallocated_chunk_fallback()
     test_out_proj_protection_off_is_an_exact_passthrough()
     test_out_proj_auto_policy_protects_only_risky_long_sm75_shapes()
+    test_out_proj_normal_headroom_never_forces_sm75_fused_dispatch()
     test_out_proj_protection_migrates_legacy_prefetch_values_to_auto()
     test_out_proj_protection_ui_is_auto_by_default()
     test_sm75_out_proj_candidate_accepts_current_weight_only_dispatch()
