@@ -1201,10 +1201,10 @@
         }
       },
       "widgets_values": [
-        "The attention path must match the GPU architecture: use an SM75 path on RTX 20-series/SM75 GPUs and an SM80+ path on SM80 or newer GPUs. CK INT8 is the architecture-neutral baseline. An incompatible architecture stops with a clear error instead of silently substituting another backend. If CK on SM80+ reports unprotected FP16 before sampling, check the launcher precision settings or keep the FP16 Exact Loader in this workflow so it can correct the model precision.\n\nUse the Sigma Shift values published with the LoRA. Common starting points are 6 / 3 for 4-step LoRAs and 12 / 3 for 8-step LoRAs. Bypass Sigma Shift to restore the default 12 / 3 behavior.\n\nUnder the same 1.0MP, 10-second, 24fps, 4-step reference-image workflow, CK INT8 measured 119.50 seconds/step and 620.32 seconds total; Sol SM75 All-INT8 measured 88.71 seconds/step and 442.57 seconds; SLA SM75 All-INT8 measured 60.83 seconds/step and 325.51 seconds. Sparse paths are faster, but quality depends on the content and settings. Hybrid combines CK and a sparse path on complete sampling steps.\n\n8192 is a practical starting point for the chunk controls. A stage is reduced only after that stage runs out of VRAM. Keep Attention output memory protection on Auto for normal use."
+        "The attention path must match the GPU architecture: use an SM75 path on RTX 20-series/SM75 GPUs and an SM80+ path on SM80 or newer GPUs. CK INT8 is the architecture-neutral baseline. An incompatible architecture stops with a clear error instead of silently substituting another backend. If CK on SM80+ reports unprotected FP16 before sampling, check the launcher precision settings or keep the FP16 Exact Loader in this workflow so it can correct the model precision.\n\nUse the Sigma Shift values published with the LoRA. Common starting points are 6 / 3 for 4-step LoRAs and 12 / 3 for 8-step LoRAs. Bypass Sigma Shift to restore the default 12 / 3 behavior.\n\nUnder the same 1.0MP, 10-second, 24fps, 4-step reference-image workflow, CK INT8 measured 119.50 seconds/step and 620.32 seconds total; Sol SM75 All-INT8 measured 88.71 seconds/step and 442.57 seconds; SLA SM75 All-INT8 measured 60.83 seconds/step and 325.51 seconds. Sparse paths are faster, but quality depends on the content and settings. Hybrid combines CK and a sparse path on complete sampling steps.\n\n8192 is a practical starting point for the chunk controls. A stage is reduced only after that stage runs out of VRAM. Attention output memory protection defaults to Off; select Auto explicitly only when an unusually long sequence needs the additional VRAM safeguard."
       ],
       "widgets_values_named": {
-        "text": "The attention path must match the GPU architecture: use an SM75 path on RTX 20-series/SM75 GPUs and an SM80+ path on SM80 or newer GPUs. CK INT8 is the architecture-neutral baseline. An incompatible architecture stops with a clear error instead of silently substituting another backend. If CK on SM80+ reports unprotected FP16 before sampling, check the launcher precision settings or keep the FP16 Exact Loader in this workflow so it can correct the model precision.\n\nUse the Sigma Shift values published with the LoRA. Common starting points are 6 / 3 for 4-step LoRAs and 12 / 3 for 8-step LoRAs. Bypass Sigma Shift to restore the default 12 / 3 behavior.\n\nUnder the same 1.0MP, 10-second, 24fps, 4-step reference-image workflow, CK INT8 measured 119.50 seconds/step and 620.32 seconds total; Sol SM75 All-INT8 measured 88.71 seconds/step and 442.57 seconds; SLA SM75 All-INT8 measured 60.83 seconds/step and 325.51 seconds. Sparse paths are faster, but quality depends on the content and settings. Hybrid combines CK and a sparse path on complete sampling steps.\n\n8192 is a practical starting point for the chunk controls. A stage is reduced only after that stage runs out of VRAM. Keep Attention output memory protection on Auto for normal use."
+        "text": "The attention path must match the GPU architecture: use an SM75 path on RTX 20-series/SM75 GPUs and an SM80+ path on SM80 or newer GPUs. CK INT8 is the architecture-neutral baseline. An incompatible architecture stops with a clear error instead of silently substituting another backend. If CK on SM80+ reports unprotected FP16 before sampling, check the launcher precision settings or keep the FP16 Exact Loader in this workflow so it can correct the model precision.\n\nUse the Sigma Shift values published with the LoRA. Common starting points are 6 / 3 for 4-step LoRAs and 12 / 3 for 8-step LoRAs. Bypass Sigma Shift to restore the default 12 / 3 behavior.\n\nUnder the same 1.0MP, 10-second, 24fps, 4-step reference-image workflow, CK INT8 measured 119.50 seconds/step and 620.32 seconds total; Sol SM75 All-INT8 measured 88.71 seconds/step and 442.57 seconds; SLA SM75 All-INT8 measured 60.83 seconds/step and 325.51 seconds. Sparse paths are faster, but quality depends on the content and settings. Hybrid combines CK and a sparse path on complete sampling steps.\n\n8192 is a practical starting point for the chunk controls. A stage is reduced only after that stage runs out of VRAM. Attention output memory protection defaults to Off; select Auto explicitly only when an unusually long sequence needs the additional VRAM safeguard."
       },
       "color": "#432",
       "bgcolor": "#653"
@@ -1439,7 +1439,7 @@
         8192,
         8192,
         4096,
-        "auto",
+        "off",
         true,
         "comfy_kitchen_int8"
       ],
@@ -1450,7 +1450,7 @@
         "mlp_chunk_tokens": 8192,
         "qkv_chunk_tokens": 8192,
         "out_proj_chunk_tokens": 4096,
-        "disable_dynamic_prefetch": "auto",
+        "disable_dynamic_prefetch": "off",
         "reuse_mlp_weights": true,
         "attention_backend": "comfy_kitchen_int8"
       },

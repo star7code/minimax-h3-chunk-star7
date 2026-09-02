@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.12.15 - 2026-09-03
+
+- Made `Attention output memory protection = Off` a true zero-overhead control
+  path. The node no longer installs an `out_proj` Python wrapper on any H3
+  block when protection is disabled, so ordinary CK/SLA/Sol execution retains
+  the exact incoming projection hot path.
+- Changed new nodes to default to `Off`. Legacy values from the retired boolean
+  prefetch field also migrate to `Off`; protection is installed only after an
+  explicit `Auto` selection. The earlier live-preview/H3 residency fix remains
+  active.
+
 ## 2.12.14 - 2026-09-03
 
 - SM75 SLA 的均值池化与分块 INT8 量化改用随节点分发的原生 CUDA 预处理，

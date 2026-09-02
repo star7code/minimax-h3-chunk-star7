@@ -77,7 +77,7 @@ Chinese ComfyUI environments display Chinese node and control labels; other loca
 | `mlp_chunk_tokens` | MLP expanded-activation chunk limit; usually the primary VRAM control | `8192`, then `4096` when memory is tight |
 | `qkv_chunk_tokens` | QKV projection workspace chunk limit | `8192`, then lower when needed |
 | `auto_halve_on_oom` | Retry only the failed chunk stage at half size | `true` |
-| Attention output memory protection | Keep full `out_proj` with safe headroom; automatically tile risky long sequences | `Auto` |
+| Attention output memory protection | Off installs no `out_proj` wrapper; select Auto explicitly to protect risky long sequences | `Off` |
 | `reuse_mlp_weights` | Reuse prepared QKV/MLP weight snapshots when safe | `true` |
 | Attention acceleration method | Select existing, CK, SLA, Sol, or Hybrid attention | `comfy_kitchen_int8` |
 

@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.12.14"
+NODE_VERSION = "2.12.15"
 FP16_EXACT_PATCH_FLAG = "star7_minimax_h3_fp16_exact_fix"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
@@ -1154,11 +1154,11 @@ def _call_h3_out_proj(
 def _out_proj_protection_enabled(value) -> bool:
     """Normalize the new Auto/Off control and legacy prefetch placeholders."""
     if isinstance(value, bool):
-        # The retired prefetch field was a boolean. Both legacy values migrate
-        # to the new default so old workflows gain the safe behavior.
-        return True
+        # The retired prefetch field controlled an unrelated experiment. Never
+        # reinterpret an old boolean as permission to wrap out_proj.
+        return False
     normalized = str(value).strip().lower()
-    return normalized not in {"off", "disabled", "false", "0", "关闭", "关"}
+    return normalized in {"auto", "automatic", "自动"}
 
 
 def _out_proj_policy_key(
@@ -2949,26 +2949,27 @@ def install_model_patch(
         raise ValueError(f"unknown attention backend: {attention_backend}")
 
     # Every supported attention backend converges on the same H3 output
-    # projection. Preserve its exact upstream Linear (including LoRA/dynamic
-    # patches), prefer the full SM75 fused INT8 contraction when eligible, and
-    # use bounded output storage only when that fused path is unavailable or
-    # the upstream full contraction reports OOM.
-    for index, block in enumerate(diffusion_model.blocks):
-        out_proj_path = f"diffusion_model.blocks.{index}.attn.out_proj.forward"
-        block.attn.out_proj._star7_block_index = index
-        upstream_out_proj = patched.object_patches.get(
-            out_proj_path, block.attn.out_proj.forward
-        )
-        upstream_out_proj = _star7_wrapper_original(
-            upstream_out_proj, "out-proj-chunk-upstream"
-        )
-        patched.add_object_patch(
-            out_proj_path,
-            _weak_method(
-                block.attn.out_proj,
-                _make_chunked_h3_out_proj_forward(upstream_out_proj),
-            ),
-        )
+    # projection. Install this wrapper only when protection is enabled. An
+    # explicit Off must be a genuinely zero-overhead control path: preserving
+    # the incoming object patch is not enough if another Python call is still
+    # inserted into every block and every sampling step.
+    if bool(_CONFIG.get("out_proj_memory_protection", False)):
+        for index, block in enumerate(diffusion_model.blocks):
+            out_proj_path = f"diffusion_model.blocks.{index}.attn.out_proj.forward"
+            block.attn.out_proj._star7_block_index = index
+            upstream_out_proj = patched.object_patches.get(
+                out_proj_path, block.attn.out_proj.forward
+            )
+            upstream_out_proj = _star7_wrapper_original(
+                upstream_out_proj, "out-proj-chunk-upstream"
+            )
+            patched.add_object_patch(
+                out_proj_path,
+                _weak_method(
+                    block.attn.out_proj,
+                    _make_chunked_h3_out_proj_forward(upstream_out_proj),
+                ),
+            )
 
     # Chunk only controls token tiling. If another node already patched the MLP
     # (including FP16 Exact), invoke that exact upstream callable per tile rather
@@ -3154,7 +3155,7 @@ class MiniMaxH3ActivationChunkStar7:
                 "disable_dynamic_prefetch": (
                     ["auto", "off", "Auto", "Off", "自动", "关闭"],
                     {
-                        "default": "auto",
+                        "default": "off",
                         "tooltip": "Automatically protects H3 attention output projection memory on risky long sequences. Normal workloads keep the full projection; Off restores the incoming out_proj behavior.",
                     },
                 ),
@@ -3222,7 +3223,7 @@ class MiniMaxH3ActivationChunkStar7:
 
     def patch(
         self, model, chunk_tokens=8192, auto_halve_on_oom=True, verbose=True,
-        mlp_chunk_tokens=8192, disable_dynamic_prefetch="auto",
+        mlp_chunk_tokens=8192, disable_dynamic_prefetch="off",
         qkv_chunk_tokens=8192,
         out_proj_chunk_tokens=4096,
         reuse_mlp_weights=True, attention_backend="comfy_kitchen_int8", unique_id=None,

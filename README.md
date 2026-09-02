@@ -194,7 +194,7 @@ attention_backend = existing
 | `mlp_chunk_tokens` | MLP 扩展激活分块上限，通常是主要显存调节项 | `8192`；显存紧张时先降至 `4096` |
 | `qkv_chunk_tokens` | QKV 投影临时工作集 | `8192`；显存紧张时再降低 |
 | `auto_halve_on_oom` | 当前分块 OOM 时只对失败阶段减半重试，最低 `256` | `true` |
-| 注意力输出显存保护 | 显存充足时保持整段 `out_proj`；长序列自动采用内部安全分块 | `自动` |
+| 注意力输出显存保护 | 默认关闭且不安装任何 `out_proj` 包装；仅在明确选择自动后保护高风险长序列 | `关闭` |
 | `reuse_mlp_weights` | 安全时复用已准备的 QKV/MLP 权重快照，显存压力下改用 streamed 路径 | `true` |
 | 注意力加速方式 | 选择已有、CK、SLA、Sol 或 Hybrid 注意力 | `comfy_kitchen_int8` |
 | `verbose` | 输出紧凑配置、首个同形状 block 和注意力路由信息 | `true` |

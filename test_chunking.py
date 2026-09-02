@@ -4,6 +4,7 @@ import hashlib
 import json
 import pathlib
 import sys
+import inspect
 import types
 from types import MethodType, SimpleNamespace
 from unittest import mock
@@ -815,7 +816,7 @@ def test_install_preserves_upstream_block_patch():
         auto_halve_on_oom=True,
         verbose=False,
         mlp_chunk_tokens=4096,
-        disable_dynamic_prefetch=True,
+        disable_dynamic_prefetch="auto",
         reuse_mlp_weights=True,
         attention_backend="existing",
     )
@@ -849,7 +850,7 @@ def test_install_preserves_upstream_block_patch():
         auto_halve_on_oom=True,
         verbose=False,
         mlp_chunk_tokens=4096,
-        disable_dynamic_prefetch=True,
+        disable_dynamic_prefetch="auto",
         reuse_mlp_weights=True,
         attention_backend="existing",
     )
@@ -1336,21 +1337,30 @@ def test_out_proj_normal_headroom_never_forces_sm75_fused_dispatch():
         chunk_nodes._CONFIG.update(original_config)
 
 
-def test_out_proj_protection_migrates_legacy_prefetch_values_to_auto():
-    assert chunk_nodes._out_proj_protection_enabled(True)
-    assert chunk_nodes._out_proj_protection_enabled(False)
-    assert chunk_nodes._out_proj_protection_enabled("Experimental feature removed")
+def test_out_proj_protection_enables_only_explicit_auto_values():
+    assert not chunk_nodes._out_proj_protection_enabled(True)
+    assert not chunk_nodes._out_proj_protection_enabled(False)
+    assert not chunk_nodes._out_proj_protection_enabled("Experimental feature removed")
     assert chunk_nodes._out_proj_protection_enabled("auto")
+    assert chunk_nodes._out_proj_protection_enabled("自动")
     assert not chunk_nodes._out_proj_protection_enabled("off")
     assert not chunk_nodes._out_proj_protection_enabled("关闭")
 
 
-def test_out_proj_protection_ui_is_auto_by_default():
+def test_out_proj_protection_ui_is_off_by_default():
     required = chunk_nodes.MiniMaxH3ActivationChunkStar7.INPUT_TYPES()["required"]
     choices = required["disable_dynamic_prefetch"][0]
     assert {"auto", "off", "Auto", "Off", "自动", "关闭"}.issubset(choices)
-    assert required["disable_dynamic_prefetch"][1]["default"] == "auto"
+    assert required["disable_dynamic_prefetch"][1]["default"] == "off"
     assert required["out_proj_chunk_tokens"][1]["default"] == 4096
+
+
+def test_out_proj_off_does_not_install_any_block_wrapper():
+    source = inspect.getsource(chunk_nodes.install_model_patch)
+    guard = 'if bool(_CONFIG.get("out_proj_memory_protection", False)):'
+    patch_call = "_make_chunked_h3_out_proj_forward(upstream_out_proj)"
+    assert guard in source
+    assert source.index(guard) < source.index(patch_call)
 
 
 def test_sm75_out_proj_candidate_accepts_current_weight_only_dispatch():
@@ -1973,8 +1983,9 @@ if __name__ == "__main__":
     test_out_proj_protection_off_is_an_exact_passthrough()
     test_out_proj_auto_policy_protects_only_risky_long_sm75_shapes()
     test_out_proj_normal_headroom_never_forces_sm75_fused_dispatch()
-    test_out_proj_protection_migrates_legacy_prefetch_values_to_auto()
-    test_out_proj_protection_ui_is_auto_by_default()
+    test_out_proj_protection_enables_only_explicit_auto_values()
+    test_out_proj_protection_ui_is_off_by_default()
+    test_out_proj_off_does_not_install_any_block_wrapper()
     test_sm75_out_proj_candidate_accepts_current_weight_only_dispatch()
     test_ck_attention_probe_supports_versions_without_availability_helper()
     test_legacy_node_alias_is_deprecated()
