@@ -1069,6 +1069,14 @@ function hideInternalOutProjWidget(node) {
     const widget = node.widgets?.find((item) => item.name === "out_proj_chunk_tokens");
     if (!widget) return;
     widget.__star7InternalOutProj = true;
+    // Legacy LiteGraph uses computeSize, while the newer Vue node renderer
+    // observes hidden/type/options. Keep every marker so the internal fallback
+    // value remains serialized but is never exposed as a user-facing control.
+    widget.hidden = true;
+    widget.options ??= {};
+    widget.options.hidden = true;
+    widget.__star7OriginalType ??= widget.type;
+    widget.type = "hidden";
     widget.computeSize = () => [0, -4];
 }
 

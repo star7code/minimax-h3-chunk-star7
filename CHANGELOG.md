@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.12.12 - 2026-09-02
+
+- 修复新版 Vue 节点界面仍显示内部 `out_proj` 兜底分块控件的问题：同时使用
+  新版 `hidden/type/options` 标记与旧版 LiteGraph `computeSize` 隐藏方式。
+- 内部值仍正常保存到工作流并传给后端，只统一界面显示，不改变显存保护逻辑。
+
 ## 2.12.11 - 2026-09-02
 
 - 实时预览同时维护 `taeh3.safetensors` 与 `taeh3_decoder.safetensors`：
