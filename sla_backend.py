@@ -455,7 +455,7 @@ def _activate_sm75_torch_preprocess(reason: BaseException | str) -> None:
         return
     _SM75_TORCH_PREPROCESS = True
     _LOG.warning(
-        "[Star7 H3 Chunk] SM75 Triton preprocessing is unavailable (%s); "
+        "[Star7 H3 Chunk] SM75 native CUDA preprocessing is unavailable (%s); "
         "using bounded-memory PyTorch routing/quantization with the same "
         "native CUDA SLA core.",
         reason,
@@ -550,6 +550,13 @@ def _quantize_torch(
 
 
 def _mean_pool(x: torch.Tensor, block: int, mean: torch.Tensor | None = None) -> torch.Tensor:
+    if torch.cuda.get_device_capability(x.device) == (7, 5):
+        if not _SM75_TORCH_PREPROCESS:
+            try:
+                return _load_sm75_backend().mean_pool(x, block, mean)
+            except Exception as exc:
+                _activate_sm75_torch_preprocess(exc)
+        return _mean_pool_torch(x, block, mean)
     if _SM75_TORCH_PREPROCESS or triton is None:
         return _mean_pool_torch(x, block, mean)
     batch, heads, length, head_dim = x.shape
@@ -629,6 +636,13 @@ def _quantize(
     multiplier: float,
     mean: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    if torch.cuda.get_device_capability(x.device) == (7, 5):
+        if not _SM75_TORCH_PREPROCESS:
+            try:
+                return _load_sm75_backend().quantize(x, block, multiplier, mean)
+            except Exception as exc:
+                _activate_sm75_torch_preprocess(exc)
+        return _quantize_torch(x, block, multiplier, mean)
     if _SM75_TORCH_PREPROCESS or triton is None:
         return _quantize_torch(x, block, multiplier, mean)
     batch, heads, length, head_dim = x.shape
@@ -749,6 +763,8 @@ def _run_raw_impl(
         )
         if _SM75_TORCH_PREPROCESS:
             implementation += "+torch-preprocess"
+        else:
+            implementation += "+native-preprocess"
         dense_guard_status = _audio_guard_status(
             query_priority_ranges, applied_priority_ranges
         )

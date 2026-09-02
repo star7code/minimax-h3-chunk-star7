@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.12.13"
+NODE_VERSION = "2.12.14"
 FP16_EXACT_PATCH_FLAG = "star7_minimax_h3_fp16_exact_fix"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
@@ -48,6 +48,87 @@ HYBRID_BACKEND_NAMES = {
     HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
 }
 HYBRID_GUARD_RATIO = Fraction(1, 6)
+
+_PROCESS_WIDE_CONFLICT_MARKERS = (
+    "comfyui-minimax-h3-turing",
+    "comfyui_minimax_h3_turing",
+)
+
+
+def _callable_source(value):
+    function = getattr(value, "__func__", value)
+    code = getattr(function, "__code__", None)
+    return str(getattr(code, "co_filename", "") or "").replace("\\", "/").lower()
+
+
+def _is_conflicting_callable(value):
+    source = _callable_source(value)
+    return any(marker in source for marker in _PROCESS_WIDE_CONFLICT_MARKERS)
+
+
+def _neutralize_process_wide_h3_conflicts():
+    """Restore H3 core methods saved by the foreign monkey patch and continue."""
+    conflicts = []
+    for module in tuple(sys.modules.values()):
+        source = str(getattr(module, "__file__", "") or "").replace("\\", "/").lower()
+        name = str(getattr(module, "__name__", "") or "").lower()
+        if any(marker in source or marker in name for marker in _PROCESS_WIDE_CONFLICT_MARKERS):
+            conflicts.append(module)
+    if not conflicts:
+        return False
+
+    from comfy.ldm.minimax import model as minimax_module
+    if getattr(minimax_module, "_star7_turing_plugin_neutralized", False):
+        return True
+
+    restore_map = (
+        (minimax_module.MiniMaxH3Model, "__init__", "_orig_model_init"),
+        (minimax_module.MLP, "forward", "_orig_mlp_forward"),
+        (minimax_module.DiTBlock, "forward", "_orig_block_forward"),
+        (minimax_module.Attention, "forward", "_orig_attention_forward"),
+        (minimax_module.Attention, "forward", "_orig_attn_forward"),
+    )
+    restored = 0
+    for owner, attribute, saved_name in restore_map:
+        candidates = [getattr(module, saved_name, None) for module in conflicts]
+        original = next(
+            (candidate for candidate in candidates if callable(candidate) and not _is_conflicting_callable(candidate)),
+            None,
+        )
+        if original is not None and _is_conflicting_callable(getattr(owner, attribute, None)):
+            setattr(owner, attribute, original)
+            restored += 1
+
+    _LOG.warning(
+        "[Star7 H3 Compatibility] 检测到插件冲突：comfyui-minimax-h3-turing 已被屏蔽，"
+        "本次继续使用 Star7 路线（已恢复 %d 个全局 H3 方法）。请停用该 Turing 插件并重启；"
+        "仅绕过它的节点无效。",
+        restored,
+    )
+    minimax_module._star7_turing_plugin_neutralized = True
+    return True
+
+
+def _strip_conflicting_instance_forwards(diffusion_model):
+    """Unwrap direct instance forwards installed while the foreign patch was active."""
+    for module in diffusion_model.modules():
+        current = vars(module).get("forward")
+        if current is None or not _is_conflicting_callable(current):
+            continue
+        function = getattr(current, "__func__", current)
+        candidates = list(getattr(function, "__defaults__", ()) or ())
+        candidates.extend(
+            cell.cell_contents for cell in (getattr(function, "__closure__", ()) or ())
+        )
+        original = next(
+            (candidate for candidate in candidates if callable(candidate) and not _is_conflicting_callable(candidate)),
+            None,
+        )
+        if original is not None:
+            module.forward = original
+    for block in getattr(diffusion_model, "blocks", ()):
+        if hasattr(block, "_h3_fp16_fix"):
+            block._h3_fp16_fix = False
 
 
 def _attention_backend_choices():
@@ -2637,6 +2718,7 @@ def install_model_patch(
     qkv_chunk_tokens: int = 8192,
     out_proj_chunk_tokens: int = 4096,
 ):
+    _neutralize_process_wide_h3_conflicts()
     attention_backend = {
         LEGACY_SM75_ALL_INT8_BACKEND_NAME: SM75_ALL_INT8_BACKEND_NAME,
         LEGACY_SOL_SM75_ALL_INT8_BACKEND_NAME: SOL_SM75_ALL_INT8_BACKEND_NAME,
@@ -2659,6 +2741,7 @@ def install_model_patch(
     from comfy.ldm.minimax import model as h3_model
     patched = model.clone()
     diffusion_model = patched.get_model_object("diffusion_model")
+    _strip_conflicting_instance_forwards(diffusion_model)
     if not isinstance(diffusion_model, h3_model.MiniMaxH3Model):
         _LOG.warning("[Star7 H3 Chunk] Non-H3 model received; only the guarded RoPE dispatch was installed")
         return patched

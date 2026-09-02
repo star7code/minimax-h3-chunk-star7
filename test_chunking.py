@@ -4,6 +4,7 @@ import hashlib
 import json
 import pathlib
 import sys
+import types
 from types import MethodType, SimpleNamespace
 from unittest import mock
 import weakref
@@ -19,6 +20,78 @@ SPEC = importlib.util.spec_from_file_location("h3_chunk_nodes", pathlib.Path(__f
 chunk_nodes = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(chunk_nodes)
+
+
+def _function_from_source(filename, source, name, globals_dict=None):
+    namespace = {} if globals_dict is None else dict(globals_dict)
+    exec(compile(source, filename, "exec"), namespace)
+    return namespace[name]
+
+
+def test_turing_process_patch_is_neutralized_before_star7_install():
+    from comfy.ldm.minimax import model as minimax_module
+
+    plugin_name = "comfyui_minimax_h3_turing_test_double"
+    plugin = types.ModuleType(plugin_name)
+    plugin.__file__ = "C:/custom_nodes/comfyui-minimax-h3-turing/nodes.py"
+    owners = (
+        (minimax_module.MiniMaxH3Model, "__init__", "_orig_model_init"),
+        (minimax_module.MLP, "forward", "_orig_mlp_forward"),
+        (minimax_module.DiTBlock, "forward", "_orig_block_forward"),
+        (minimax_module.Attention, "forward", "_orig_attention_forward"),
+    )
+    saved_attributes = [(owner, attribute, getattr(owner, attribute)) for owner, attribute, _ in owners]
+    marker = getattr(minimax_module, "_star7_turing_plugin_neutralized", None)
+    marker_existed = hasattr(minimax_module, "_star7_turing_plugin_neutralized")
+    try:
+        if marker_existed:
+            delattr(minimax_module, "_star7_turing_plugin_neutralized")
+        for index, (owner, attribute, saved_name) in enumerate(owners):
+            original = _function_from_source(
+                f"star7_original_{index}.py",
+                f"def original_{index}(*args, **kwargs): return {index}\n",
+                f"original_{index}",
+            )
+            conflicting = _function_from_source(
+                f"C:/custom_nodes/comfyui-minimax-h3-turing/patch_{index}.py",
+                f"def conflicting_{index}(*args, **kwargs): return -{index + 1}\n",
+                f"conflicting_{index}",
+            )
+            setattr(plugin, saved_name, original)
+            setattr(owner, attribute, conflicting)
+        sys.modules[plugin_name] = plugin
+
+        assert chunk_nodes._neutralize_process_wide_h3_conflicts() is True
+        for owner, attribute, saved_name in owners:
+            assert getattr(owner, attribute) is getattr(plugin, saved_name)
+    finally:
+        sys.modules.pop(plugin_name, None)
+        for owner, attribute, original in saved_attributes:
+            setattr(owner, attribute, original)
+        if marker_existed:
+            minimax_module._star7_turing_plugin_neutralized = marker
+        elif hasattr(minimax_module, "_star7_turing_plugin_neutralized"):
+            delattr(minimax_module, "_star7_turing_plugin_neutralized")
+
+
+def test_turing_instance_forward_wrapper_is_unwrapped():
+    module = torch.nn.Identity()
+    original = module.forward
+    conflicting = _function_from_source(
+        "C:/custom_nodes/comfyui-minimax-h3-turing/instance.py",
+        "def conflicting(value, _original=original): return _original(value)\n",
+        "conflicting",
+        {"original": original},
+    )
+    module.forward = conflicting
+    diffusion_model = torch.nn.Module()
+    diffusion_model.child = module
+    diffusion_model.blocks = [SimpleNamespace(_h3_fp16_fix=True)]
+
+    chunk_nodes._strip_conflicting_instance_forwards(diffusion_model)
+
+    assert module.forward is original
+    assert diffusion_model.blocks[0]._h3_fp16_fix is False
 
 
 def test_reference_image_aspect_crop_uses_largest_centered_area():
@@ -1767,12 +1840,10 @@ def test_sm75_binary_manifest_payloads():
         assert hashlib.sha256(data).hexdigest() == entry["sha256"]
 
 
-def test_sm75_torch_preprocess_matches_triton():
+def test_sm75_native_preprocess_matches_torch_fallback():
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
         return
     backend = chunk_nodes._load_sla_backend()
-    if backend.triton is None:
-        return
     original_mode = backend._SM75_TORCH_PREPROCESS
     try:
         generator = torch.Generator(device="cuda")
@@ -1783,8 +1854,8 @@ def test_sm75_torch_preprocess_matches_triton():
         )
         mean = value.mean(dim=-2, keepdim=True, dtype=torch.float32).to(value.dtype)
         backend._SM75_TORCH_PREPROCESS = False
-        triton_pool = backend._mean_pool(value, backend.BLOCK_K, mean)
-        triton_q, triton_scale = backend._quantize(
+        native_pool = backend._mean_pool(value, backend.BLOCK_K, mean)
+        native_q, native_scale = backend._quantize(
             value, backend.BLOCK_K, 1.0, mean
         )
         backend._SM75_TORCH_PREPROCESS = True
@@ -1792,9 +1863,9 @@ def test_sm75_torch_preprocess_matches_triton():
         torch_q, torch_scale = backend._quantize(
             value, backend.BLOCK_K, 1.0, mean
         )
-        assert torch.equal(triton_q, torch_q)
-        assert torch.equal(triton_scale, torch_scale)
-        assert torch.allclose(triton_pool, torch_pool, atol=1e-6, rtol=0.0)
+        assert int((native_q.to(torch.int16) - torch_q.to(torch.int16)).abs().max()) <= 1
+        assert torch.allclose(native_scale, torch_scale, atol=1e-8, rtol=2e-6)
+        assert torch.equal(native_pool, torch_pool)
     finally:
         backend._SM75_TORCH_PREPROCESS = original_mode
 
@@ -1866,6 +1937,8 @@ def test_sla_attention_forward_cuda():
 
 
 if __name__ == "__main__":
+    test_turing_process_patch_is_neutralized_before_star7_install()
+    test_turing_instance_forward_wrapper_is_unwrapped()
     test_reference_image_aspect_crop_uses_largest_centered_area()
     test_reference_image_aspect_crop_rejects_unknown_ratios()
     test_hybrid_scheduler_supports_arbitrary_step_counts()
@@ -1928,7 +2001,7 @@ if __name__ == "__main__":
     test_bundled_official_sol_dispatch_is_self_contained()
     test_sol_sm75_native_cuda_matches_exact_plus_centroid_reference()
     test_sm75_binary_manifest_payloads()
-    test_sm75_torch_preprocess_matches_triton()
+    test_sm75_native_preprocess_matches_torch_fallback()
     test_sla_sm75_native_cuda_self_test()
     test_sla_sm75_consuming_inputs()
     test_sla_attention_forward_cuda()

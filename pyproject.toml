@@ -1,6 +1,6 @@
 [project]
 name = "minimax-h3-chunk-star7"
-version = "2.12.13"
+version = "2.12.14"
 description = "QKV/RoPE/MLP activation chunking for ComfyUI MiniMax H3 with selectable CK, SLA, Sol, and Hybrid attention paths."
 license = { file = "LICENSE" }
 requires-python = ">=3.10"

@@ -5,9 +5,9 @@
   "cuda_toolkit": "13.0.88",
   "linux_cuda_toolkit": "12.6.3 (Ubuntu 20.04 / glibc 2.31)",
   "windows_x64": {
-    "file": "win_amd64/star7_sla_sm75_v7_sol_complete.dll",
-    "sha256": "d82af8c040f7290c24b9c6fdf1e8fdebf15df514e85c71fede7f84e43db73180",
-    "size": 1147392
+    "file": "win_amd64/star7_sla_sm75_v7_sol_nativepreprocess.dll",
+    "sha256": "555f0adb0e93be129d72c53b36eec19eaf52a32012da4170684fd3ef1c44aab5",
+    "size": 1174016
   },
   "linux_x86_64": {
     "file": "linux_x86_64/star7_sla_sm75_v7.so",
@@ -33,6 +33,7 @@
     "sol_shared_bytes": 32896,
     "sol_fp16_pv_registers_per_thread": 140,
     "sol_all_int8_registers_per_thread": 180,
+    "sla_preprocess": "native CUDA mean pooling and per-block FP16-to-INT8 quantization; no Triton dependency on SM75",
     "sol_preprocess": "native CUDA Q/K/V centroid reduction, diagonal threshold routing, LUT packing, and FP16-to-INT8 quantization",
     "sol_fp16_pv_math": "selected K64 blocks exact; unselected K64 blocks contribute through K/V centroids in the same FP32 online softmax",
     "sol_all_int8_math": "same exact-plus-centroid Sol softmax as FP16-PV; only the exact and centroid PV products use INT8 Tensor Cores"

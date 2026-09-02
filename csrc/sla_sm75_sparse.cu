@@ -6,6 +6,7 @@
 
 #include "third_party/comfy_kitchen_sage/qk_int_sv_i8_cuda.cuh"
 #include "sla_sm75_fp16_kernel.cuh"
+#include "sla_sm75_preprocess.cuh"
 #include "sol_sm75_preprocess.cuh"
 #include "third_party/comfy_kitchen_sage/quant_v_int8.cu"
 
@@ -40,6 +41,42 @@ constexpr int kSolShared =
 
 STAR7_EXPORT int star7_sla_sm75_abi_version() { return 7; }
 STAR7_EXPORT int star7_sla_sm75_shared_bytes() { return kShared; }
+
+STAR7_EXPORT int star7_sla_sm75_mean_pool(
+    std::uintptr_t input, std::uintptr_t mean, std::uintptr_t output,
+    int batch, int heads, int length, int block, int subtract_mean,
+    std::uintptr_t stream) {
+  if (!input || !output || batch <= 0 || heads <= 0 || length <= 0 ||
+      (block != 64 && block != 128) ||
+      (subtract_mean != 0 && subtract_mean != 1) ||
+      (subtract_mean && !mean)) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+  const cudaError_t error = star7_sla_preprocess::mean_pool(
+      reinterpret_cast<const half *>(input),
+      reinterpret_cast<const half *>(mean), reinterpret_cast<half *>(output),
+      batch, heads, length, block, subtract_mean != 0,
+      reinterpret_cast<cudaStream_t>(stream));
+  return error == cudaSuccess ? 0 : 20000 + static_cast<int>(error);
+}
+
+STAR7_EXPORT int star7_sla_sm75_quantize(
+    std::uintptr_t input, std::uintptr_t mean, std::uintptr_t output,
+    std::uintptr_t scale, int batch, int heads, int length, int block,
+    float multiplier, int subtract_mean, std::uintptr_t stream) {
+  if (!input || !output || !scale || batch <= 0 || heads <= 0 || length <= 0 ||
+      (block != 16 && block != 64) ||
+      (subtract_mean != 0 && subtract_mean != 1) ||
+      (subtract_mean && !mean)) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+  const cudaError_t error = star7_sla_preprocess::quantize(
+      reinterpret_cast<const half *>(input),
+      reinterpret_cast<const half *>(mean), reinterpret_cast<std::int8_t *>(output),
+      reinterpret_cast<float *>(scale), batch, heads, length, block, multiplier,
+      subtract_mean != 0, reinterpret_cast<cudaStream_t>(stream));
+  return error == cudaSuccess ? 0 : 21000 + static_cast<int>(error);
+}
 
 STAR7_EXPORT int star7_sla_sm75_launch(
     std::uintptr_t q, std::uintptr_t k, std::uintptr_t v,

@@ -76,6 +76,20 @@ def _load():
             ctypes.c_float, ctypes.c_uint64,
         ]
         launch_all_int8.restype = ctypes.c_int
+        mean_pool = getattr(library, "star7_sla_sm75_mean_pool", None)
+        if mean_pool is not None:
+            mean_pool.argtypes = [
+                *([ctypes.c_uint64] * 3), *([ctypes.c_int] * 5),
+                ctypes.c_uint64,
+            ]
+            mean_pool.restype = ctypes.c_int
+        quantize = getattr(library, "star7_sla_sm75_quantize", None)
+        if quantize is not None:
+            quantize.argtypes = [
+                *([ctypes.c_uint64] * 4), *([ctypes.c_int] * 4),
+                ctypes.c_float, ctypes.c_int, ctypes.c_uint64,
+            ]
+            quantize.restype = ctypes.c_int
         found_abi = int(library.star7_sla_sm75_abi_version())
         if found_abi != ABI_VERSION:
             raise RuntimeError(
@@ -104,6 +118,82 @@ def availability() -> tuple[bool, str]:
     if maximum and shared_bytes > maximum:
         return False, f"kernel needs {shared_bytes} shared bytes, GPU allows {maximum}"
     return True, f"native CUDA ABI {ABI_VERSION}, shared={shared_bytes} bytes"
+
+
+def preprocess_availability() -> tuple[bool, str]:
+    available, reason = availability()
+    if not available:
+        return False, reason
+    library = _load()
+    if not hasattr(library, "star7_sla_sm75_mean_pool") or not hasattr(
+        library, "star7_sla_sm75_quantize"
+    ):
+        return False, "installed SM75 binary predates native preprocessing"
+    return True, "native CUDA routing/quantization preprocessing"
+
+
+def mean_pool(
+    x: torch.Tensor, block: int, mean: torch.Tensor | None = None,
+) -> torch.Tensor:
+    if not x.is_cuda or x.dtype != torch.float16 or not x.is_contiguous():
+        raise ValueError("SM75 mean pooling requires contiguous CUDA FP16 input")
+    if x.ndim != 4 or x.shape[-1] != 128 or block not in (64, 128):
+        raise ValueError("SM75 mean pooling requires [B,H,L,128] and block 64/128")
+    if mean is not None:
+        if (
+            not mean.is_cuda or mean.device != x.device or
+            mean.dtype != torch.float16 or not mean.is_contiguous() or
+            mean.numel() != x.shape[0] * x.shape[1] * 128
+        ):
+            raise ValueError("SM75 mean tensor must be contiguous CUDA FP16 [B,H,1,128]")
+    available, reason = preprocess_availability()
+    if not available:
+        raise RuntimeError(reason)
+    batch, heads, length, _ = x.shape
+    groups = (length + block - 1) // block
+    output = torch.empty(
+        (batch, heads, groups, 128), dtype=torch.float16, device=x.device
+    )
+    code = int(_load().star7_sla_sm75_mean_pool(
+        x.data_ptr(), 0 if mean is None else mean.data_ptr(), output.data_ptr(),
+        batch, heads, length, block, int(mean is not None),
+        torch.cuda.current_stream(x.device).cuda_stream,
+    ))
+    if code != 0:
+        raise RuntimeError(f"SM75 native mean pooling failed with code={code}")
+    return output
+
+
+def quantize(
+    x: torch.Tensor, block: int, multiplier: float,
+    mean: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if not x.is_cuda or x.dtype != torch.float16 or not x.is_contiguous():
+        raise ValueError("SM75 quantization requires contiguous CUDA FP16 input")
+    if x.ndim != 4 or x.shape[-1] != 128 or block not in (16, 64):
+        raise ValueError("SM75 quantization requires [B,H,L,128] and block 16/64")
+    if mean is not None:
+        if (
+            not mean.is_cuda or mean.device != x.device or
+            mean.dtype != torch.float16 or not mean.is_contiguous() or
+            mean.numel() != x.shape[0] * x.shape[1] * 128
+        ):
+            raise ValueError("SM75 mean tensor must be contiguous CUDA FP16 [B,H,1,128]")
+    available, reason = preprocess_availability()
+    if not available:
+        raise RuntimeError(reason)
+    batch, heads, length, _ = x.shape
+    groups = (length + block - 1) // block
+    output = torch.empty_like(x, dtype=torch.int8)
+    scale = torch.empty((batch, heads, groups), dtype=torch.float32, device=x.device)
+    code = int(_load().star7_sla_sm75_quantize(
+        x.data_ptr(), 0 if mean is None else mean.data_ptr(), output.data_ptr(),
+        scale.data_ptr(), batch, heads, length, block, float(multiplier),
+        int(mean is not None), torch.cuda.current_stream(x.device).cuda_stream,
+    ))
+    if code != 0:
+        raise RuntimeError(f"SM75 native quantization failed with code={code}")
+    return output, scale
 
 
 def run(
