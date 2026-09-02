@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.12.15"
+NODE_VERSION = "2.12.16"
 FP16_EXACT_PATCH_FLAG = "star7_minimax_h3_fp16_exact_fix"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
@@ -1197,7 +1197,7 @@ def _select_out_proj_policy(
 ) -> dict:
     """Choose once per shape; avoid block-by-block full/OOM probing."""
     free_bytes, allocated, reserved = _cuda_memory_snapshot(x.device)
-    if free_bytes is None or not candidate:
+    if free_bytes is None:
         return {
             "mode": "full", "chunk": int(sequence), "reason": "normal-full",
             "free": free_bytes, "allocated": allocated, "reserved": reserved,
@@ -1226,17 +1226,18 @@ def _select_out_proj_policy(
             "required": full_required,
         }
 
-    chunk = 4096
-    chunk_workspace = chunk * (
+    # Auto is explicitly opt-in, so prefer a predictable bounded route over
+    # deliberately attempting a full contraction that the estimate already
+    # classifies as unsafe. Size the tile from the remaining budget, align it
+    # to 256 tokens, and cap it at the validated 4096-token guard tile.
+    workspace_per_token = (
         int(x.shape[-1]) + int(out_features) * (4 + int(x.element_size()))
     )
-    if free_bytes < output_bytes + chunk_workspace + safety_margin:
-        chunk = 2048
+    workspace_budget = max(0, free_bytes - output_bytes - safety_margin)
+    affordable = workspace_budget // max(1, workspace_per_token)
+    chunk = max(256, min(4096, (int(affordable) // 256) * 256))
     return {
-        # Try the workspace-free SM75 fused full projection before falling
-        # back to token chunks.  This keeps long sequences fast when the
-        # installed Comfy-Kitchen build supports the H3 contraction.
-        "mode": "protected-full", "chunk": min(int(sequence), chunk),
+        "mode": "chunk", "chunk": min(int(sequence), chunk),
         "reason": "headroom-protection", "free": free_bytes,
         "allocated": allocated, "reserved": reserved,
         "required": full_required,
@@ -1299,7 +1300,7 @@ def _run_chunked_h3_out_proj(
         )
         policies[policy_key] = policy
     current_chunk = max(256, min(sequence, int(policy["chunk"])))
-    full_first = policy["mode"] in {"full", "protected-full"}
+    full_first = policy["mode"] == "full"
     if not full_first:
         _CONFIG["effective_out_proj_chunk_tokens"] = current_chunk
         _CONFIG["status_effective_out_proj_chunk_tokens"] = current_chunk
@@ -1307,25 +1308,10 @@ def _run_chunked_h3_out_proj(
 
     if full_first:
         try:
-            force_fused = bool(
-                policy["mode"] == "protected-full"
-                and candidate
-                and known_fused is not False
-            )
-            projected, fused_used = _call_h3_out_proj(
-                upstream_forward, x,
-                force_sm75_fused=force_fused,
-            )
-            if candidate:
-                # No observation also means we cannot prove that the large
-                # INT32-free contraction was selected. Treat it as unsupported
-                # for later blocks and use the bounded fallback there.
-                _SM75_OUT_PROJ_FUSED_SUPPORT[support_key] = bool(fused_used)
-            mode = (
-                "sm75-fused-full" if fused_used else
-                "protected-upstream-full" if policy["mode"] == "protected-full" else
-                "upstream-full"
-            )
+            # A safe full policy is an exact upstream call. Never force a
+            # different contraction merely because Auto was selected.
+            projected = upstream_forward(x)
+            mode = "upstream-full"
             shape_key = (sequence, x.shape[-1], projected.shape[-1], mode)
             if _CONFIG["verbose"] and shape_key not in _LOGGED_OUT_PROJ_SHAPES:
                 _LOGGED_OUT_PROJ_SHAPES.add(shape_key)
@@ -3156,7 +3142,7 @@ class MiniMaxH3ActivationChunkStar7:
                     ["auto", "off", "Auto", "Off", "自动", "关闭"],
                     {
                         "default": "off",
-                        "tooltip": "Automatically protects H3 attention output projection memory on risky long sequences. Normal workloads keep the full projection; Off restores the incoming out_proj behavior.",
+                        "tooltip": "Off by default and zero-overhead. Auto proactively uses bounded out_proj chunks when current free VRAM cannot safely hold the estimated full contraction; this may reduce speed.",
                     },
                 ),
                 "qkv_chunk_tokens": (

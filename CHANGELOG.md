@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.12.16 - 2026-09-03
+
+- Renamed the compact UI control to `输出显存保护（可能降速）` /
+  `Output VRAM guard (may slow down)` while keeping its serialized input name
+  compatible with existing workflows.
+- Added a top-level `显示预览 / Show preview` switch. Disabling it returns the
+  incoming MODEL unchanged and installs no sampler callback, decoder load,
+  background download, encoding worker, or frontend transport.
+- Cached only the latest encoded preview per node and added foreground/page
+  recovery. Returning from another browser tab redraws retained frames or
+  fetches the most recent WebP if its websocket event arrived while the page
+  was suspended.
+- Added one concise per-run log after the first preview is decoded, encoded and
+  cached, making backend success distinguishable from a frontend display issue.
+- Made explicit `Auto` protection proactive: when the full contraction plus
+  output and safety reserve do not fit current free VRAM, it selects a
+  budget-derived 256–4096-token tile before the first risky full allocation.
+
 ## 2.12.15 - 2026-09-03
 
 - Made `Attention output memory protection = Off` a true zero-overhead control

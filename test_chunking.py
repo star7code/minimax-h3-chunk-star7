@@ -1293,8 +1293,9 @@ def test_out_proj_auto_policy_protects_only_risky_long_sm75_shapes():
             value, 148162, 5376, True
         )
     assert normal["mode"] == "full"
-    assert long["mode"] == "protected-full"
-    assert long["chunk"] in {2048, 4096}
+    assert long["mode"] == "chunk"
+    assert 256 <= long["chunk"] <= 4096
+    assert long["chunk"] % 256 == 0
 
 
 def test_out_proj_normal_headroom_never_forces_sm75_fused_dispatch():
@@ -1331,7 +1332,7 @@ def test_out_proj_normal_headroom_never_forces_sm75_fused_dispatch():
 
         assert result.shape == (16, 5376)
         assert calls == [16]
-        assert dispatch.call_args.kwargs["force_sm75_fused"] is False
+        assert dispatch.call_count == 0
     finally:
         chunk_nodes._CONFIG.clear()
         chunk_nodes._CONFIG.update(original_config)

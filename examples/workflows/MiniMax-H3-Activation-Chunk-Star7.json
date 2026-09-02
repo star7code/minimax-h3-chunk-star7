@@ -1481,6 +1481,13 @@
           "link": 472
         },
         {
+          "name": "preview_enabled",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "preview_enabled"
+          }
+        },
+        {
           "name": "preview_frames",
           "type": "INT",
           "widget": {
@@ -1517,12 +1524,14 @@
         }
       },
       "widgets_values": [
+        true,
         25,
         "512",
         false,
         ""
       ],
       "widgets_values_named": {
+        "preview_enabled": true,
         "preview_frames": 25,
         "preview_resolution": "512",
         "first_step_only": false,

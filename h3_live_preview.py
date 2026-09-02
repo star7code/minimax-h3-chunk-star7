@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.request
 
+from aiohttp import web
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -71,6 +72,43 @@ TAEH3_SHA256 = "4fd022bfcab08772fe0536b17ea1a3bbb5625be11e397868d1c5d891863d4c13
 _TAEH3_HASH_CACHE = {}
 _TAEH3_HASH_LOCK = threading.Lock()
 _TAEH3_SELECTED_LOGGED = set()
+_LATEST_PREVIEW_PAYLOADS = {}
+_LATEST_PREVIEW_LOCK = threading.Lock()
+
+
+def _remember_preview_payload(payload):
+    node_id = str(payload.get("node_id", ""))
+    if not node_id:
+        return
+    with _LATEST_PREVIEW_LOCK:
+        _LATEST_PREVIEW_PAYLOADS[node_id] = dict(payload)
+        # Keep only a small recovery cache for workflows with many preview
+        # nodes. Each entry already replaces the previous step for that node.
+        while len(_LATEST_PREVIEW_PAYLOADS) > 16:
+            _LATEST_PREVIEW_PAYLOADS.pop(next(iter(_LATEST_PREVIEW_PAYLOADS)))
+
+
+async def _latest_preview_response(request):
+    node_id = str(request.query.get("node_id", ""))
+    with _LATEST_PREVIEW_LOCK:
+        payload = _LATEST_PREVIEW_PAYLOADS.get(node_id)
+    if payload is None:
+        return web.json_response({"status": "empty"}, status=404)
+    return web.json_response(payload)
+
+
+_PROMPT_SERVER_INSTANCE = (
+    getattr(PromptServer, "instance", None) if PromptServer is not None else None
+)
+if _PROMPT_SERVER_INSTANCE is not None:
+    try:
+        _PROMPT_SERVER_INSTANCE.routes.get("/star7/h3-preview/latest")(
+            _latest_preview_response
+        )
+    except RuntimeError:
+        # A development reload may encounter the route registered by the
+        # previous module instance. Normal ComfyUI startup registers it once.
+        pass
 
 
 class TAEH3RepairRequired(RuntimeError):
@@ -281,6 +319,7 @@ class LatestPreviewWorker:
         self._closed = False
         self._failed = False
         self._warned = False
+        self._sent_logged = False
         self._thread = threading.Thread(target=self._run, name="star7_h3_preview", daemon=True)
         self._thread.start()
 
@@ -343,7 +382,16 @@ class LatestPreviewWorker:
             "height": images[0].height,
             "image": base64.b64encode(buffer.getvalue()).decode("ascii"),
         }
+        _remember_preview_payload(payload)
         PromptServer.instance.send_sync(EVENT_NAME, payload, PromptServer.instance.client_id)
+        if not self._sent_logged:
+            self._sent_logged = True
+            logging.info(
+                "%s preview decoded, encoded and cached at step %d/%d",
+                LOG_PREFIX,
+                step,
+                total_steps,
+            )
 
 
 def send_status(node_id, run_id, status, message=None, total=None):
@@ -568,6 +616,7 @@ class MiniMaxH3LivePreviewStar7:
         return {
             "required": {
                 "model": ("MODEL",),
+                "preview_enabled": ("BOOLEAN", {"default": True}),
                 "preview_frames": ("INT", {"default": 25, "min": 4, "max": 64, "step": 1}),
                 "preview_resolution": (["256", "384", "512"], {"default": "512"}),
                 "first_step_only": ("BOOLEAN", {"default": False}),
@@ -584,11 +633,16 @@ class MiniMaxH3LivePreviewStar7:
     def patch(
         self,
         model,
+        preview_enabled,
         preview_frames,
         preview_resolution,
         first_step_only=False,
         unique_id=None,
     ):
+        # Disabled means truly absent: no model clone, sampler wrapper, decoder
+        # loading, background download, callback or frontend transport.
+        if not bool(preview_enabled):
+            return (model,)
         # Some older frontend builds briefly serialize a fresh INT widget as zero.
         # Keep the backend default safe without changing valid saved workflows.
         preview_frames = int(preview_frames)

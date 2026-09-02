@@ -9,6 +9,7 @@ const PREVIEW_TEXT = {
     en: {
         title: "MiniMax H3 Live Preview - Star7",
         model: "Model",
+        enabled: "Show preview",
         frames: "Temporal sample frames",
         resolution: "Preview long edge",
         firstStepOnly: "Show first-step preview only",
@@ -16,6 +17,7 @@ const PREVIEW_TEXT = {
     zh: {
         title: "MiniMax H3 实时预览 - Star7",
         model: "模型",
+        enabled: "显示预览",
         frames: "时间轴采样帧数",
         resolution: "预览长边",
         firstStepOnly: "只显示第一步预览",
@@ -100,8 +102,10 @@ function localizeNode(node) {
     if (modelOutput) modelOutput.label = modelOutput.localized_name = text.model;
 
     const framesWidget = node.widgets?.find((widget) => widget.name === "preview_frames");
+    const enabledWidget = node.widgets?.find((widget) => widget.name === "preview_enabled");
     const resolutionWidget = node.widgets?.find((widget) => widget.name === "preview_resolution");
     const firstStepWidget = node.widgets?.find((widget) => widget.name === "first_step_only");
+    if (enabledWidget) enabledWidget.label = enabledWidget.localized_name = text.enabled;
     if (framesWidget) framesWidget.label = framesWidget.localized_name = text.frames;
     if (resolutionWidget) resolutionWidget.label = resolutionWidget.localized_name = text.resolution;
     if (firstStepWidget) firstStepWidget.label = firstStepWidget.localized_name = text.firstStepOnly;
@@ -132,6 +136,7 @@ app.registerExtension({
         const text = PREVIEW_TEXT[language()];
         nodeData.display_name = text.title;
         const labels = {
+            preview_enabled: text.enabled,
             preview_frames: text.frames,
             preview_resolution: text.resolution,
             first_step_only: text.firstStepOnly,
@@ -140,7 +145,7 @@ app.registerExtension({
             if (!labels[name] || !Array.isArray(spec)) continue;
             spec[1] ??= {};
             spec[1].display_name = labels[name];
-            if (name === "first_step_only") {
+            if (name === "first_step_only" || name === "preview_enabled") {
                 spec[1].label_on = language() === "zh" ? "开启" : "On";
                 spec[1].label_off = language() === "zh" ? "关闭" : "Off";
             }
@@ -156,6 +161,14 @@ app.registerExtension({
 
             const originalConfigure = this.onConfigure;
             this.onConfigure = function () {
+                const configuration = arguments[0];
+                // v1 workflows contain the original three widget values. The
+                // new switch is visually first, so prepend its default during
+                // migration instead of shifting frames/resolution/step-only.
+                if (Array.isArray(configuration?.widgets_values)
+                    && typeof configuration.widgets_values[0] !== "boolean") {
+                    configuration.widgets_values = [true, ...configuration.widgets_values];
+                }
                 const configureResult = originalConfigure?.apply(this, arguments);
                 setTimeout(() => {
                     localizeNode(this);
@@ -220,6 +233,7 @@ app.registerExtension({
             let decodeGeneration = 0;
             let decodedPreviewGeneration = 0;
             let dragging = false;
+            let lastPreviewData = null;
 
             const closeFrames = (frames = decodedFrames) => {
                 for (const frame of frames) frame?.close?.();
@@ -352,6 +366,7 @@ app.registerExtension({
                     return;
                 }
                 if (typeof data.image !== "string") return;
+                lastPreviewData = data;
                 const bytes = Uint8Array.from(atob(data.image), (char) => char.charCodeAt(0));
                 const generation = ++decodeGeneration;
                 stopPlayback();
@@ -387,8 +402,80 @@ app.registerExtension({
                     : `Step ${data.step} / ${data.total} · ${data.width}×${data.height}`;
             };
 
+            const restoreVisiblePreview = async () => {
+                if (document.visibilityState === "hidden") return;
+                const previewSwitch = this.widgets?.find(
+                    (widget) => widget.name === "preview_enabled"
+                );
+                if (previewSwitch && !previewSwitch.value) return;
+                if (decodedFrames.length) {
+                    placeholder.style.display = "none";
+                    canvas.style.display = "block";
+                    image.style.display = "none";
+                    drawFrame(frameIndex);
+                    schedulePlayback();
+                    return;
+                }
+                if (objectUrl) {
+                    placeholder.style.display = "none";
+                    image.style.display = "block";
+                    canvas.style.display = "none";
+                    if (image.src !== objectUrl) image.src = objectUrl;
+                    return;
+                }
+                if (lastPreviewData?.image) {
+                    this._star7H3Preview?.(lastPreviewData);
+                    return;
+                }
+                try {
+                    const response = await fetch(api.apiURL(
+                        `/star7/h3-preview/latest?node_id=${encodeURIComponent(String(this.id))}`
+                    ));
+                    if (!response.ok) return;
+                    const recovered = await response.json();
+                    if (typeof recovered?.image === "string") {
+                        this._star7H3Preview?.(recovered);
+                    }
+                } catch (_) {
+                    // Recovery is optional and must never affect generation.
+                }
+            };
+            const visibilityHandler = () => void restoreVisiblePreview();
+            const pageshowHandler = () => void restoreVisiblePreview();
+            document.addEventListener("visibilitychange", visibilityHandler);
+            globalThis.addEventListener?.("pageshow", pageshowHandler);
+
+            const enabledWidget = this.widgets?.find((widget) => widget.name === "preview_enabled");
+            if (enabledWidget) {
+                const originalEnabledCallback = enabledWidget.callback;
+                enabledWidget.callback = (value) => {
+                    originalEnabledCallback?.call(enabledWidget, value);
+                    if (!value) {
+                        stopPlayback();
+                        image.style.display = "none";
+                        canvas.style.display = "none";
+                        placeholder.style.display = "flex";
+                        placeholder.textContent = chinese ? "实时预览已关闭" : "Live preview is off";
+                        status.style.color = "#999";
+                        status.textContent = chinese ? "实时预览已关闭" : "Live preview is off";
+                    } else {
+                        placeholder.textContent = chinese
+                            ? "首个采样步骤完成后显示动态预览"
+                            : "Animation appears after the first sampling step";
+                        status.style.color = "#d5d5d5";
+                        status.textContent = chinese ? "等待采样…" : "Waiting for sampling…";
+                        void restoreVisiblePreview();
+                    }
+                    this.setDirtyCanvas?.(true, true);
+                };
+                if (!enabledWidget.value) {
+                    enabledWidget.callback(false);
+                }
+            }
+
             this.addDOMWidget("preview", "star7_h3_preview", root, { serialize: false });
             this.setSize([Math.max(this.size?.[0] ?? 340, 340), Math.max(this.size?.[1] ?? 360, 360)]);
+            setTimeout(() => void restoreVisiblePreview(), 500);
 
             const removed = this.onRemoved;
             this.onRemoved = function () {
@@ -396,6 +483,8 @@ app.registerExtension({
                 stopPlayback();
                 closeFrames();
                 if (objectUrl) URL.revokeObjectURL(objectUrl);
+                document.removeEventListener("visibilitychange", visibilityHandler);
+                globalThis.removeEventListener?.("pageshow", pageshowHandler);
                 this._star7H3Preview = null;
                 return removed?.apply(this, arguments);
             };
