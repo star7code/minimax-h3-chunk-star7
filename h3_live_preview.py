@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import urllib.request
+from contextlib import contextmanager
 
 from aiohttp import web
 import torch
@@ -74,6 +75,39 @@ _TAEH3_HASH_LOCK = threading.Lock()
 _TAEH3_SELECTED_LOGGED = set()
 _LATEST_PREVIEW_PAYLOADS = {}
 _LATEST_PREVIEW_LOCK = threading.Lock()
+
+
+class _PreviewModelLoadLogFilter(logging.Filter):
+    """Hide only model-manager chatter caused by this preview decode call."""
+
+    def __init__(self):
+        super().__init__()
+        self.thread_id = threading.get_ident()
+
+    def filter(self, record):
+        if record.thread != self.thread_id or record.levelno != logging.INFO:
+            return True
+        message = record.getMessage()
+        return not (
+            message.startswith("Requested to load TAEHV")
+            or message.startswith("Model TAEHV prepared for dynamic VRAM loading")
+            or message.startswith("Model MiniMaxH3 prepared for dynamic VRAM loading")
+            or message.endswith(" models unloaded.")
+        )
+
+
+@contextmanager
+def _quiet_preview_model_loading():
+    """Keep expected preview loads from splitting the Star7 step summaries."""
+    log_filter = _PreviewModelLoadLogFilter()
+    handlers = tuple(logging.getLogger().handlers)
+    for handler in handlers:
+        handler.addFilter(log_filter)
+    try:
+        yield
+    finally:
+        for handler in handlers:
+            handler.removeFilter(log_filter)
 
 
 def _remember_preview_payload(payload):
@@ -386,7 +420,7 @@ class LatestPreviewWorker:
         PromptServer.instance.send_sync(EVENT_NAME, payload, PromptServer.instance.client_id)
         if not self._sent_logged:
             self._sent_logged = True
-            logging.info(
+            logging.debug(
                 "%s preview decoded, encoded and cached at step %d/%d",
                 LOG_PREFIX,
                 step,
@@ -488,7 +522,11 @@ def decode_preview(vae, video, frame_count, resolution):
     memory_required = vae.memory_used_decode(decode_shape, vae.vae_dtype)
     loaded = comfy.model_management.loaded_models(only_currently_used=True)
     loaded.append(vae.patcher)
-    comfy.model_management.load_models_gpu(loaded, memory_required=memory_required)
+    # These expected per-step residency messages are preview housekeeping, not
+    # new sampling events. Keep warnings/errors visible while leaving the four
+    # Star7 sampling-speed summaries adjacent in the normal INFO log.
+    with _quiet_preview_model_loading():
+        comfy.model_management.load_models_gpu(loaded, memory_required=memory_required)
 
     # Do not call VAE.decode() here.  Its public path performs another
     # load_models_gpu([vae]) call which can offload the actively sampling H3

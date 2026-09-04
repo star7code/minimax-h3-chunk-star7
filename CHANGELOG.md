@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.12.18 - 2026-09-04
+
+- 精简 H3 Live Preview 日志：预览继续逐步更新，但不再让每一步重复的
+  TAEHV/H3 显存驻留信息及成功编码提示打断四条采样速度日志。
+- 仅屏蔽由当前预览解码调用产生的已知常规 INFO；首次解码器识别信息、
+  下载状态以及任何 warning/error 仍正常显示。
+
 ## 2.12.17 - 2026-09-03
 
 - Fixed Live Preview widget-value migration. The serialized order remains the
