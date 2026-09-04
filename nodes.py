@@ -100,9 +100,11 @@ def _neutralize_process_wide_h3_conflicts():
             restored += 1
 
     _LOG.warning(
-        "[Star7 H3 Compatibility] 检测到插件冲突：comfyui-minimax-h3-turing 已被屏蔽，"
-        "本次继续使用 Star7 路线（已恢复 %d 个全局 H3 方法）。请停用该 Turing 插件并重启；"
-        "仅绕过它的节点无效。",
+        "[Star7 H3 Compatibility] Conflicting plugin detected: "
+        "comfyui-minimax-h3-turing. Its process-wide H3 patches were "
+        "neutralized for this run (%d core methods restored); the Star7 native "
+        "path remains active. Disable the Turing plugin and restart ComfyUI. "
+        "Bypassing its workflow nodes is not sufficient.",
         restored,
     )
     minimax_module._star7_turing_plugin_neutralized = True
