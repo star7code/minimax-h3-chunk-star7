@@ -95,8 +95,10 @@ RTX 20 系建议配合 [MiniMax H3 FP16 Exact Fix - Star7](https://github.com/st
 | `sla_sm80+_all_int8` | QK/PV INT8、FP32 softmax/累积、完整音频查询保护 | 性能/质量对照模式，需实机验证 |
 | `sol_sm80+_bf16_official` | NVIDIA 官方 BF16 exact+approx Sol-Attn、音频 KV sink 与完整音频查询保护 | SM80+ Sol 标准模式 |
 | `sol_sm80+_all_int8` | Star7 exact+centroid Sol、PV INT8、音频 KV sink 与完整音频查询保护 | 性能/质量对照模式，需实机验证 |
-| `hybrid_sm80+_ck_sla_qk_int8_pv_bf16` | CK / SLA BF16-PV / CK | Hybrid SLA；中段不是 All-INT8 |
-| `hybrid_sm80+_ck_sol_bf16_official` | CK / NVIDIA 官方 BF16 Sol / CK | Hybrid Sol；中段使用官方模式 |
+| `hybrid_sm80+_ck_sla_qk_int8_pv_bf16` | CK / SLA BF16-PV / CK | SM80+ Hybrid SLA 标准模式 |
+| `hybrid_sm80+_ck_sol_bf16_official` | CK / NVIDIA 官方 BF16 Sol / CK | SM80+ Hybrid Sol 标准模式 |
+| `hybrid_sm80+_ck_sla_all_int8` | CK / SLA All-INT8 / CK | SM80+ Hybrid SLA 性能模式 |
+| `hybrid_sm80+_ck_sol_all_int8` | CK / Star7 Sol All-INT8 / CK | SM80+ Hybrid Sol 性能模式，需实机验证 |
 
 ### 如何选择
 
@@ -104,7 +106,12 @@ RTX 20 系建议配合 [MiniMax H3 FP16 Exact Fix - Star7](https://github.com/st
 - 通用配置：优先选择 `comfy_kitchen_int8`。
 - SM80+ 默认推荐 BF16；若启动器明确开启 `--fp16-unet`，最新版 Star7 载入节点会安装 FP16 Exact 保护，CK、SLA、Sol 与 Hybrid 均可继续运行。只有未经保护的普通 FP16 会在采样前被拦截并提示检查载入节点与启动参数。
 - SM75 使用 SLA：先以 `sla_sm75_qk_int8_pv_fp16` 验证质量，再根据需求测试 All-INT8 或 Hybrid。
-- SM80+ 使用 Sol：优先从 `sol_sm80+_bf16_official` 开始；All-INT8 只应在同配置 A/B 测试后采用。
+- SM80+ Hybrid 可按需求选择 BF16 标准模式（`hybrid_sm80+_ck_sla_qk_int8_pv_bf16`
+  或 `hybrid_sm80+_ck_sol_bf16_official`），也可显式选择新增的 All-INT8
+  性能模式（`hybrid_sm80+_ck_sla_all_int8` 或
+  `hybrid_sm80+_ck_sol_all_int8`）。旧工作流中的 BF16 Hybrid 值会原样保留，
+  不会静默改变为 All-INT8。
+- SM80+ 单独 Sol 优先从 `sol_sm80+_bf16_official` 开始；All-INT8 只应在同配置 A/B 测试后采用。
 - 稀疏模式并非所有分辨率、时长和显卡上都必然快于 CK，应比较同模型、同 seed、同帧数、同步数和同卸载策略下的采样耗时。
 
 ## 环境与分发
@@ -113,6 +120,7 @@ RTX 20 系建议配合 [MiniMax H3 FP16 Exact Fix - Star7](https://github.com/st
 - SM75 Linux x86_64：节点内置 CUDA 12.6 静态运行时 `.so`，面向 Ubuntu 20.04 / glibc 2.31 及更新系统，需要 NVIDIA 525.60.13+ 驱动。
 - SM75 原生库只接收张量地址、形状和当前 CUDA stream，不链接 PyTorch C++ ABI，也不依赖 SageAttention。Turing Triton 不可用时，路由/量化预处理可使用有界显存 PyTorch 路径，核心稀疏注意力仍由原生 CUDA 库执行。
 - SM80+ SLA 与 All-INT8 路径使用 Triton，首次运行会编译并写入缓存，后续运行复用。
+- SM80+ 官方 BF16 Sol 优先使用 ComfyUI 0.34 `comfy_kitchen.sol_attn` 的已编译后端；该接口不可用时才使用节点内置 NVIDIA Triton 实现。
 - `sol_sm80+_bf16_official` 已内置 NVlabs/Sana `sol-engine` 源码，无需另外安装 Sana。SM80/SM86 使用官方 Triton；支持的 SM89/SM90/SM100/SM120 环境在 CuTe DSL 与 `cuda-python` 可用时使用对应专用内核，否则由官方接口使用 Triton。
 - `STAR7_SOL_ATTN_PATH` 仅用于开发者可选覆盖为更新的官方 Sol 源码，普通用户不需要设置。
 - 架构选项不按当前显卡动态隐藏，便于跨机器保存和分发工作流。架构不匹配时任务终止，错误信息包含所需与检测到的计算能力，且不执行后端回退。

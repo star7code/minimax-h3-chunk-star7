@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.12.19"
+NODE_VERSION = "2.12.22"
 FP16_EXACT_PATCH_FLAG = "star7_minimax_h3_fp16_exact_fix"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
@@ -147,10 +147,22 @@ def _attention_backend_choices():
         SM86PLUS_ALL_INT8_BACKEND_NAME,
         SOL_SM86PLUS_BACKEND_NAME,
         SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
+        HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME,
+        HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
         HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME,
         HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
     ]
     return common + sm75 + sm80plus
+
+
+def _canonical_attention_backend(attention_backend: str) -> str:
+    """Normalize legacy backend ids without changing existing BF16 modes."""
+    return {
+        LEGACY_SM75_ALL_INT8_BACKEND_NAME: SM75_ALL_INT8_BACKEND_NAME,
+        LEGACY_SOL_SM75_ALL_INT8_BACKEND_NAME: SOL_SM75_ALL_INT8_BACKEND_NAME,
+        LEGACY_SM86PLUS_ALL_INT8_BACKEND_NAME: SM86PLUS_ALL_INT8_BACKEND_NAME,
+        LEGACY_SOL_SM86PLUS_ALL_INT8_BACKEND_NAME: SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
+    }.get(attention_backend, attention_backend)
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -2820,12 +2832,14 @@ def install_model_patch(
     out_proj_chunk_tokens: int = 4096,
 ):
     _neutralize_process_wide_h3_conflicts()
-    attention_backend = {
-        LEGACY_SM75_ALL_INT8_BACKEND_NAME: SM75_ALL_INT8_BACKEND_NAME,
-        LEGACY_SOL_SM75_ALL_INT8_BACKEND_NAME: SOL_SM75_ALL_INT8_BACKEND_NAME,
-        LEGACY_SM86PLUS_ALL_INT8_BACKEND_NAME: SM86PLUS_ALL_INT8_BACKEND_NAME,
-        LEGACY_SOL_SM86PLUS_ALL_INT8_BACKEND_NAME: SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
-    }.get(attention_backend, attention_backend)
+    requested_attention_backend = attention_backend
+    attention_backend = _canonical_attention_backend(attention_backend)
+    if attention_backend != requested_attention_backend:
+        _LOG.info(
+            "[Star7 H3 Chunk] Migrated legacy attention backend %s -> %s",
+            requested_attention_backend,
+            attention_backend,
+        )
     install_patch(
         chunk_tokens=chunk_tokens,
         auto_halve_on_oom=auto_halve_on_oom,

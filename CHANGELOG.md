@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.12.22 - 2026-09-06
+
+- Exposed the SM80+ All-INT8 Hybrid choices that were already implemented:
+  `hybrid_sm80+_ck_sla_all_int8` and
+  `hybrid_sm80+_ck_sol_all_int8`.
+- Preserved the existing SM80+ BF16 Hybrid choices:
+  `hybrid_sm80+_ck_sla_qk_int8_pv_bf16` and
+  `hybrid_sm80+_ck_sol_bf16_official`. The All-INT8 Hybrid choices are separate
+  opt-in modes; serialized BF16 Hybrid workflows are not silently changed.
+- SM80+ official BF16 Sol now prefers Comfy Kitchen's compiled `sol_attn`
+  dispatcher when available; the bundled NVIDIA Triton implementation remains
+  the compatibility fallback.
+
+## 2.12.20 - 2026-09-06
+
+- Reduced redundant work in the SM80+ Star7 All-INT8 Sol path by packing
+  unselected K blocks into a compact centroid LUT. Selected blocks are no
+  longer recomputed as centroids and then discarded by a mask.
+- The runtime implementation label now includes `compact-centroid` so that
+  benchmark logs can distinguish this kernel from the previous path.
+
 ## 2.12.19 - 2026-09-06
 
 - Added a ComfyUI 0.34 / `comfy_aimdo` compatibility layer for Star7 H3.

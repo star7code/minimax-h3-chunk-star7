@@ -50,8 +50,10 @@ For a FastH3 VSA model, select `existing`. The upstream enhanced loader owns VSA
 | `sol_sm80+_all_int8` | Star7 exact+centroid Sol with INT8 PV, audio KV sinks, and full-attention audio queries |
 | `hybrid_sm80+_ck_sla_qk_int8_pv_bf16` | CK / SLA BF16-PV / CK |
 | `hybrid_sm80+_ck_sol_bf16_official` | CK / official NVIDIA BF16 Sol / CK |
+| `hybrid_sm80+_ck_sla_all_int8` | CK / SLA All-INT8 / CK |
+| `hybrid_sm80+_ck_sol_all_int8` | CK / Star7 Sol All-INT8 / CK |
 
-SLA uses dynamic Top-K block routing. Sol combines exact selected-block contributions with centroid approximations for non-selected blocks. Hybrid switches the backend between complete denoising steps; it does not mix two kernels inside one attention call.
+SLA uses dynamic Top-K block routing. Sol combines exact selected-block contributions with centroid approximations for non-selected blocks. Hybrid switches the backend between complete denoising steps; it does not mix two kernels inside one attention call. The BF16 Hybrid IDs remain available for existing workflows; the All-INT8 Hybrid IDs are separate opt-in modes and are not silent migrations.
 
 On SM80+, every SLA and Sol mode replaces sparse results for reference- and generated-audio query ranges with full attention computed from the pre-quantization Q/K/V tensors. Video queries remain sparse. Hybrid inherits the same protection during its sparse steps.
 
@@ -133,6 +135,8 @@ These are observations from one local configuration, not cross-GPU performance g
 - SM75 Windows x64 ships with a CUDA 13 static-runtime DLL and requires an NVIDIA 580+ driver.
 - SM75 Linux x86_64 ships with a CUDA 12.6 static-runtime `.so`, targets Ubuntu 20.04 / glibc 2.31 or newer, and requires driver 525.60.13+.
 - SM80+ SLA paths use Triton and compile/cache kernels on first use.
+- Official BF16 Sol first uses ComfyUI 0.34's compiled `comfy_kitchen.sol_attn`
+  dispatcher when available, then falls back to the bundled NVIDIA Triton path.
 - BF16 remains the default on SM80+. If the launcher explicitly enables `--fp16-unet`, the latest Star7 loader installs FP16 Exact protection so CK, SLA, Sol, and Hybrid can continue. Only ordinary unprotected FP16 is rejected before sampling with a clear loader/launcher diagnostic.
 - The official SM80+ Sol mode bundles the relevant NVlabs/Sana `sol-engine` source.
 - Strict SLA/Sol/Hybrid modes stop on architecture, environment, self-test, or computation failures; they do not silently fall back to CK or Sage.

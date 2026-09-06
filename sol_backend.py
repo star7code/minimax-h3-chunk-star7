@@ -1,6 +1,7 @@
 """MiniMax H3 Sol attention dispatch.
 
-SM80+ recommended mode calls NVIDIA's public Sol-Attn interface unchanged.
+SM80+ BF16 mode prefers ComfyUI's public Sol-Attn dispatcher and falls back to
+NVIDIA's bundled interface when that dispatcher is unavailable.
 SM75 uses Star7 Q64/K64 threshold routing, exact selected K/V blocks, and
 centroid contributions for unselected blocks in one online softmax. FP16-PV
 and experimental All-INT8 differ only in PV quantization, not Sol semantics.
@@ -102,6 +103,25 @@ def _official_module():
     )
 
 
+def _comfy_kitchen_sol_attn(device):
+    """Return ComfyUI's native Sol dispatcher when the installed kitchen has it."""
+    try:
+        import comfy_kitchen
+    except Exception:
+        return None
+    sol_attn = getattr(comfy_kitchen, "sol_attn", None)
+    if not callable(sol_attn):
+        return None
+    is_available = getattr(comfy_kitchen, "sol_attn_is_available", None)
+    if callable(is_available):
+        try:
+            if not bool(is_available(device)):
+                return None
+        except Exception:
+            return None
+    return sol_attn
+
+
 def check_runtime_support(
     requested_backend: str,
     device: torch.device | int | None = None,
@@ -165,17 +185,49 @@ def run_official(
         raise ValueError("official Sol requires head_dim=128")
     if not (q.is_contiguous() and k.is_contiguous() and v.is_contiguous()):
         raise ValueError("official Sol requires contiguous BTHD tensors")
-    official = _official_module()
-    output = official.sol_attn(
-        q,
-        k,
-        v,
-        scale=HEAD_DIM ** -0.5,
-        tau=float(tau),
-        thresh_type="diag",
-        sink_tokens=int(sink_tokens),
-        sink_start=sink_start,
-    )
+    native_sol = _comfy_kitchen_sol_attn(q.device)
+    if native_sol is not None:
+        sink_first = 0
+        sink_last = 0
+        if sink_tokens:
+            sink_start = (
+                q.shape[1] - int(sink_tokens)
+                if sink_start is None else int(sink_start)
+            )
+            sink_first = max(0, sink_start // SOL_BLOCK_K)
+            sink_last = min(
+                (q.shape[1] + SOL_BLOCK_K - 1) // SOL_BLOCK_K,
+                (sink_start + int(sink_tokens) + SOL_BLOCK_K - 1)
+                // SOL_BLOCK_K,
+            )
+        # Comfy Kitchen's Sol dispatcher is the same adaptive exact+approx
+        # algorithm, but can select its compiled CUDA backend (including SM89)
+        # instead of the bundled reference Triton implementation.
+        output = native_sol(
+            q,
+            k,
+            v,
+            scale=HEAD_DIM ** -0.5,
+            tau=float(tau),
+            sink_blocks=[sink_first, sink_last],
+            sink_q=[0, 0],
+            topk_ratio=0.0,
+            token_aug=0,
+        )
+        implementation = "comfy-kitchen-sol-attn"
+    else:
+        official = _official_module()
+        output = official.sol_attn(
+            q,
+            k,
+            v,
+            scale=HEAD_DIM ** -0.5,
+            tau=float(tau),
+            thresh_type="diag",
+            sink_tokens=int(sink_tokens),
+            sink_start=sink_start,
+        )
+        implementation = f"nvidia-official-{official.get_sol_attn_backend(q.device)}"
     blocks = (q.shape[1] + SOL_BLOCK_Q - 1) // SOL_BLOCK_Q
     return SolResult(
         output=output,
@@ -184,7 +236,7 @@ def run_official(
         min_selected_blocks=-1,
         max_selected_blocks=-1,
         mean_density=float("nan"),
-        implementation=f"nvidia-official-{official.get_sol_attn_backend(q.device)}",
+        implementation=implementation,
         routing_tau=float(tau),
     )
 
@@ -258,8 +310,10 @@ def build_custom_routing(
 
     counts_chunks = []
     packed_chunks = []
-    exact_mask_chunks = []
+    approximate_counts_chunks = []
+    approximate_packed_chunks = []
     max_slots = 0
+    max_approximate_slots = 0
     for q_start in range(0, query_blocks, ROUTE_CHUNK):
         q_end = min(query_blocks, q_start + ROUTE_CHUNK)
         q_part = qc[:, :, q_start:q_end]
@@ -288,7 +342,26 @@ def build_custom_routing(
         counts_chunks.append(counts)
         packed_chunks.append(packed)
         if return_aux:
-            exact_mask_chunks.append(selected.to(torch.uint8).contiguous())
+            # The centroid path must not recompute K/V summaries for blocks
+            # already handled exactly. Keep a compact list of only the
+            # unselected blocks so the Triton kernel can skip those dot
+            # products instead of masking them after the fact.
+            approximate_selected = ~selected
+            approximate_counts = approximate_selected.sum(
+                dim=-1, dtype=torch.int32,
+            )
+            approximate_slots = int(approximate_counts.max().item())
+            approximate_packed = torch.where(
+                approximate_selected, keys, key_blocks,
+            ).sort(dim=-1).values
+            approximate_packed = approximate_packed[
+                ..., :approximate_slots
+            ].to(torch.int32).contiguous()
+            approximate_counts_chunks.append(approximate_counts)
+            approximate_packed_chunks.append(approximate_packed)
+            max_approximate_slots = max(
+                max_approximate_slots, approximate_slots,
+            )
         max_slots = max(max_slots, slots)
         del scores, selected, keys
 
@@ -303,8 +376,29 @@ def build_custom_routing(
     lut = torch.cat(padded_chunks, dim=2).contiguous()
     density = float(row_count.float().mean().item() / key_blocks)
     if return_aux:
-        exact_mask = torch.cat(exact_mask_chunks, dim=2).contiguous()
-        return row_count, lut, density, exact_mask, kc.to(dtype=q.dtype)
+        approximate_count = torch.cat(
+            approximate_counts_chunks, dim=2,
+        ).contiguous()
+        approximate_padded_chunks = []
+        for packed in approximate_packed_chunks:
+            if packed.shape[-1] < max_approximate_slots:
+                packed = torch.nn.functional.pad(
+                    packed,
+                    (0, max_approximate_slots - packed.shape[-1]),
+                    value=key_blocks,
+                )
+            approximate_padded_chunks.append(packed)
+        approximate_lut = torch.cat(
+            approximate_padded_chunks, dim=2,
+        ).contiguous()
+        return (
+            row_count,
+            lut,
+            density,
+            kc.to(dtype=q.dtype),
+            approximate_count,
+            approximate_lut,
+        )
     return row_count, lut, density
 
 
@@ -322,9 +416,10 @@ if triton is not None:
     def _sol_qk_int8_pv_int8_kernel(
         Q, K, V, K_CENTROID, V_CENTROID,
         Q_SCALE, K_SCALE, V_SCALE, KC_SCALE, VC_SCALE,
-        ROW_COUNT, LUT, EXACT_MASK, OUT,
+        ROW_COUNT, LUT, APPROX_COUNT, APPROX_LUT, OUT,
         length: tl.constexpr, query_blocks: tl.constexpr,
         key_blocks: tl.constexpr, lut_stride: tl.constexpr,
+        approximate_lut_stride: tl.constexpr, approximate_groups: tl.constexpr,
         centroid_groups: tl.constexpr,
         head_dim: tl.constexpr, block_q: tl.constexpr, block_k: tl.constexpr,
     ):
@@ -384,25 +479,30 @@ if triton is not None:
             row_max = new_max
 
         # Exact tokens and unselected-block centroids share one online softmax.
-        # All-INT8 changes PV arithmetic only; it does not remove Sol's
-        # approximate contribution.
+        # The approximate LUT is compact: selected blocks are excluded before
+        # entering this loop, avoiding a centroid dot product that would only
+        # be masked out after computation.
         centroid_base = bh * key_blocks * head_dim
-        exact_mask_base = route_row * key_blocks
-        for centroid_group in tl.range(0, centroid_groups):
-            centroid_offsets = centroid_group * block_k + k_offsets
-            centroid_valid = centroid_offsets < key_blocks
-            is_exact = tl.load(
-                EXACT_MASK + exact_mask_base + centroid_offsets,
-                mask=centroid_valid, other=1,
-            ).to(tl.int1)
-            approximate = centroid_valid & ~is_exact
+        approximate_count = tl.load(APPROX_COUNT + route_row)
+        approximate_lut_base = route_row * approximate_lut_stride
+        for approximate_group in tl.range(0, approximate_groups):
+            approximate_offsets = approximate_group * block_k + k_offsets
+            approximate_valid = approximate_offsets < approximate_count
+            centroid_block = tl.load(
+                APPROX_LUT + approximate_lut_base + approximate_offsets,
+                mask=approximate_valid,
+                other=key_blocks,
+            )
             centroid_k = tl.load(
                 K_CENTROID + centroid_base
-                + centroid_offsets[None, :] * head_dim + dims[:, None],
-                mask=centroid_valid[None, :], other=0,
+                + centroid_block[None, :] * head_dim + dims[:, None],
+                mask=approximate_valid[None, :], other=0,
             ).to(tl.int8)
             centroid_k_scale = tl.load(
-                KC_SCALE + bh * centroid_groups + centroid_group,
+                KC_SCALE + bh * centroid_groups
+                + centroid_block // block_k,
+                mask=approximate_valid,
+                other=1.0,
             )
             centroid_score = tl.dot(q, centroid_k).to(tl.float32)
             centroid_score *= (
@@ -410,11 +510,11 @@ if triton is not None:
                 * ((head_dim ** -0.5) * 1.4426950408889634)
             )
             represented_tokens = tl.maximum(
-                1, tl.minimum(block_k, length - centroid_offsets * block_k),
+                1, tl.minimum(block_k, length - centroid_block * block_k),
             ).to(tl.float32)
             centroid_score += tl.log2(represented_tokens)[None, :]
             centroid_score = tl.where(
-                approximate[None, :], centroid_score, -float("inf"),
+                approximate_valid[None, :], centroid_score, -float("inf"),
             )
             local_max = tl.max(centroid_score, axis=1)
             new_max = tl.maximum(row_max, local_max)
@@ -429,11 +529,14 @@ if triton is not None:
             ).to(tl.int8)
             centroid_v = tl.load(
                 V_CENTROID + centroid_base
-                + centroid_offsets[:, None] * head_dim + dims[None, :],
-                mask=centroid_valid[:, None], other=0,
+                + centroid_block[:, None] * head_dim + dims[None, :],
+                mask=approximate_valid[:, None], other=0,
             ).to(tl.int8)
             centroid_v_scale = tl.load(
-                VC_SCALE + bh * centroid_groups + centroid_group,
+                VC_SCALE + bh * centroid_groups
+                + centroid_block // block_k,
+                mask=approximate_valid,
+                other=1.0,
             )
             accumulator += (
                 tl.dot(probability_int8, centroid_v).to(tl.float32)
@@ -490,7 +593,14 @@ def run_custom_consume(
             return_aux=all_int8,
         )
         if all_int8:
-            row_count, lut, density, exact_mask, k_centroid = routing
+            (
+                row_count,
+                lut,
+                density,
+                k_centroid,
+                approximate_count,
+                approximate_lut,
+            ) = routing
             v_centroid = _block_mean_fp32(v).to(dtype=v.dtype)
         else:
             row_count, lut, density = routing
@@ -557,17 +667,24 @@ def run_custom_consume(
             v_centroid, SOL_BLOCK_K, multiplier=1.0,
         )
         centroid_groups = (key_blocks + SOL_BLOCK_K - 1) // SOL_BLOCK_K
+        approximate_groups = (
+            approximate_lut.shape[-1] + SOL_BLOCK_K - 1
+        ) // SOL_BLOCK_K
         output = torch.empty_like(v_int8, dtype=torch.float16)
         grid = (query_blocks, q_int8.shape[0] * q_int8.shape[1])
         _sol_qk_int8_pv_int8_kernel[grid](
             q_int8, k_int8, v_int8, k_centroid_int8, v_centroid_int8,
             q_scale, k_scale, v_scale, k_centroid_scale, v_centroid_scale,
-            row_count, lut, exact_mask, output,
+            row_count, lut, approximate_count, approximate_lut, output,
             output.shape[-2], query_blocks, key_blocks, lut.shape[-1],
-            centroid_groups, HEAD_DIM, SOL_BLOCK_Q, SOL_BLOCK_K,
+            approximate_lut.shape[-1], approximate_groups, centroid_groups,
+            HEAD_DIM, SOL_BLOCK_Q, SOL_BLOCK_K,
             num_warps=4, num_stages=3,
         )
-        implementation = "star7-sm80plus-sol-exact-plus-centroid-q64k64-all-int8"
+        implementation = (
+            "star7-sm80plus-sol-exact-plus-compact-centroid-"
+            "q64k64-all-int8"
+        )
     return SolResult(
         output, query_blocks, key_blocks, minimum, maximum, density,
         implementation, float(tau),

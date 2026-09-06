@@ -1650,6 +1650,8 @@ def test_sla_backend_is_strict_and_architecture_checked():
         sol.SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
         chunk_nodes.HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME,
         chunk_nodes.HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
+        chunk_nodes.HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME,
+        chunk_nodes.HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
     ]
     assert choices == [
         "existing", "comfy_kitchen_int8", *expected_sm75, *expected_sm80plus,
@@ -1657,11 +1659,19 @@ def test_sla_backend_is_strict_and_architecture_checked():
     assert backend.SM75_BACKEND_NAME in choices
     assert backend.SM86PLUS_BACKEND_NAME in choices
     assert sol.SOL_SM86PLUS_BACKEND_NAME in choices
-    assert chunk_nodes.HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME not in choices
-    assert chunk_nodes.HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME not in choices
+    assert chunk_nodes.HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME in choices
+    assert chunk_nodes.HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME in choices
+    assert chunk_nodes.HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME in choices
+    assert chunk_nodes.HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME in choices
     assert sol.SOL_SM75_BACKEND_NAME not in choices
     assert sol.SOL_SM75_ALL_INT8_BACKEND_NAME == "sol_sm75_all_int8"
     assert sol.SOL_SM86PLUS_ALL_INT8_BACKEND_NAME == "sol_sm80+_all_int8"
+    assert chunk_nodes._canonical_attention_backend(
+        chunk_nodes.HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME
+    ) == chunk_nodes.HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME
+    assert chunk_nodes._canonical_attention_backend(
+        chunk_nodes.HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME
+    ) == chunk_nodes.HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME
 
     original_available = backend.torch.cuda.is_available
     original_capability = backend.torch.cuda.get_device_capability
@@ -1761,6 +1771,34 @@ def test_sol_q64k64_routing_has_variable_row_counts():
         assert bool((selected[1:] >= selected[:-1]).all())
         assert int(selected.min()) >= 0
         assert int(selected.max()) < 17
+
+
+def test_sol_q64k64_compact_centroid_routing_complements_exact_blocks():
+    sol = chunk_nodes._load_sol_backend()
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(0x502)
+    q = torch.randn((1, 2, 1025, 128), generator=generator, dtype=torch.float16)
+    k = torch.randn(q.shape, generator=generator, dtype=torch.float16)
+    (
+        row_count,
+        lut,
+        _density,
+        k_centroid,
+        approximate_count,
+        approximate_lut,
+    ) = sol.build_custom_routing(
+        q, k, tau=0.25, topk_blocks=4, return_aux=True,
+    )
+    key_blocks = (q.shape[-2] + sol.SOL_BLOCK_K - 1) // sol.SOL_BLOCK_K
+    assert row_count.shape == approximate_count.shape
+    assert lut.shape[:3] == row_count.shape
+    assert approximate_lut.shape[:3] == row_count.shape
+    assert k_centroid.shape[-2] == key_blocks
+    assert torch.equal(
+        row_count + approximate_count,
+        torch.full_like(row_count, key_blocks),
+    )
+    assert int(approximate_lut.max()) <= key_blocks
 
 
 def test_bundled_official_sol_dispatch_is_self_contained():
