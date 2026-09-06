@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.12.18"
+NODE_VERSION = "2.12.19"
 FP16_EXACT_PATCH_FLAG = "star7_minimax_h3_fp16_exact_fix"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
@@ -165,6 +165,8 @@ _LOGGED_SLA_ENVIRONMENTS = set()
 _LAST_FAILED_SLA_BLOCK = None
 _ADALN_EGRID = None
 _OUT_PROJ_TLS = threading.local()
+_AIMDO_COMPAT_TLS = threading.local()
+_AIMDO_COMPAT_HOOKS = None
 _ORIGINAL_CK_PREFER_TURING_FUSED = None
 _ORIGINAL_CK_TURING_QUANTIZED = None
 _PATCHED_CK_CUDA = None
@@ -203,6 +205,112 @@ def _h3_memory_debug_enabled() -> bool:
     return os.environ.get("STAR7_H3_MEMORY_DEBUG", "").strip().lower() in {
         "1", "true", "yes", "on",
     }
+
+
+def _star7_aimdo_compat_active() -> bool:
+    """Return whether the current thread is executing the Star7 H3 runtime."""
+    state = getattr(sys.modules.get("comfy.model_prefetch"), "_star7_aimdo_compat_state", None)
+    if isinstance(state, dict):
+        return bool(state.get("depths", {}).get(threading.get_ident(), 0))
+    return bool(getattr(_AIMDO_COMPAT_TLS, "depth", 0))
+
+
+def _star7_aimdo_compat_enter() -> None:
+    state = getattr(sys.modules.get("comfy.model_prefetch"), "_star7_aimdo_compat_state", None)
+    if isinstance(state, dict):
+        depths = state.setdefault("depths", {})
+        thread_id = threading.get_ident()
+        depths[thread_id] = depths.get(thread_id, 0) + 1
+        return
+    _AIMDO_COMPAT_TLS.depth = getattr(_AIMDO_COMPAT_TLS, "depth", 0) + 1
+
+
+def _star7_aimdo_compat_exit() -> None:
+    state = getattr(sys.modules.get("comfy.model_prefetch"), "_star7_aimdo_compat_state", None)
+    if isinstance(state, dict):
+        depths = state.setdefault("depths", {})
+        thread_id = threading.get_ident()
+        depth = depths.get(thread_id, 0)
+        if depth <= 1:
+            depths.pop(thread_id, None)
+        else:
+            depths[thread_id] = depth - 1
+        return
+    depth = getattr(_AIMDO_COMPAT_TLS, "depth", 0)
+    if depth <= 1:
+        try:
+            del _AIMDO_COMPAT_TLS.depth
+        except AttributeError:
+            pass
+    else:
+        _AIMDO_COMPAT_TLS.depth = depth - 1
+
+
+def _install_aimdo_compat_hooks() -> bool:
+    """Install narrowly-scoped hooks for the ComfyUI 0.34 AIMDO API.
+
+    The hooks are process-wide, but are inert unless a Star7 H3 forward is on
+    the current thread. This keeps AIMDO enabled for every other model while
+    preventing the official malloc graph from replaying a block allocation
+    pattern that Star7's chunk runtime intentionally changes.
+    """
+    global _AIMDO_COMPAT_HOOKS
+    if _AIMDO_COMPAT_HOOKS is not None:
+        return bool(_AIMDO_COMPAT_HOOKS)
+
+    try:
+        import comfy.model_prefetch as model_prefetch
+        malloc_graph_enabled = getattr(model_prefetch, "malloc_graph_enabled", None)
+        prefetch_queue_pop = getattr(model_prefetch, "prefetch_queue_pop", None)
+        if not callable(malloc_graph_enabled) or not callable(prefetch_queue_pop):
+            _AIMDO_COMPAT_HOOKS = False
+            return False
+        # Importing model_prefetch on 0.34 loads comfy_aimdo.malloc_graph. An
+        # older ComfyUI build may expose a similarly named helper without it.
+        import comfy_aimdo.malloc_graph  # noqa: F401
+    except (ImportError, AttributeError):
+        _AIMDO_COMPAT_HOOKS = False
+        return False
+
+    compat_state = getattr(model_prefetch, "_star7_aimdo_compat_state", None)
+    if not isinstance(compat_state, dict):
+        compat_state = {"depths": {}}
+        model_prefetch._star7_aimdo_compat_state = compat_state
+    if getattr(malloc_graph_enabled, "_star7_aimdo_compat_hook", False):
+        _AIMDO_COMPAT_HOOKS = True
+        return True
+
+    def compat_active():
+        return bool(compat_state.get("depths", {}).get(threading.get_ident(), 0))
+
+    def malloc_graph_enabled_compat(device):
+        if compat_active():
+            return False
+        return malloc_graph_enabled(device)
+
+    def prefetch_queue_pop_compat(
+        queue, device, module, dtype=None, core=None, enable_graph=False,
+        generator=None, malloc_scope=None, **kwargs,
+    ):
+        # Keep queue consumption, VBAR casts and normal prefetch intact. Only
+        # suppress the block-scope malloc_graph.iterate/pop calls while Star7
+        # is active; other scopes and all other models retain stock behavior.
+        if compat_active() and malloc_scope == "block":
+            malloc_scope = None
+        return prefetch_queue_pop(
+            queue, device, module, dtype=dtype, core=core,
+            enable_graph=enable_graph, generator=generator,
+            malloc_scope=malloc_scope, **kwargs,
+        )
+
+    malloc_graph_enabled_compat._star7_aimdo_compat_hook = True
+    malloc_graph_enabled_compat._star7_aimdo_compat_original = malloc_graph_enabled
+    prefetch_queue_pop_compat._star7_aimdo_compat_hook = True
+    prefetch_queue_pop_compat._star7_aimdo_compat_original = prefetch_queue_pop
+    model_prefetch.malloc_graph_enabled = malloc_graph_enabled_compat
+    model_prefetch.prefetch_queue_pop = prefetch_queue_pop_compat
+    _AIMDO_COMPAT_HOOKS = True
+    return True
 
 
 def _log_h3_cuda_memory(stage: str, device, block_index=None) -> None:
@@ -1843,7 +1951,7 @@ def _star7_wrapper_original(value, kind: str):
         return current
 
 
-def _h3_output_finite_passthrough(original_forward):
+def _h3_output_finite_passthrough(original_forward, *, aimdo_compat=False):
     """Reject invalid H3 video/audio velocities before the sampler or VAE."""
     original_forward = _weak_callable(original_forward)
 
@@ -1871,12 +1979,17 @@ def _h3_output_finite_passthrough(original_forward):
                     transformer_options, input_value, step_index, total_steps,
                 )
 
+        if aimdo_compat:
+            _star7_aimdo_compat_enter()
         try:
             result = original_forward(*args, **kwargs)
         except Exception:
             if transformer_options is not None:
                 transformer_options.pop("_star7_step_timing", None)
             raise
+        finally:
+            if aimdo_compat:
+                _star7_aimdo_compat_exit()
 
         if step_context is not None and timing_device is not None:
             _step_timing_finish(
@@ -2734,6 +2847,28 @@ def install_model_patch(
         _LOG.warning("[Star7 H3 Chunk] Non-H3 model received; only the guarded RoPE dispatch was installed")
         return patched
 
+    # ComfyUI 0.34 introduced an AIMDO malloc graph around the official H3
+    # block loop. Star7 changes the per-block allocation pattern by chunking
+    # QKV/MLP/output projections, so replaying that graph is unsafe. Install
+    # the compatibility hooks only after positively identifying a native H3
+    # model; they are thread-local and leave every other model untouched.
+    aimdo_compat = _install_aimdo_compat_hooks()
+    if aimdo_compat:
+        transformer_options = patched.model_options.setdefault(
+            "transformer_options", {}
+        )
+        transformer_options["star7_disable_aimdo_malloc_graph"] = True
+        transformer_options["star7_h3_runtime"] = NODE_VERSION
+        _LOG.info(
+            "[Star7 AIMDO compat] enabled: true | reason: H3 chunk runtime "
+            "conflicts with malloc graph replay | scope=Star7 H3 only"
+        )
+    else:
+        _LOG.info(
+            "[Star7 AIMDO compat] enabled: false | reason: comfy_aimdo "
+            "malloc graph API unavailable"
+        )
+
     _adapt_pruned_h3_lora(patched, diffusion_model, verbose=verbose)
 
     transformer_options = patched.model_options.setdefault("transformer_options", {})
@@ -2865,7 +3000,9 @@ def install_model_patch(
         model_forward_path,
         _weak_method(
             diffusion_model,
-            _h3_output_finite_passthrough(upstream_model_forward),
+            _h3_output_finite_passthrough(
+                upstream_model_forward, aimdo_compat=aimdo_compat
+            ),
         ),
     )
     transformer_options["star7_h3_output_finite_guard"] = NODE_VERSION

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.12.19 - 2026-09-06
+
+- Added a ComfyUI 0.34 / `comfy_aimdo` compatibility layer for Star7 H3.
+  When the Star7 chunk runtime is active, only the H3 block malloc-graph
+  replay is bypassed; normal VBAR prefetch, `cudaMallocAsync`, and AIMDO for
+  unrelated models remain enabled.
+- Added runtime detection and an explicit `[Star7 AIMDO compat]` log entry;
+  no startup flag, TE path, FP16 path, or H3 math path is changed.
+
 ## 2.12.18 - 2026-09-04
 
 - 精简 H3 Live Preview 日志：预览继续逐步更新，但不再让每一步重复的
