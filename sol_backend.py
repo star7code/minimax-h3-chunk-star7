@@ -521,26 +521,44 @@ if triton is not None:
             probability = tl.math.exp2(centroid_score - new_max[:, None])
             correction = tl.math.exp2(row_max - new_max)
             accumulator *= correction[:, None]
-            probability_scale = tl.maximum(
-                tl.max(probability, axis=1) / 127.0, 1.0e-8,
+            # Reload the compact-LUT indices for the V operand.  Reusing
+            # ``centroid_block`` here after it has participated in the
+            # transposed K load can make Triton retain the K-side blocked
+            # layout.  Triton can then see the V operand as [128, 64]
+            # instead of [64, 128] and rejects the int8 dot on SM80+.
+            centroid_v_block = tl.load(
+                APPROX_LUT + approximate_lut_base + approximate_offsets,
+                mask=approximate_valid,
+                other=key_blocks,
             )
-            probability_int8 = tl.minimum(
-                probability / probability_scale[:, None] + 0.5, 127.0,
-            ).to(tl.int8)
-            centroid_v = tl.load(
+            centroid_v_transposed = tl.load(
                 V_CENTROID + centroid_base
-                + centroid_block[:, None] * head_dim + dims[None, :],
-                mask=approximate_valid[:, None], other=0,
+                + centroid_v_block[None, :] * head_dim + dims[:, None],
+                mask=approximate_valid[None, :], other=0,
             ).to(tl.int8)
+            centroid_v = tl.trans(centroid_v_transposed)
             centroid_v_scale = tl.load(
                 VC_SCALE + bh * centroid_groups
-                + centroid_block // block_k,
+                + centroid_v_block // block_k,
                 mask=approximate_valid,
                 other=1.0,
             )
+            # V centroids are quantized in K64 groups, while the compact LUT
+            # can gather centroids from different groups.  Fold every
+            # gathered V scale into its probability *before* the reduction;
+            # applying that K-axis vector after tl.dot is both mathematically
+            # invalid and fails Triton's [64, 128] output broadcasting.
+            scaled_probability = probability * centroid_v_scale[None, :]
+            probability_scale = tl.maximum(
+                tl.max(scaled_probability, axis=1) / 127.0, 1.0e-8,
+            )
+            probability_int8 = tl.minimum(
+                scaled_probability / probability_scale[:, None] + 0.5,
+                127.0,
+            ).to(tl.int8)
             accumulator += (
                 tl.dot(probability_int8, centroid_v).to(tl.float32)
-                * probability_scale[:, None] * centroid_v_scale
+                * probability_scale[:, None]
             )
             row_sum = row_sum * correction + tl.sum(probability, axis=1)
             row_max = new_max

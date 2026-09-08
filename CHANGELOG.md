@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.13.1 - 2026-09-08
+
+- Fixed SM80+ Sol All-INT8 failing to compile on RTX 4070 / SM89 with Triton
+  reporting incompatible `128` and `64` dimensions.
+- Corrected compact-centroid V dequantization by folding each gathered K-axis
+  scale into the probability before the INT8 reduction.
+- Added an offline SM89 Triton compilation regression and a numerical scale-axis
+  regression so this path is checked without requiring an Ada development GPU.
+
 ## 2.13.0 - 2026-09-08
 
 - Added `MiniMax H3 All-in-one Conditioning - Star7`, consolidating H3 text,

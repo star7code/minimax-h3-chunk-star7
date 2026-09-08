@@ -2,9 +2,11 @@ import importlib.util
 import gc
 import hashlib
 import json
+import os
 import pathlib
 import sys
 import inspect
+import tempfile
 import types
 from types import MethodType, SimpleNamespace
 from unittest import mock
@@ -1814,6 +1816,71 @@ def test_bundled_official_sol_dispatch_is_self_contained():
     assert official._backend_for_arch((12, 0), cute_available=True) == "cute_sm120"
 
 
+def test_sol_all_int8_kernel_offline_compiles_for_sm89():
+    """Catch SM80+ All-INT8 shape/layout failures without owning an Ada GPU."""
+    sol = chunk_nodes._load_sol_backend()
+    if sol.triton is None:
+        return
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource, make_backend
+
+    kernel = sol._sol_qk_int8_pv_int8_kernel
+    pointer_types = (
+        ["*i8"] * 5
+        + ["*fp32"] * 5
+        + ["*i32"] * 4
+        + ["*fp16"]
+    )
+    signature = dict(zip(kernel.arg_names[:15], pointer_types))
+    constants = {
+        "length": 4096,
+        "query_blocks": 64,
+        "key_blocks": 64,
+        "lut_stride": 32,
+        "approximate_lut_stride": 64,
+        "approximate_groups": 1,
+        "centroid_groups": 1,
+        "head_dim": sol.HEAD_DIM,
+        "block_q": sol.SOL_BLOCK_Q,
+        "block_k": sol.SOL_BLOCK_K,
+    }
+    signature.update({name: "constexpr" for name in constants})
+    target = GPUTarget("cuda", 89, 32)
+    options = make_backend(target).parse_options({"num_warps": 4, "num_stages": 3})
+    old_cache = os.environ.get("TRITON_CACHE_DIR")
+    try:
+        with tempfile.TemporaryDirectory(prefix="star7-triton-sm89-") as cache:
+            os.environ["TRITON_CACHE_DIR"] = cache
+            sol.triton.compile(
+                ASTSource(kernel, signature, constants),
+                target=target,
+                options=options.__dict__,
+            )
+    finally:
+        if old_cache is None:
+            os.environ.pop("TRITON_CACHE_DIR", None)
+        else:
+            os.environ["TRITON_CACHE_DIR"] = old_cache
+
+
+def test_sol_all_int8_centroid_v_scales_are_applied_on_reduction_axis():
+    generator = torch.Generator().manual_seed(0x589)
+    probability = torch.softmax(torch.randn(64, 64, generator=generator), dim=-1)
+    value_int8 = torch.randint(-12, 13, (64, 128), generator=generator, dtype=torch.int8)
+    gathered_v_scale = torch.cat((torch.full((63,), 0.03), torch.tensor([0.11])))
+    expected = probability @ (value_int8.float() * gathered_v_scale[:, None])
+
+    scaled_probability = probability * gathered_v_scale[None, :]
+    probability_scale = scaled_probability.amax(dim=1).clamp_min(1.0e-8) / 127.0
+    probability_int8 = torch.minimum(
+        scaled_probability / probability_scale[:, None] + 0.5,
+        torch.tensor(127.0),
+    ).to(torch.int8)
+    actual = (probability_int8.float() @ value_int8.float()) * probability_scale[:, None]
+    assert torch.isfinite(actual).all()
+    assert torch.allclose(actual, expected, atol=0.015, rtol=0.08)
+
+
 def test_sol_sm75_native_cuda_matches_exact_plus_centroid_reference():
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
         return
@@ -2049,6 +2116,8 @@ if __name__ == "__main__":
     test_sla_backend_is_strict_and_architecture_checked()
     test_sol_q64k64_routing_has_variable_row_counts()
     test_bundled_official_sol_dispatch_is_self_contained()
+    test_sol_all_int8_kernel_offline_compiles_for_sm89()
+    test_sol_all_int8_centroid_v_scales_are_applied_on_reduction_axis()
     test_sol_sm75_native_cuda_matches_exact_plus_centroid_reference()
     test_sm75_binary_manifest_payloads()
     test_sm75_native_preprocess_matches_torch_fallback()
