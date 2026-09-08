@@ -2,56 +2,17 @@
 
 ## 2.13.1 - 2026-09-08
 
-- Fixed SM80+ Sol All-INT8 failing to compile on RTX 4070 / SM89 with Triton
-  reporting incompatible `128` and `64` dimensions.
-- Corrected compact-centroid V dequantization by folding each gathered K-axis
-  scale into the probability before the INT8 reduction.
-- Added an offline SM89 Triton compilation regression and a numerical scale-axis
-  regression so this path is checked without requiring an Ada development GPU.
+- Fixed the SM80+ Sol All-INT8 Triton kernel across supported GPU architectures.
+- Corrected compact-centroid V scaling.
 
 ## 2.13.0 - 2026-09-08
 
-- Added `MiniMax H3 All-in-one Conditioning - Star7`, consolidating H3 text,
-  keyframe, reference image/video, and audio conditioning while carrying a compact
-  context into the refine pass.
-- Added `MiniMax H3 One-click Face Repair - Star7`, with internal face detection,
-  temporal tracking, four-step regional H3 sampling, and seamless stitching. It
-  reuses the existing patched model chain and leaves packed audio untouched.
-- Added automatic, SHA-256-verified `face_yolov8m.pt` installation with an HF
-  domestic mirror and Hugging Face fallback. Reference matching safely falls back
-  to main-subject tracking when InsightFace is unavailable.
-- Fixed real H3 Video VAE output handling (`[B,T,H,W,C]`) in face refine and
-  return original frames instead of failing when no face is detected.
-- Localized material sockets and added bilingual modes, canvas grid correction,
-  bounded reference-video/audio alignment, and non-strict media-tag repair.
-- Preset parameters are always visible; edits become persistent Custom values.
-- Added configurable 1-12 refine steps and source-space edge feathering; the
-  balanced default uses four Turbo steps and a softer 20 px transition.
-- Added a direct 1-4 face-count control (default 1) for stable shot-local tracks.
-  Face detection is shared once, tracks stay mutually exclusive within each
-  shot, and each face is sampled and composited sequentially. If fewer stable
-  faces are detected, processing automatically uses the detected count and logs it.
-- Reduced the Balanced Auto repair strength from 0.35 to 0.30 to limit background
-  shimmer around the repaired face.
-- Kept face-priority selection visible at every requested count. Main and Center
-  rank the requested faces by size or centrality; Reference Match reserves its
-  identity first and fills remaining slots by size. Fixed hidden-widget state so
-  switching counts can never leave the selector at zero height.
-- Reference-face mode now skips shots where the requested identity is absent,
-  and the front end preserves the expanded image-preview node height on reload.
-- Reduced vendored face-tracking diagnostics to concise phase summaries and
-  explicitly flush per-step timing for launcher consoles that honor stream flushes.
-- Upgraded DLSS Neural Image Enhance to V2. Removed the aggressive realistic
-  preset and retuned realistic/portrait modes to avoid exaggerating wrinkles,
-  pores, and compression texture on people.
-- Added hardware F16C upload/readback conversion with a safe baseline CPU
-  fallback. A versioned bridge DLL allows the update to be installed even while
-  the previous bridge is locked.
-- Kept the single `nvngx_dlssnr.dll` model layout and transparently migrates
-  older workflows that stored the removed preset to the safer realistic mode.
-- Added first-use model download with an HF domestic mirror first and HF/GitHub
-  fallbacks. Downloads are temporary, SHA-256 verified, and atomically installed;
-  source-specific failures are reported without leaving partial DLLs.
+- Added All-in-one Conditioning for H3 text, images, videos, keyframes, and audio.
+- Added One-click Face Repair with 1–4 face tracking, presets, reference matching,
+  local second-pass sampling, and automatic detector-model installation.
+- Added bilingual controls, connected-media prompt tags, and bounded media alignment.
+- Added DLSS Neural Image Enhance V2 for images and video-frame batches, with
+  target-pixel sizing, visual presets, custom controls, and verified model download.
 
 ## 2.12.22 - 2026-09-06
 
