@@ -68,8 +68,47 @@ Sparse attention is not guaranteed to outperform CK at every resolution, duratio
 | `Reference Image Load - Star7` | Drag-and-drop loading, long-edge limiting, optional upscale, and maximum-area centered cropping for common landscape/portrait ratios |
 | `Prompt Load - Star7` | Extract prompts from dropped image, video, or workflow JSON files and retain alternative candidates |
 | `Video and Workflow Export - Star7` | Export video alone or with embedded/separate workflow metadata |
+| `DLSS Neural Image Enhance V2 - Star7` | Adjustable Neural Rendering for an image or video-frame batch, with a target megapixel count and realistic/portrait/anime presets |
+| `MiniMax H3 All-in-one Conditioning - Star7` | Builds text, keyframe, reference image/video, and audio conditioning in one node and emits reusable face-repair context |
+| `MiniMax H3 One-click Face Repair - Star7` | Accepts the sampled packed H3 latent and performs face detection, tracking, local second-pass sampling, and seamless compositing internally |
 
 Chinese ComfyUI environments display Chinese node and control labels; other locales display English. Attention backend IDs remain unchanged.
+
+### H3 One-click Face Repair
+
+An ordinary H3 workflow needs only two extra connections: replace the original conditioning node with All-in-one Conditioning, then connect the sampler result and its `refine_context` to One-click Face Repair. The repair pass reuses the same MODEL after LoRA, Sigma Shift, and Star7 chunking; a second loader/LoRA/chunk chain is not required. Text-to-video needs no reference image. A connected image is ignored for subject selection unless Reference Match is selected.
+
+The node provides Balanced Auto, Realistic Fidelity, Distant/Small Face, Anime Character, and Custom presets. Every preset exposes its effective steps, strength, canvas, crop-context, blend, and edge-feather values; editing one switches to Custom and saved custom values survive preset changes. Four steps is the H3 Turbo default. More steps directly increase the second-pass runtime without guaranteeing a proportional quality gain. In single-face mode, Target Face selects the main, center, or reference-matched person rather than refining every detected person. Reference matching requires the optional InsightFace Python runtime and may still misidentify tiny, profile, occluded, or crowded faces; without it the node warns and falls back to the main subject.
+
+Only detected face regions are sampled again. The audio latent is copied only to preserve H3's packed structure and is never decoded or modified. The IMAGE output directly replaces the original video VAE decode output, and disabling refinement or finding no usable face returns the original VAE-decoded frames. The only extra required model is `face_yolov8m.pt`; first execution tries the HF mirror and then Hugging Face, verifies the pinned SHA-256, and atomically installs it under `ComfyUI/models/ultralytics/bbox`. No separate restoration or upscaling model is needed: the pass reuses the workflow's H3 model and video/audio VAEs. InsightFace is optional and is not bundled or auto-downloaded.
+
+The direct face-count control selects 1–4 faces and defaults to one. Face Priority remains available for every count: Main prioritizes faces by size, Center by proximity to the frame center, and Reference Match reserves the Reference Image 1 identity before filling remaining slots in Main order. “Main” is not semantic story-character recognition and a hard cut starts a new selection; a reference identity is re-matched after cuts and absent shots are skipped. Multi-face mode shares one detection pass, builds mutually exclusive shot-local tracks, then samples and composites each stable face sequentially. If fewer stable tracks exist than requested, it automatically uses and logs the detected count. Each extra face costs approximately one additional regional sampling pass. Difficult profiles, occlusion, crossings, crowds, and tiny faces can still be mismatched.
+
+All-in-one Conditioning snaps the generation canvas to the nearest 32-pixel grid and prepares source images internally. Reference videos run at 24 fps: 5+ frames are accepted, clips under 2 seconds warn, clips over 15 seconds or the target duration are trimmed, paired soundtrack duration is trimmed with them, and frames are aligned to H3's `17n+5` grid. Audio modes are Lock Source, Remix Source, Reference Only, and Native. There is no hidden audio-enhancement model; the useful protection is resampling, duration alignment, and explicit audio-latent routing.
+
+Driving audio uses the unique `<Audio D>` alias. All other media keep H3's formal order: connected reference images become `<Picture 1>`, `<Picture 2>`; videos become `<Video 1>`, `<Video 2>`; paired video soundtracks and standalone reference audios share `<Audio 1>`, `<Audio 2>` from top to bottom. Connected sockets display their current prompt tag, and the node translates `<Audio D>` to H3's internal numeric ordinal before encoding.
+
+Director builds conditioning, sampling, refinement, and merging per segment inside its own node and exposes only decoded merged frames externally. A normal latent refine node therefore cannot be wired reliably after it. This release deliberately avoids a fake Director connection; a future integration should use Director's internal `refine` interface so each segment retains its own conditioning and references.
+
+### DLSS Neural Image Enhance V2
+
+Place the single model file directly at:
+
+```text
+ComfyUI/models/upscale_models/nvngx_dlssnr.dll
+```
+
+No additional model subfolder is used. The V2 node accepts one `IMAGE` or a video-frame batch. It includes realistic, portrait-oriented, 3D anime, 2D anime, and custom modes. The aggressive realistic preset was removed because it could exaggerate pores, wrinkles, and compression texture; the realistic and portrait presets now favor natural skin and age preservation. Custom settings survive preset switches and workflow serialization. Reset restores the selected preset; in Custom mode it restores the realistic baseline.
+
+When the model is missing, the first node execution downloads it automatically. The HF domestic mirror is tried first, followed by Hugging Face and the RankFTW GitHub cross-generation build. A temporary file must pass size, Windows PE, and pinned SHA-256 checks before it is atomically installed. Failure reports the reason from every source and points to network, proxy, firewall, disk-space, and manual-install checks; a partial DLL is never exposed as a model.
+
+`Target pixels (MP)` is the requested total pixel count: `2.0` means approximately two million pixels. The node derives width and height while preserving aspect ratio. A target no larger than the input never reduces resolution and produces a clear log message. When enlargement is needed, each frame is resized with Lanczos before GPU Neural Rendering runs at the target size. Frame-wise processing and a CPU batch result avoid placing an entire enlarged video batch back in VRAM.
+
+Temporal stability is used only for video batches when native Optical Flow is unavailable. It smooths the NR enhancement residual in static regions and suppresses history at moving edges, reducing independent-frame shimmer without applying the same blend to still images or native Optical Flow paths.
+
+Deterministic tests show that this NR runtime ignores native `DLSSNR.Intensity` and `DLSSNR.Hint.Render.Preset`, while Style, local tone, local structure, skin structure, and automatic mask do affect output. The visible `NR strength` control therefore performs a verified composition between the resized source and NR result: `0` keeps the resized source, `1` uses the complete NR output, and `2` doubles the NR difference. The ineffective internal preset and the duplicate residual control are not exposed.
+
+This one-model path is same-resolution Neural Rendering, not native DLSS Super Resolution. Scaling combines Lanczos with target-resolution NR; native DLSS SR additionally requires its own runtime and renderer inputs such as motion vectors, depth, jitter, and exposure. V2 uses hardware F16C upload/readback conversion on supported CPUs and automatically retains the baseline-compatible path elsewhere. NVIDIA Optical Flow is used on SM80+ when available. SM75/Turing uses the stable independent-frame path, which can have lower temporal consistency.
 
 ## Core parameters
 

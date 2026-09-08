@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.12.22"
+NODE_VERSION = "2.13.0"
 FP16_EXACT_PATCH_FLAG = "star7_minimax_h3_fp16_exact_fix"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
@@ -1750,6 +1750,7 @@ def _step_timing_finish(
             # live progress bar, then redraws that bar below it. This keeps the
             # four H3 step summaries vertically aligned and easy to compare.
             tqdm.write(f"[INFO] {message}", file=sys.stderr)
+            sys.stderr.flush()
             return
     except (ImportError, AttributeError, RuntimeError):
         pass
@@ -1757,6 +1758,11 @@ def _step_timing_finish(
         "%s",
         message,
     )
+    for handler in _LOG.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
 
 
 def _complete_automatic_sla_debug(block_index) -> None:

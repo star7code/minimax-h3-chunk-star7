@@ -1,0 +1,105 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import vm from "node:vm";
+
+let extension;
+const app = { registerExtension(value) { extension = value; } };
+const path = new URL("./web/h3_face_refine_star7.js", import.meta.url);
+const source = fs.readFileSync(path, "utf8").replace(
+    'import { app } from "../../scripts/app.js";',
+    "const app = globalThis.__star7TestApp;",
+);
+vm.runInNewContext(source, {
+    __star7TestApp: app,
+    navigator: { language: "zh-CN" },
+    requestAnimationFrame(callback) { callback(); },
+});
+assert.ok(extension);
+
+class NodeType {}
+await extension.beforeRegisterNodeDef(NodeType, { name: "MiniMaxH3FaceRefineStar7" });
+
+const values = {
+    enable_refine: true,
+    face_count: 1,
+    preset: "自动平衡",
+    target_face: "主人物",
+    refine_steps: 4,
+    custom_strength: 0.30,
+    custom_canvas: "自动",
+    custom_crop_context: 2.6,
+    custom_blend: 0.90,
+    custom_feather: 20,
+    seed: 0,
+};
+const node = Object.create(NodeType.prototype);
+node.widgets = Object.entries(values).map(([name, value]) => ({ name, value, type: "number", options: {} }));
+node.inputs = [];
+node.outputs = [];
+node.properties = {};
+node.size = [420, 700];
+node.computeSize = () => [390, 500];
+node.setSize = (size) => { node.size = size; };
+node.setDirtyCanvas = () => {};
+node.addWidget = (type, name, value, callback, options) => {
+    const item = { type, name, value, callback, options };
+    node.widgets.push(item);
+    return item;
+};
+node.onNodeCreated();
+
+const widgets = Object.fromEntries(node.widgets.map((item) => [item.name, item]));
+assert.equal(node.title, "MiniMax H3 一键人脸修复 - Star7");
+assert.equal(widgets.target_face.options.hidden, false);
+assert.equal(node.size[0], 420);
+assert.equal(node.size[1], 700);
+widgets.face_count.value = 3;
+node.onConfigure({ widgets_values: [
+    true, 3, "自动平衡", "画面中央", 4, 0.30, "自动", 2.6, 0.90, 20, 0,
+] });
+assert.equal(widgets.face_count.value, 3);
+assert.equal(widgets.target_face.options.hidden, false);
+assert.equal(widgets.target_face.type, "number");
+widgets.face_count.value = 1;
+node.onConfigure({ widgets_values: [
+    true, 1, "自动平衡", "主人物", 4, 0.30, "自动", 2.6, 0.90, 20, 0,
+] });
+assert.equal(widgets.target_face.options.hidden, false);
+assert.equal(widgets.target_face.type, "number");
+assert.equal(widgets.target_face.computeSize, undefined);
+
+// Preserve local workflows made with the short-lived switch + maximum layout.
+node.onConfigure({ widgets_values: [
+    true, "真人保真", "参考图匹配", 6, 0.25, "512", 2.8, 0.82, 24, 123,
+    true, 4,
+] });
+assert.equal(widgets.face_count.value, 4);
+assert.equal(widgets.preset.value, "真人保真");
+assert.equal(widgets.target_face.value, "参考图匹配");
+assert.equal(widgets.target_face.options.hidden, false);
+assert.equal(widgets.refine_steps.value, 4); // preset applies its own saved values
+assert.equal(node.size[0], 420);
+assert.equal(node.size[1], 700);
+
+console.log("H3 face repair UI tests: PASS");
+
+class MaterialNodeType {}
+await extension.beforeRegisterNodeDef(MaterialNodeType, { name: "MiniMaxH3MaterialPromptStar7" });
+const material = Object.create(MaterialNodeType.prototype);
+material.inputs = [{ name: "drive_audio", link: null }];
+material.outputs = [];
+material.widgets = [];
+material.size = [420, 500];
+material.computeSize = () => [390, 500];
+material.setSize = (size) => { material.size = size; };
+material.setDirtyCanvas = () => {};
+material.onNodeCreated();
+assert.equal(material.inputs[0].label, "驱动音频");
+material.inputs[0].link = 12;
+material.onConnectionsChange();
+assert.equal(material.inputs[0].label, "驱动音频 - <Audio D>");
+material.inputs[0].link = null;
+material.onConnectionsChange();
+assert.equal(material.inputs[0].label, "驱动音频");
+
+console.log("H3 conditioning dynamic audio label tests: PASS");

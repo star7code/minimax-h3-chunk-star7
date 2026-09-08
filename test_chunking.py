@@ -1648,10 +1648,10 @@ def test_sla_backend_is_strict_and_architecture_checked():
         backend.SM86PLUS_ALL_INT8_BACKEND_NAME,
         sol.SOL_SM86PLUS_BACKEND_NAME,
         sol.SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
-        chunk_nodes.HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME,
-        chunk_nodes.HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
         chunk_nodes.HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME,
         chunk_nodes.HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
+        chunk_nodes.HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME,
+        chunk_nodes.HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
     ]
     assert choices == [
         "existing", "comfy_kitchen_int8", *expected_sm75, *expected_sm80plus,

@@ -140,7 +140,7 @@ assert.equal(
 );
 assert.equal(
     node.widgets.find((widget) => widget.name === "disable_dynamic_prefetch")?.label,
-    "注意力输出显存保护",
+    "输出显存保护（可能降速）",
 );
 assert.deepEqual(
     node.widgets.filter((widget) => !widget.__star7StatusName).map((widget) => widget.name),

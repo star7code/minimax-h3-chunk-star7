@@ -1,10 +1,14 @@
 [project]
 name = "minimax-h3-chunk-star7"
-version = "2.12.19"
+version = "2.13.0"
 description = "QKV/RoPE/MLP activation chunking for ComfyUI MiniMax H3 with selectable CK, SLA, Sol, and Hybrid attention paths."
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "scipy",
+    "scenedetect>=0.7",
+    "ultralytics>=8.3.162",
+]
 classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",

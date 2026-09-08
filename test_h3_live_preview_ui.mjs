@@ -47,8 +47,14 @@ class MockElement {
 
 const document = {
     head: new MockElement("head"),
+    visibilityState: "visible",
+    listeners: new Map(),
     createElement(tagName) { return new MockElement(tagName); },
     getElementById(id) { return elements.find((element) => element.id === id) ?? null; },
+    addEventListener(name, callback) { this.listeners.set(name, callback); },
+    removeEventListener(name, callback) {
+        if (this.listeners.get(name) === callback) this.listeners.delete(name);
+    },
 };
 
 class MockImageDecoder {
