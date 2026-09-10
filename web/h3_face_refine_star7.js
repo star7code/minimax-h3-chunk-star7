@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
 const FACE_NODE = "MiniMaxH3FaceRefineStar7";
 const MATERIAL_NODE = "MiniMaxH3MaterialPromptStar7";
@@ -13,6 +14,7 @@ const PARAM_NAMES = Object.keys(BALANCED);
 const TEXT = {
     zh: {
         materialTitle: "MiniMax H3 多合一条件载入 - Star7", faceTitle: "MiniMax H3 一键人脸修复 - Star7", reset: "重置参数",
+        resolutionPending: "修复后分辨率：运行后显示",
         labels: {
             model: "模型", clip: "文本编码器", video_vae: "视频 VAE", audio_vae: "音频 VAE", prompt: "提示词",
             width: "宽度", height: "高度", length: "帧数", task_type: "任务类型", audio_mode: "音频模式",
@@ -20,12 +22,14 @@ const TEXT = {
             final_audio: "最终输出音频", first_frame: "首帧", last_frame: "尾帧", sampled_av_latent: "采样结果",
             refine_context: "修复上下文", enable_refine: "启用修复", face_count: "修复人脸数量", preset: "修复预设", target_face: "目标人脸优先", refine_steps: "修复步数",
             custom_strength: "修复强度", custom_canvas: "修复尺寸", custom_crop_context: "人脸取景范围",
-            custom_blend: "融合强度", custom_feather: "边缘羽化", seed: "修复种子", positive: "正面条件", av_latent: "音视频潜空间",
+            custom_blend: "融合强度", custom_feather: "边缘羽化", seed: "修复种子", preserve_repair_detail: "保持修复清晰度",
+            positive: "正面条件", av_latent: "音视频潜空间",
             mux_audio: "输出音频", report: "运行报告", refined_images: "修复画面",
         },
     },
     en: {
         materialTitle: "MiniMax H3 All-in-one Conditioning - Star7", faceTitle: "MiniMax H3 One-click Face Repair - Star7", reset: "Reset parameters",
+        resolutionPending: "Repaired resolution: shown after run",
         labels: {
             model: "Model", clip: "Text encoder", video_vae: "Video VAE", audio_vae: "Audio VAE", prompt: "Prompt",
             width: "Width", height: "Height", length: "Frames", task_type: "Task type", audio_mode: "Audio mode",
@@ -33,7 +37,8 @@ const TEXT = {
             final_audio: "Final output audio", first_frame: "First frame", last_frame: "Last frame", sampled_av_latent: "Sampled result",
             refine_context: "Repair context", enable_refine: "Enable repair", face_count: "Faces to repair", preset: "Repair preset", target_face: "Face priority", refine_steps: "Repair steps",
             custom_strength: "Repair strength", custom_canvas: "Repair size", custom_crop_context: "Face crop context",
-            custom_blend: "Blend strength", custom_feather: "Edge feather", seed: "Repair seed", positive: "Positive", av_latent: "AV latent",
+            custom_blend: "Blend strength", custom_feather: "Edge feather", seed: "Repair seed", preserve_repair_detail: "Preserve repair detail",
+            positive: "Positive", av_latent: "AV latent",
             mux_audio: "Output audio", report: "Run report", refined_images: "Repaired frames",
         },
     },
@@ -177,6 +182,47 @@ function writeParams(node, values) {
     } finally { node.__star7ApplyingPreset = false; }
     node.setDirtyCanvas?.(true, true);
 }
+function ensureResolutionStatus(node, text) {
+    let item = node.widgets?.find((candidate) => candidate.__star7FaceResolutionStatus);
+    if (!item) {
+        item = node.addWidget("text", text.resolutionPending, "", () => {}, { serialize: false });
+        item.__star7FaceResolutionStatus = true;
+        item.disabled = true;
+        item.serialize = false;
+        item.serializeValue = async () => undefined;
+    }
+    if (!node.__star7FaceResolution) {
+        item.name = text.resolutionPending;
+        item.value = "";
+    }
+    return item;
+}
+function updateResolutionStatus(node, detail) {
+    const lang = language();
+    const text = TEXT[lang];
+    const item = ensureResolutionStatus(node, text);
+    const width = Number(detail?.width);
+    const height = Number(detail?.height);
+    const megapixels = Number(detail?.megapixels);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(megapixels)) return;
+    node.__star7FaceResolution = { width, height, megapixels };
+    item.name = lang === "zh"
+        ? `修复后分辨率：${width}×${height} · ${megapixels.toFixed(2)} MP`
+        : `Repaired resolution: ${width}×${height} · ${megapixels.toFixed(2)} MP`;
+    item.value = "";
+    node.setDirtyCanvas?.(true, true);
+}
+function placeResolutionBeforeReset(node) {
+    const status = node.widgets?.find((item) => item.__star7FaceResolutionStatus);
+    const reset = node.__star7ResetButton;
+    if (!status || !reset) return;
+    const statusIndex = node.widgets.indexOf(status);
+    const resetIndex = node.widgets.indexOf(reset);
+    if (statusIndex < 0 || resetIndex < 0 || statusIndex === resetIndex - 1) return;
+    node.widgets.splice(statusIndex, 1);
+    const nextResetIndex = node.widgets.indexOf(reset);
+    node.widgets.splice(nextResetIndex, 0, status);
+}
 function migrateLegacyFaceValues(node, values) {
     // The unreleased switch-based layout was:
     // enable, preset, target, parameters..., seed, multi_face, max_faces.
@@ -236,6 +282,8 @@ function installFaceControls(node, text) {
         reset.serialize = false;
         node.__star7ResetButton = reset;
     }
+    ensureResolutionStatus(node, text);
+    placeResolutionBeforeReset(node);
     if (preset?.value === "自定义") writeParams(node, node.properties.star7CustomFaceParams);
     else writeParams(node, PRESETS[preset?.value] ?? BALANCED);
     // Selection still matters when N > 1: it decides which N faces win when
@@ -247,6 +295,14 @@ function installFaceControls(node, text) {
         Math.max(node.size?.[1] || 0, size[1]),
     ]);
 }
+
+api.addEventListener("star7-h3-face-repair-resolution", ({ detail }) => {
+    const rawId = detail?.node_id;
+    if (rawId == null) return;
+    const node = app.graph?.getNodeById?.(rawId) ?? app.graph?.getNodeById?.(Number(rawId));
+    if (!node || (node.comfyClass !== FACE_NODE && node.type !== FACE_NODE)) return;
+    updateResolutionStatus(node, detail);
+});
 
 app.registerExtension({
     name: "star7.h3.face-refine",
@@ -262,6 +318,13 @@ app.registerExtension({
                 if (!label || !Array.isArray(spec)) continue;
                 spec[1] ??= {};
                 spec[1].display_name = label;
+                if (name === "preserve_repair_detail") {
+                    spec[1].label_on = lang === "zh" ? "开启" : "On";
+                    spec[1].label_off = lang === "zh" ? "关闭" : "Off";
+                    spec[1].tooltip = lang === "zh"
+                        ? "低于约 1.0MP 时按原比例自动放大，减少二采细节回贴后的压缩；只放大，绝不缩小。"
+                        : "Upscales outputs below about 1.0 MP to retain more second-pass detail; never downscales.";
+                }
             }
         }
         const created = nodeType.prototype.onNodeCreated;

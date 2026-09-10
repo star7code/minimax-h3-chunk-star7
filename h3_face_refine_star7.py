@@ -38,6 +38,8 @@ _FACE_DETECTOR_LOCK = threading.Lock()
 _FPS = 24
 _MAX_REFERENCE_VIDEO_FRAMES = 15 * _FPS
 _MIN_RECOMMENDED_REFERENCE_VIDEO_FRAMES = 2 * _FPS
+_MEGAPIXEL = 1024 * 1024
+_FACE_REPAIR_OUTPUT_FLOOR_MP = 0.98
 _MEDIA_TAG_RE = re.compile(
     r"<\s*(Image|Picture|Video|Audio)\s*(\d+)\s*>|"
     r"(?<![\w<])(Image|Picture|Video|Audio)\s*#?\s*(\d+)\b(?!\s*>)",
@@ -254,6 +256,94 @@ def _decode_video_frames(vae, latent: torch.Tensor) -> torch.Tensor:
     if images.ndim != 4 or images.shape[-1] < 3:
         raise ValueError(f"Unexpected MiniMax H3 Video VAE output shape: {tuple(images.shape)}")
     return images[..., :3]
+
+
+def _face_repair_output_size(
+    width: int, height: int, preserve_detail: bool
+) -> tuple[int, int]:
+    """Choose a practical ~1 MP floor for the final composite; never shrink."""
+    width, height = int(width), int(height)
+    source_pixels = width * height
+    target_pixels = int(_FACE_REPAIR_OUTPUT_FLOOR_MP * _MEGAPIXEL)
+    if not preserve_detail or source_pixels >= target_pixels:
+        return width, height
+
+    scale = (target_pixels / max(source_pixels, 1)) ** 0.5
+    ideal_width, ideal_height = width * scale, height * scale
+    centre_width = max(width, int(round(ideal_width / 32.0)) * 32)
+    centre_height = max(height, int(round(ideal_height / 32.0)) * 32)
+    candidates = []
+    for output_width in range(max(32, centre_width - 64), centre_width + 65, 32):
+        for output_height in range(max(32, centre_height - 64), centre_height + 65, 32):
+            if output_width < width or output_height < height:
+                continue
+            pixels = output_width * output_height
+            if pixels < target_pixels:
+                continue
+            aspect_error = abs((output_width / output_height) / (width / height) - 1.0)
+            overshoot = (pixels - target_pixels) / target_pixels
+            candidates.append((aspect_error * 10.0 + overshoot, output_width, output_height))
+    if candidates:
+        _, output_width, output_height = min(candidates)
+        return output_width, output_height
+
+    # Defensive fallback for unusually narrow or wide inputs.
+    output_width = max(width, int((ideal_width + 31) // 32) * 32)
+    output_height = max(height, int((ideal_height + 31) // 32) * 32)
+    return output_width, output_height
+
+
+def _resize_image_batch(images: torch.Tensor, width: int, height: int) -> torch.Tensor:
+    """Resize the final video on CPU in small chunks so sampling VRAM stays unchanged."""
+    if (int(images.shape[2]), int(images.shape[1])) == (int(width), int(height)):
+        return images
+    import torch.nn.functional as F
+
+    output = torch.empty(
+        (int(images.shape[0]), int(height), int(width), 3),
+        dtype=torch.float32, device="cpu",
+    )
+    for start in range(0, int(images.shape[0]), 8):
+        source = images[start:start + 8, ..., :3].detach().to("cpu").movedim(-1, 1).float()
+        resized = F.interpolate(
+            source, size=(int(height), int(width)), mode="bicubic",
+            align_corners=False, antialias=True,
+        ).clamp_(0.0, 1.0)
+        output[start:start + int(resized.shape[0])].copy_(resized.movedim(1, -1))
+    return output
+
+
+def _scale_face_transform(transform: dict, width: int, height: int) -> dict:
+    """Map source-space tracking coordinates onto the enlarged output canvas."""
+    source_width, source_height = transform["src_size"]
+    scale_x = int(width) / max(float(source_width), 1.0)
+    scale_y = int(height) / max(float(source_height), 1.0)
+    if abs(scale_x - 1.0) < 1e-6 and abs(scale_y - 1.0) < 1e-6:
+        return transform
+    scaled = dict(transform)
+    scaled["src_size"] = (int(width), int(height))
+    scaled["boxes"] = [
+        (float(x) * scale_x, float(y) * scale_y,
+         float(box_width) * scale_x, float(box_height) * scale_y)
+        for x, y, box_width, box_height in transform["boxes"]
+    ]
+    return scaled
+
+
+def _send_face_repair_resolution(node_id, width: int, height: int) -> None:
+    if node_id is None:
+        return
+    try:
+        from server import PromptServer
+
+        PromptServer.instance.send_sync("star7-h3-face-repair-resolution", {
+            "node_id": node_id,
+            "width": int(width),
+            "height": int(height),
+            "megapixels": round(int(width) * int(height) / _MEGAPIXEL, 2),
+        })
+    except Exception as exc:
+        _LOG.debug("Unable to update the Star7 face-repair resolution widget: %s", exc)
 
 
 def _build_multiface_picks(
@@ -665,6 +755,10 @@ class MiniMaxH3FaceRefineStar7:
                 "custom_blend": ("FLOAT", {"default": 0.90, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "custom_feather": ("INT", {"default": 20, "min": 0, "max": 64, "step": 2}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "preserve_repair_detail": ("BOOLEAN", {"default": True}),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
             }
         }
 
@@ -681,6 +775,7 @@ class MiniMaxH3FaceRefineStar7:
         self, sampled_av_latent, refine_context, enable_refine=True, face_count=1,
         preset="自动平衡", target_face="主人物", refine_steps=4, custom_strength=0.30, custom_canvas="自动",
         custom_crop_context=2.6, custom_blend=0.90, custom_feather=20, seed=0,
+        preserve_repair_detail=True, unique_id=None,
         **legacy_options,
     ):
         context = dict(refine_context or {})
@@ -698,9 +793,17 @@ class MiniMaxH3FaceRefineStar7:
             raise ValueError("Invalid H3 latent: expected video [B,24,T,H,W] plus audio latent.")
 
         refine_started = time.perf_counter()
+        _LOG.info("Star7 H3 face repair | phase=decode source video")
+        decode_started = time.perf_counter()
         base_images = _decode_video_frames(vae, members[0])
+        _LOG.info(
+            "Star7 H3 face repair | phase=decode source video completed | %.2fs | frames=%d %dx%d",
+            time.perf_counter() - decode_started, int(base_images.shape[0]),
+            int(base_images.shape[2]), int(base_images.shape[1]),
+        )
         if not enable_refine:
             _LOG.info("Star7 H3 face repair bypassed | VAE decode=%.2fs", time.perf_counter() - refine_started)
+            _send_face_repair_resolution(unique_id, int(base_images.shape[2]), int(base_images.shape[1]))
             return (base_images,)
 
         cfg = dict(_PRESETS.get(preset, {}))
@@ -749,6 +852,7 @@ class MiniMaxH3FaceRefineStar7:
             if "no face detected" not in str(exc).lower():
                 raise
             _LOG.warning("Star7 H3 face repair found no face; returning original frames | %s", exc)
+            _send_face_repair_resolution(unique_id, int(base_images.shape[2]), int(base_images.shape[1]))
             return (base_images,)
         crops, transform, _preview, report, canvas_w, canvas_h, _frame_count = tracked
         _LOG.info(
@@ -758,7 +862,26 @@ class MiniMaxH3FaceRefineStar7:
         )
         if not transform.get("boxes"):
             _LOG.warning("Star7 H3 face repair found no usable face; returning original frames")
+            _send_face_repair_resolution(unique_id, int(base_images.shape[2]), int(base_images.shape[1]))
             return (base_images,)
+
+        source_height, source_width = int(base_images.shape[1]), int(base_images.shape[2])
+        output_width, output_height = _face_repair_output_size(
+            source_width, source_height, bool(preserve_repair_detail)
+        )
+        images = _resize_image_batch(base_images, output_width, output_height)
+        output_scale = ((output_width / source_width) + (output_height / source_height)) * 0.5
+        if (output_width, output_height) != (source_width, source_height):
+            _LOG.info(
+                "Star7 H3 face repair | detail-preserving output %dx%d (%.2f MP, %.2fx) from %dx%d",
+                output_width, output_height, output_width * output_height / _MEGAPIXEL,
+                output_scale, source_width, source_height,
+            )
+        else:
+            _LOG.info(
+                "Star7 H3 face repair | output remains %dx%d (%.2f MP); never downscaled",
+                output_width, output_height, output_width * output_height / _MEGAPIXEL,
+            )
 
         from comfy_extras.nodes_custom_sampler import (
             BasicGuider, BasicScheduler, KSamplerSelect, RandomNoise, SamplerCustomAdvanced,
@@ -766,6 +889,7 @@ class MiniMaxH3FaceRefineStar7:
 
         def sample_track(track_result, composite_images, pass_index):
             track_crops, track_transform, _track_preview, track_report, track_w, track_h, _ = track_result
+            stitch_transform = _scale_face_transform(track_transform, output_width, output_height)
             target_video = torch.zeros(
                 (members[0].shape[0], 24, members[0].shape[2], int(track_h) // 16, int(track_w) // 16),
                 device=members[0].device, dtype=members[0].dtype,
@@ -775,7 +899,13 @@ class MiniMaxH3FaceRefineStar7:
             refine_latent["samples"] = comfy.nested_tensor.NestedTensor(
                 (target_video, members[1].clone())
             )
+            _LOG.info("Star7 H3 face repair | phase=encode repair crops | face=%d", int(pass_index) + 1)
+            encode_started = time.perf_counter()
             refine_latent = H3InjectVideoLatent().run(refine_latent, track_crops, vae)[0]
+            _LOG.info(
+                "Star7 H3 face repair | phase=encode repair crops completed | face=%d | %.2fs",
+                int(pass_index) + 1, time.perf_counter() - encode_started,
+            )
             refine_latent, _mask_report, refine_model = H3PerFrameDenoise().run(
                 model, refine_latent, track_transform, float(cfg["small"]), float(cfg["large"]),
                 30.0, 120.0, 1.0, 9, "absolute_px", verbose=False,
@@ -799,15 +929,21 @@ class MiniMaxH3FaceRefineStar7:
                 "Star7 H3 face repair | phase=sample completed | face=%d | %.2fs | steps=%d",
                 int(pass_index) + 1, time.perf_counter() - sample_started, int(refine_steps),
             )
+            _LOG.info("Star7 H3 face repair | phase=decode/stitch | face=%d", int(pass_index) + 1)
+            composite_started = time.perf_counter()
             refined_video = list(sampled["samples"].unbind())[0]
             refined_crops = _decode_video_frames(vae, refined_video)
             stitched = H3FaceStitch().run(
-                composite_images, refined_crops, track_transform, "face_only", 16,
-                int(cfg["feather"]), 1.0, float(cfg["blend"]), "fade_out",
+                composite_images, refined_crops, stitch_transform, "face_only", 16,
+                max(1, int(round(float(cfg["feather"]) * output_scale))),
+                1.0, float(cfg["blend"]), "fade_out",
             )[0]
+            _LOG.info(
+                "Star7 H3 face repair | phase=decode/stitch completed | face=%d | %.2fs",
+                int(pass_index) + 1, time.perf_counter() - composite_started,
+            )
             return stitched, track_report
 
-        images = base_images
         completed_faces = 0
         if multi_face:
             tracking_cache = transform.get("tracking_cache") or {}
@@ -845,6 +981,7 @@ class MiniMaxH3FaceRefineStar7:
                 completed_faces += 1
             if not completed_faces:
                 _LOG.warning("Star7 H3 multi-face repair found no stable 5-frame face track; returning original frames")
+                _send_face_repair_resolution(unique_id, source_width, source_height)
                 return (base_images,)
             report = f"multi-face tracks={completed_faces}"
             _LOG.info(
@@ -852,12 +989,13 @@ class MiniMaxH3FaceRefineStar7:
                 completed_faces, requested_faces,
             )
         else:
-            images, report = sample_track(tracked, base_images, 0)
+            images, report = sample_track(tracked, images, 0)
             completed_faces = 1
         _LOG.info(
             "Star7 H3 face repair completed | total=%.2fs | faces=%d | %s",
             time.perf_counter() - refine_started, completed_faces, str(report).splitlines()[0],
         )
+        _send_face_repair_resolution(unique_id, output_width, output_height)
         return (images,)
 
 

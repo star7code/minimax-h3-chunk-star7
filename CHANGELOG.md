@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.13.2 - 2026-09-10
+
+- Added optional detail-preserving face-repair output sizing with a practical
+  ~1 MP floor and a never-downscale rule.
+- Added a read-only repaired-resolution display and clear phase timing logs.
+- Fixed single-face compositing after automatic output enlargement.
+
 ## 2.13.1 - 2026-09-08
 
 - Fixed the SM80+ Sol All-INT8 Triton kernel across supported GPU architectures.

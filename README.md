@@ -170,6 +170,8 @@ git clone https://github.com/star7code/minimax-h3-chunk-star7.git
 
 支持 1–4 人、主人物、画面中央和参考图匹配，以及自动平衡、真人保真、远景小脸、动漫角色和自定义预设。检测人数不足时自动按实际人数处理。参考图匹配需要可选的 InsightFace，其他模式不需要参考图。
 
+“保持修复清晰度”默认开启：低于约 1.0MP 的视频会按原比例提升到 0.98–1.01MP 档位，减少局部二采结果回贴后的压缩；较大视频保持原尺寸，绝不缩小。节点会只读显示最终宽高与 MP。
+
 首次使用会自动下载并校验 `face_yolov8m.pt`，保存到 `ComfyUI/models/ultralytics/bbox`。素材提示词标签会显示在已连接接口后：图片使用 `<Picture N>`，视频使用 `<Video N>`，参考音频使用 `<Audio N>`，驱动音频使用 `<Audio D>`。
 
 ### DLSS 神经画质增强 V2

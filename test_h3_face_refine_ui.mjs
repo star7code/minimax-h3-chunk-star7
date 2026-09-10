@@ -4,13 +4,23 @@ import vm from "node:vm";
 
 let extension;
 const app = { registerExtension(value) { extension = value; } };
+const api = {
+    listeners: {},
+    addEventListener(name, callback) { this.listeners[name] = callback; },
+};
 const path = new URL("./web/h3_face_refine_star7.js", import.meta.url);
-const source = fs.readFileSync(path, "utf8").replace(
-    'import { app } from "../../scripts/app.js";',
-    "const app = globalThis.__star7TestApp;",
-);
+const source = fs.readFileSync(path, "utf8")
+    .replace(
+        'import { app } from "../../scripts/app.js";',
+        "const app = globalThis.__star7TestApp;",
+    )
+    .replace(
+        'import { api } from "../../scripts/api.js";',
+        "const api = globalThis.__star7TestApi;",
+    );
 vm.runInNewContext(source, {
     __star7TestApp: app,
+    __star7TestApi: api,
     navigator: { language: "zh-CN" },
     requestAnimationFrame(callback) { callback(); },
 });
@@ -31,6 +41,7 @@ const values = {
     custom_blend: 0.90,
     custom_feather: 20,
     seed: 0,
+    preserve_repair_detail: true,
 };
 const node = Object.create(NodeType.prototype);
 node.widgets = Object.entries(values).map(([name, value]) => ({ name, value, type: "number", options: {} }));
@@ -53,6 +64,20 @@ assert.equal(node.title, "MiniMax H3 一键人脸修复 - Star7");
 assert.equal(widgets.target_face.options.hidden, false);
 assert.equal(node.size[0], 420);
 assert.equal(node.size[1], 700);
+assert.equal(widgets.preserve_repair_detail.value, true);
+assert.ok(node.widgets.some((item) => item.__star7FaceResolutionStatus));
+const resolutionIndex = node.widgets.findIndex((item) => item.__star7FaceResolutionStatus);
+const resetIndex = node.widgets.indexOf(node.__star7ResetButton);
+assert.equal(resolutionIndex, resetIndex - 1);
+node.comfyClass = "MiniMaxH3FaceRefineStar7";
+app.graph = { getNodeById(id) { return String(id) === "124" ? node : null; } };
+api.listeners["star7-h3-face-repair-resolution"]({
+    detail: { node_id: "124", width: 768, height: 1376, megapixels: 1.01 },
+});
+assert.equal(
+    node.widgets.find((item) => item.__star7FaceResolutionStatus).name,
+    "修复后分辨率：768×1376 · 1.01 MP",
+);
 widgets.face_count.value = 3;
 node.onConfigure({ widgets_values: [
     true, 3, "自动平衡", "画面中央", 4, 0.30, "自动", 2.6, 0.90, 20, 0,

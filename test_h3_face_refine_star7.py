@@ -3,16 +3,19 @@ import torch
 import comfy.nested_tensor
 
 from .h3_face_refine_star7 import (
+    H3FaceStitch,
     MiniMaxH3FaceRefineStar7,
     MiniMaxH3MaterialPromptStar7,
     _aligned_reference_frames,
     _build_multiface_picks,
     _copy_conditioning_without_keyframes,
     _decode_video_frames,
+    _face_repair_output_size,
     _fit_audio_latent,
     _option_id,
     _prepare_prompt_tags,
     _prepare_reference_videos,
+    _scale_face_transform,
     _TASK_IDS,
 )
 
@@ -65,6 +68,44 @@ def test_face_refine_flattens_real_h3_vae_batch_time_output():
     result = _decode_video_frames(VAE(), torch.zeros((1, 24, 2, 2, 2)))
     assert result.shape == (5, 8, 8, 3)
     assert torch.all(result == 0.5)
+
+
+def test_face_repair_output_grows_to_one_mp_without_shrinking():
+    assert _face_repair_output_size(864, 480, True) == (1376, 768)
+    assert _face_repair_output_size(480, 864, True) == (768, 1376)
+    assert _face_repair_output_size(1280, 736, True) == (1344, 768)
+    assert _face_repair_output_size(1344, 768, True) == (1344, 768)
+    assert _face_repair_output_size(1504, 832, True) == (1504, 832)
+    assert _face_repair_output_size(864, 480, False) == (864, 480)
+
+
+def test_face_transform_scales_with_detail_preserving_output():
+    transform = {"src_size": (864, 480), "boxes": [(10.0, 20.0, 100.0, 50.0)]}
+    scaled = _scale_face_transform(transform, 1728, 960)
+    assert scaled["src_size"] == (1728, 960)
+    assert scaled["boxes"] == [(20.0, 40.0, 200.0, 100.0)]
+    assert transform["src_size"] == (864, 480)
+
+
+def test_scaled_face_transform_stitches_into_enlarged_output(monkeypatch):
+    import comfy.model_management as mm
+
+    monkeypatch.setattr(mm, "get_torch_device", lambda: torch.device("cpu"))
+    base = torch.zeros((2, 96, 160, 3), dtype=torch.float32)
+    crops = torch.ones((2, 64, 64, 3), dtype=torch.float32)
+    transform = {
+        "src_size": (80, 48), "canvas": (64, 64),
+        "boxes": [(20.0, 8.0, 32.0, 32.0)] * 2,
+        "source": [0, 1], "weights": [1.0, 1.0], "detected": [True, True],
+        "face_rect": [(16.0, 16.0, 32.0, 32.0)] * 2,
+    }
+    scaled = _scale_face_transform(transform, 160, 96)
+    output = H3FaceStitch().run(
+        base, crops, scaled, "face_only", 0, 4, 0.0, 0.9, "fade_out"
+    )[0]
+    assert output.shape == base.shape
+    assert torch.isfinite(output).all()
+    assert output.max() > 0
 
 
 def test_reference_video_is_bounded_and_audio_is_cropped_without_mutating_input():
@@ -191,3 +232,5 @@ def test_public_node_contract_is_two_wire_face_refine():
     assert face["required"]["face_count"][1]["default"] == 1
     assert face["required"]["face_count"][1]["max"] == 4
     assert face["required"]["target_face"][0] == ["主人物", "画面中央", "参考图匹配"]
+    assert face["required"]["preserve_repair_detail"][1]["default"] is True
+    assert face["hidden"]["unique_id"] == "UNIQUE_ID"
