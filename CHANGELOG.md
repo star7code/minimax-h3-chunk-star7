@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.14.2 - 2026-09-16
+
+- Raise the one-click HD target control ceiling to 36.0 MP.
+- Use the concise `分格数量` / `Tile count` label consistently across frontend renderers and examples.
+
 ## 2.14.1 - 2026-09-15
 
 - Skip HD upscaling and second-pass sampling when the first-pass resolution

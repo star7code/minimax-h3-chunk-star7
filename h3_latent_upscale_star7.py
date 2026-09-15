@@ -1031,7 +1031,7 @@ class MiniMaxH3OneClickHDStar7:
                     {"default": "平衡高清"},
                 ),
                 "target_megapixels": (
-                    "FLOAT", {"default": 1.0, "min": 0.20, "max": 4.0, "step": 0.05}
+                    "FLOAT", {"default": 1.0, "min": 0.20, "max": 36.0, "step": 0.05}
                 ),
                 "refine_steps": ("INT", {"default": 2, "min": 0, "max": 12, "step": 1}),
                 "refine_strength": (

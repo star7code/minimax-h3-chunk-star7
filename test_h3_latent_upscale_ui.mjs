@@ -61,6 +61,7 @@ const steps = node.widgets.find((item) => item.name === "refine_steps");
 const strength = node.widgets.find((item) => item.name === "refine_strength");
 const secondPassAttention = node.widgets.find((item) => item.name === "second_pass_attention");
 assert.equal(secondPassAttention.label, "二采注意力");
+assert.equal(tileCount.label, "分格数量");
 assert.equal(upscaleModel.label, "高清放大模型");
 assert.equal(upscaleModel.value, "minimax_h3_latent_upscaler_3d_fp16.safetensors");
 assert.equal(upscaleModel.options?.getOptionLabel, undefined);

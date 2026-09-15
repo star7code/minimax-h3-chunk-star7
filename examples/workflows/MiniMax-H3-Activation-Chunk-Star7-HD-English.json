@@ -2264,7 +2264,7 @@
           }
         },
         {
-          "label": "Target tiles (smart)",
+          "label": "Tile count",
           "name": "tile_count",
           "type": "INT",
           "widget": {

@@ -245,7 +245,7 @@ function install(node) {
         upscale_model: "高清放大模型", preset: "高清预设",
         target_megapixels: "目标像素（MP）", refine_steps: "高清修复步数",
         refine_strength: "高清修复强度", seed: "高清种子",
-        enable_tiling: "启用分格", tile_count: "目标分格数量（智能）", tile_overlap: "分格重叠（像素）",
+        enable_tiling: "启用分格", tile_count: "分格数量", tile_overlap: "分格重叠（像素）",
         second_pass_attention: "二采注意力",
         hd_av_latent: "采样结果", report: "运行报告",
     } : {
@@ -254,7 +254,7 @@ function install(node) {
         upscale_model: "Latent upscaler model", preset: "HD preset",
         target_megapixels: "Target megapixels", refine_steps: "HD refine steps",
         refine_strength: "HD refine strength", seed: "HD seed",
-        enable_tiling: "Enable tiling", tile_count: "Target tiles (smart)", tile_overlap: "Tile overlap (pixels)",
+        enable_tiling: "Enable tiling", tile_count: "Tile count", tile_overlap: "Tile overlap (pixels)",
         second_pass_attention: "Second-pass attention",
         hd_av_latent: "Sampled result", report: "Run report",
     };

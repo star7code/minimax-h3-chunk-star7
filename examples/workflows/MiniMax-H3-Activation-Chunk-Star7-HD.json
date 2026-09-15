@@ -2263,7 +2263,7 @@
           }
         },
         {
-          "label": "目标分格数量（智能）",
+          "label": "分格数量",
           "name": "tile_count",
           "type": "INT",
           "widget": {
