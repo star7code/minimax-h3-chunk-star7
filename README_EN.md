@@ -69,18 +69,37 @@ Sparse attention is not guaranteed to outperform CK at every resolution, duratio
 | `Prompt Load - Star7` | Extract prompts from dropped image, video, or workflow JSON files and retain alternative candidates |
 | `Video and Workflow Export - Star7` | Export video alone or with embedded/separate workflow metadata |
 | `DLSS Neural Image Enhance V2 - Star7` | Adjustable Neural Rendering for an image or video-frame batch, with a target megapixel count and realistic/portrait/anime presets |
-| `MiniMax H3 All-in-one Conditioning - Star7` | Builds text, keyframe, reference image/video, and audio conditioning in one node and emits reusable face-repair context |
+| `MiniMax H3 All-in-one Conditioning - Star7` | Builds text, keyframe, reference image/video, and audio conditioning in one node and emits reusable sampling context |
+| `MiniMax H3 One-click HD Upscale - Star7` | Upscales the sampled H3 latent to a target megapixel count with optional short refinement; VAE decoding remains external |
+| `MiniMax H3 Chunked Decode - Star7` | Independently decodes a complete H3 audio-video latent using the current H3 VAE's native temporal streaming and spatial tiling |
 | `MiniMax H3 One-click Face Repair - Star7` | Accepts the sampled packed H3 latent and performs face detection, tracking, local second-pass sampling, and seamless compositing internally |
 
 Chinese ComfyUI environments display Chinese node and control labels; other locales display English. Attention backend IDs remain unchanged.
 
 ### H3 One-click Face Repair
 
-Replace the original conditioning node with All-in-one Conditioning, then connect the sampler result and `refine_context` to One-click Face Repair. It reuses the existing model chain, so no second loader, LoRA, or chunk chain is required. Disabling repair or detecting no face returns the original frames.
+Replace the original conditioning node with All-in-one Conditioning, then connect Sampled result and Sampling context to One-click Face Repair. It reuses the existing model chain, so no second loader, LoRA, or chunk chain is required. Disabling repair or detecting no face returns the original frames.
 
 The node supports 1–4 faces, Main, Center, and Reference Match selection, plus Balanced, Realistic, Distant Face, Anime, and Custom presets. If fewer faces are found, it processes the available count. Reference Match optionally uses InsightFace; other modes require no reference image.
 
 On first use, `face_yolov8m.pt` is downloaded, verified, and stored under `ComfyUI/models/ultralytics/bbox`. Connected sockets display prompt tags: `<Picture N>`, `<Video N>`, `<Audio N>`, and the dedicated driving-audio tag `<Audio D>`.
+
+### H3 One-click HD Upscale
+
+The top-level Enable HD second pass switch returns the latent unchanged without loading the HD model when disabled. Second-pass attention inherits the first pass by default, or can independently select any CK/SLA/Sol/Hybrid path exposed by the chunk node. Enable tiling is a separate VRAM control that builds an overlapping, aspect-aware 2D grid; disabled tile controls are greyed out. Target tiles accepts 2–64 and is treated as a lower bound: the grid is chosen to keep tiles reasonably shaped and may round up slightly. For example, 16 requested tiles use 3×6 (18 actual) at 16:9, but 4×4 at 4:3, 3:4, and 1:1. Every boundary follows H3's 2×2 latent-patch alignment, and the report shows requested count, actual count, and grid. Tiling lowers second-pass peak VRAM but increases model calls and runtime; it does not change sigmas, sampler, or audio.
+
+The HD node does not decode either VAE internally. Connect its output to the independent MiniMax H3 Chunked Decode node, then to Video Combine. The decoder reuses the H3 VAE's native temporal streaming and spatial tiling and is independent from the second-pass tile count. A normal IMAGE output still retains all decoded frames in system memory, so long 4K clips remain RAM-heavy.
+
+The latent upscaler model is `minimax_h3_latent_upscaler_3d_fp16.safetensors`. On the first run that actually needs enlargement, a missing default is downloaded from the HF mirror first and Hugging Face second, verified against the pinned SHA-256, and installed in `ComfyUI/models/latent_upscale_models`. Failure messages include the exact target directory and each source error. Only this end-to-end validated FP16 checkpoint is currently exposed; unrelated LTX files and BF16/FP32 precision copies of the same training are not presented as distinct quality models.
+
+The second pass keeps the original prompt and reference conditioning. For first- or last-frame generation, All-in-one Conditioning retains the source endpoint pixels and the HD node VAE-encodes them again at the actual target resolution before refinement. Tiled refinement crops those rebuilt HD keyframes with each tile instead of reusing stale low-resolution keyframe latents.
+
+Each preset pairs its step count and denoise range. The node walks the current prompt ancestry for Turbo/PDD model names and combines that evidence with conservative model-patch inspection: Turbo uses the two/three-step scene recipes, while Base and ordinary LoRAs use four to six steps so an undistilled model is not treated as a few-step student. For an already-applied PDD model it reads the upstream 4/6/8-NFE or custom trained partition, selects the matching tail boundaries, and switches to Euler internally, so no separate PDD Scheduler connection is required. It errors only when the trained head bank, partition, or required Shift 12/3 contract is invalid. Distant Small Face expands the repaint range, Fast Motion narrows it, and Custom remains adjustable. A read-only row shows the exact Sigma sequence, video Shift, and detected model profile produced by the backend; the number of model evaluations is one fewer than the number of Sigma values.
+
+```text
+Sampler Sampled result -> One-click HD Sampled result -> H3 Chunked Decode -> Video Combine
+All-in-one Sampling context ----------------^             Video/audio VAEs --^
+```
 
 ### DLSS Neural Image Enhance V2
 
@@ -138,6 +157,8 @@ Restart ComfyUI after installing or updating.
 
 - [General workflow — English](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-English.json): translated canvas labels and notes with all-in-one conditioning, chunk acceleration, live preview, and optional face restoration disabled by default.
 - [通用工作流（中文）](examples/workflows/MiniMax-H3-Activation-Chunk-Star7.json)
+- [One-click HD with external VAE — English](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-HD-English.json): master switch, optional second-pass tiling, and independent H3 chunked decode.
+- [一键高清独立 VAE 工作流（中文）](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-HD.json): Chinese version.
 
 ## Recorded 1.0MP / 10-second result
 

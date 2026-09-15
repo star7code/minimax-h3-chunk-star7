@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 
 import numpy as np
 import torch
@@ -15,6 +16,12 @@ import folder_paths
 # ----------------------------------------------------------------------------
 
 _DETECTOR_CACHE: dict[str, object] = {}
+_LOG = logging.getLogger("Star7H3FaceRepairCore")
+
+
+def _trace(message: str) -> None:
+    """Keep vendored diagnostics available for developers without console spam."""
+    _LOG.debug("%s", message)
 
 
 def _detector_list() -> list[str]:
@@ -1301,7 +1308,7 @@ class H3FaceTrackCrop:
                     # Cut detection is an assist, not a requirement - a missing or broken
                     # scenedetect must not kill a run that smooths fine as one shot.
                     cut_note = f"cut detection unavailable, treating the video as one shot: {exc}"
-                    print(f"[H3FaceRefine] {cut_note}")
+                    _trace(f"Star7 H3 face repair | {cut_note}")
 
             for i in range(B):
                 _mm.throw_exception_if_processing_interrupted()
@@ -1395,7 +1402,7 @@ class H3FaceTrackCrop:
                     ref_emb = embedder.embed_reference(identity_reference[:1],
                                                        _det, confidence)
                     if ref_emb is not None:
-                        print("[H3FaceRefine] identity anchor from the supplied reference")
+                        _trace("Star7 H3 face repair | identity anchor from the supplied reference")
                     else:
                         # Only THIS backend can say whether the reference is usable -
                         # insightface reads it with SCRFD, the crop backends with the
@@ -1425,17 +1432,17 @@ class H3FaceTrackCrop:
                         _tr = _track_continuity(all_boxes, index_lock, seed)
                         ref_emb, used = _anchor_from_track(embedder, images,
                                                            all_boxes, _tr)
-                    print(f"[H3FaceRefine] identity anchor built from the selected subject "
+                    _trace(f"Star7 H3 face repair | identity anchor built from the selected subject "
                           f"({used} unambiguous frames)" if ref_emb is not None else
-                          "[H3FaceRefine] no clean frames to anchor the selected subject - "
+                          "Star7 H3 face repair | no clean frames to anchor the selected subject - "
                           "tracking by continuity alone")
                 elif ref_emb is None:
                     if ref_failed:
-                        print("[H3FaceRefine] !! no face found in identity_reference "
+                        _trace("Star7 H3 face repair | no face found in identity_reference "
                               f"by {embedder.name}")
                     ref_emb, used = _build_clip_anchor(embedder, images, all_boxes)
                     if ref_emb is not None:
-                        print(f"[H3FaceRefine] identity anchor built from the video itself "
+                        _trace(f"Star7 H3 face repair | identity anchor built from the video itself "
                               f"({used} unambiguous frames)")
             except Exception as exc:
                 # Identity is an assist, not a requirement - a missing backend must not
@@ -1444,7 +1451,7 @@ class H3FaceTrackCrop:
                 # evening on a crowd scene.
                 embedder, ref_emb = None, None
                 ident_note = f"{identity_model} unavailable, tracking by continuity: {exc}"
-                print(f"[H3FaceRefine] identity matching unavailable ({exc})")
+                _trace(f"Star7 H3 face repair | identity matching unavailable ({exc})")
 
         # Waiting for a frame that contains select_index only makes sense when the RANKING
         # is what picks the subject. A usable identity anchor overrules the ranking at
@@ -1466,7 +1473,7 @@ class H3FaceTrackCrop:
                     if _bad else "every shot contains the subject")
             except Exception as exc:
                 absent_note = f"absent-shot detection failed: {exc}"
-                print(f"[H3FaceRefine] {absent_note}")
+                _trace(f"Star7 H3 face repair | {absent_note}")
         elif absent_shots == "by_identity":
             absent_note = "absent_shots=by_identity needs a usable identity anchor; ignored"
 
@@ -1647,7 +1654,7 @@ class H3FaceTrackCrop:
                     sz[i] = sz_seed[i]
                     via_body[i] = True
             except Exception as exc:  # never let the fallback kill the run
-                print(f"[H3FaceRefine] body fallback '{fallback_detector}' failed: {exc}")
+                _trace(f"Star7 H3 face repair | body fallback '{fallback_detector}' failed: {exc}")
 
         known = valid | via_body
         raw_cx = _interp_gaps_seg(cx, known, segs)
@@ -1703,7 +1710,7 @@ class H3FaceTrackCrop:
             # face it renders badly in the first place.
             snapped = max(512, min(snapped, 1344))
             if snapped != canvas_height:
-                print(f"[H3FaceRefine] canvas_mode={canvas_mode}: "
+                _trace(f"Star7 H3 face repair | canvas_mode={canvas_mode}: "
                       f"{canvas_width}x{canvas_height} -> {snapped}x{snapped} "
                       f"(largest crop {need:.0f}px)")
             canvas_width = canvas_height = snapped
@@ -2051,7 +2058,7 @@ class H3FaceTrackCrop:
         # which is exactly the information needed to tell whether identity matching did
         # any work on a crowd scene.
         if verbose:
-            print("[H3FaceRefine] " + report.replace("\n", "\n[H3FaceRefine] "))
+            _trace("Star7 H3 face repair | " + report.replace("\n", " | "))
         return (crops, transform, preview, report, int(canvas_width), int(canvas_height),
                 int(K))
 
@@ -2158,10 +2165,10 @@ class H3FaceStitch:
             source = list(range(min(B, base_images.shape[0])))
             B = len(source)
         if len(source) != base_images.shape[0]:
-            print(f"[H3FaceRefine] compositing {B} refined frame(s) into "
+            _trace(f"Star7 H3 face repair | compositing {B} refined frame(s) into "
                   f"{base_images.shape[0]} source frame(s)")
         elif base_images.shape[0] != refined_crops.shape[0]:
-            print(f"[H3FaceRefine] frame count mismatch: base={base_images.shape[0]} "
+            _trace(f"Star7 H3 face repair | frame count mismatch: base={base_images.shape[0]} "
                   f"refined={refined_crops.shape[0]} transform={len(boxes)} -> using {B}")
 
         import torch.nn.functional as F
@@ -2627,7 +2634,7 @@ class H3PerFrameDenoise:
             f"{soft}"
         )
         if verbose:
-            print("[H3FaceRefine] " + report)
+            _trace("Star7 H3 face repair | " + report)
         return (out, report, patched)
 
 
@@ -2712,7 +2719,7 @@ class H3FaceMaskSAM:
                 mm.throw_exception_if_processing_interrupted()
                 pbar.update(1)
                 if i % 25 == 0:
-                    print(f"[H3FaceRefine] SAM mask {i}/{B}")
+                    _trace(f"Star7 H3 face repair | SAM mask {i}/{B}")
                 fr = face_rects[i] if i < len(face_rects) else (cw*0.25, ch*0.25, cw*0.5, ch*0.5)
                 fx, fy, fwd, fhd = fr
                 bbox = [max(0, int(fx)), max(0, int(fy)),
@@ -2766,7 +2773,7 @@ class H3FaceMaskSAM:
                   f"({B-ok} fell back to the face rect)\n"
                   f"dilation={dilation}  temporal_smooth={temporal_smooth}\n"
                   f"mean coverage {float(masks.mean())*100:.1f}% of canvas")
-        print("[H3FaceRefine] " + report)
+        _trace("Star7 H3 face repair | " + report)
         return (masks, report)
 
 
@@ -2794,7 +2801,7 @@ class H3FaceTransformInfo:
             x, y, w, h = boxes[i]
             lines.append(f"{i:>6} {x:>6.1f} {y:>6.1f} {w:>6.1f} {h:>6.1f} {ch/h:>5.2f}x")
         txt = "\n".join(lines)
-        print("[H3FaceRefine]\n" + txt)
+        _trace("Star7 H3 face repair | " + txt.replace("\n", " | "))
         return (txt,)
 
 
@@ -3201,7 +3208,7 @@ class H3FaceSelect:
                 cut_det, cut_tc = _make_cut_detector(cut_threshold)
             except Exception as exc:
                 cut_note = f"cut detection unavailable, treating the video as one shot: {exc}"
-                print(f"[H3FaceSelect] {cut_note}")
+                _trace(f"Star7 H3 face select | {cut_note}")
 
         all_boxes: list = []
         all_confs: list = []
@@ -3376,7 +3383,7 @@ class H3FaceSelect:
             f"{shot_lines}"
             f"{warn}"
         )
-        print("[H3FaceSelect] " + report.replace("\n", "\n[H3FaceSelect] "))
+        _trace("Star7 H3 face select | " + report.replace("\n", " | "))
 
         if audio is None:
             # Downstream save nodes want an AUDIO, not None. A silent track keeps the

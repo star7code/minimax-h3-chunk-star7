@@ -45,8 +45,8 @@ const values = {
 };
 const node = Object.create(NodeType.prototype);
 node.widgets = Object.entries(values).map(([name, value]) => ({ name, value, type: "number", options: {} }));
-node.inputs = [];
-node.outputs = [];
+node.inputs = [{ name: "sampled_av_latent" }, { name: "refine_context" }];
+node.outputs = [{ name: "refined_images" }];
 node.properties = {};
 node.size = [420, 700];
 node.computeSize = () => [390, 500];
@@ -61,6 +61,9 @@ node.onNodeCreated();
 
 const widgets = Object.fromEntries(node.widgets.map((item) => [item.name, item]));
 assert.equal(node.title, "MiniMax H3 一键人脸修复 - Star7");
+assert.equal(node.inputs[0].label, "采样结果");
+assert.equal(node.inputs[1].label, "采样上下文");
+assert.equal(node.outputs[0].label, "图像");
 assert.equal(widgets.target_face.options.hidden, false);
 assert.equal(node.size[0], 420);
 assert.equal(node.size[1], 700);
@@ -77,6 +80,25 @@ api.listeners["star7-h3-face-repair-resolution"]({
 assert.equal(
     node.widgets.find((item) => item.__star7FaceResolutionStatus).name,
     "修复后分辨率：768×1376 · 1.01 MP",
+);
+widgets.enable_refine.value = false;
+widgets.enable_refine.callback();
+assert.equal(
+    node.widgets.find((item) => item.__star7FaceResolutionStatus).name,
+    "未开启修复",
+);
+api.listeners["star7-h3-face-repair-resolution"]({
+    detail: { node_id: "124", width: 608, height: 1056, megapixels: 0.61 },
+});
+assert.equal(
+    node.widgets.find((item) => item.__star7FaceResolutionStatus).name,
+    "未开启修复",
+);
+widgets.enable_refine.value = true;
+widgets.enable_refine.callback();
+assert.equal(
+    node.widgets.find((item) => item.__star7FaceResolutionStatus).name,
+    "修复后分辨率：运行后显示",
 );
 widgets.face_count.value = 3;
 node.onConfigure({ widgets_values: [
@@ -112,7 +134,7 @@ class MaterialNodeType {}
 await extension.beforeRegisterNodeDef(MaterialNodeType, { name: "MiniMaxH3MaterialPromptStar7" });
 const material = Object.create(MaterialNodeType.prototype);
 material.inputs = [{ name: "drive_audio", link: null }];
-material.outputs = [];
+material.outputs = [{ name: "refine_context" }];
 material.widgets = [];
 material.size = [420, 500];
 material.computeSize = () => [390, 500];
@@ -120,6 +142,7 @@ material.setSize = (size) => { material.size = size; };
 material.setDirtyCanvas = () => {};
 material.onNodeCreated();
 assert.equal(material.inputs[0].label, "驱动音频");
+assert.equal(material.outputs[0].label, "采样上下文");
 material.inputs[0].link = 12;
 material.onConnectionsChange();
 assert.equal(material.inputs[0].label, "驱动音频 - <Audio D>");

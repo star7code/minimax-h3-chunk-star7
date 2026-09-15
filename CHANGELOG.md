@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.14.0 - 2026-09-15
+
+- Added one-click MiniMax H3 latent HD upscaling with scene presets, optional
+  spatial tiling, automatic model installation, and exact Sigma reporting.
+- Added independent chunked H3 audio-video VAE decoding and bilingual HD
+  example workflows with face repair disabled by default.
+- Fixed tiled H3 global position coordinates, simplified face-repair logging,
+  and corrected the disabled repair-status display.
+
 ## 2.13.2 - 2026-09-10
 
 - Added optional detail-preserving face-repair output sizing with a practical
