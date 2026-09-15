@@ -1136,10 +1136,18 @@ class MiniMaxH3OneClickHDStar7:
                 source_w, source_h, output_w, output_h, upscale_seconds,
             )
         else:
-            _LOG.info(
-                "Star7 H3 HD | source %dx%d already meets %.2fMP; never downscaled",
-                source_w, source_h, target_megapixels,
+            source_megapixels = source_w * source_h / 1_000_000.0
+            sigma_summary = "off"
+            _send_sigma_status(
+                unique_id, sigma_summary, 0, 0.0, video_shift, profile_name
             )
+            report = (
+                f"Star7 H3 HD skipped | source={source_w}x{source_h} "
+                f"({source_megapixels:.2f}MP) target={target_megapixels:.2f}MP | "
+                "target <= source; first-pass latent returned unchanged"
+            )
+            _LOG.info(report)
+            return sampled_av_latent, report
 
         refine_seconds = 0.0
         sigma_summary = "off"

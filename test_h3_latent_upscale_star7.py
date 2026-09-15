@@ -63,8 +63,29 @@ def test_custom_zero_step_route_is_a_latent_passthrough_when_already_large_enoug
     output_video, output_audio = list(output["samples"].unbind())
     assert torch.equal(output_video, video)
     assert torch.equal(output_audio, audio)
-    assert "1024x1024 -> 1024x1024" in report
-    assert "audio preserved exactly" in report
+    assert output is latent
+    assert "target <= source" in report
+    assert "first-pass latent returned unchanged" in report
+
+
+def test_equal_or_lower_target_skips_refine_and_returns_first_pass_unchanged():
+    video = torch.zeros((1, 24, 2, 64, 64))
+    audio = torch.randn((1, 32, 2, 8))
+    latent = {"samples": comfy.nested_tensor.NestedTensor((video, audio))}
+    context = {"model": object(), "positive": [[torch.zeros(1), {}]]}
+    output, report = MiniMaxH3OneClickHDStar7().upscale(
+        latent,
+        context,
+        preset="自定义",
+        target_megapixels=1.0,
+        refine_steps=3,
+        refine_strength=0.35,
+        enable_tiling=True,
+        seed=123,
+    )
+    assert output is latent
+    assert "source=1024x1024 (1.05MP) target=1.00MP" in report
+    assert "target <= source" in report
 
 
 def test_schema_has_scene_presets_and_latent_output():

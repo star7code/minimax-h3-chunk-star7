@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.14.1 - 2026-09-15
+
+- Skip HD upscaling and second-pass sampling when the first-pass resolution
+  already meets or exceeds the target, preserving the original latent unchanged.
+
 ## 2.14.0 - 2026-09-15
 
 - Added one-click MiniMax H3 latent HD upscaling with scene presets, optional
