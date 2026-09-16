@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.14.7 - 2026-09-16
+
+- Support both the ComfyUI 0.34 H3 reference-node argument order and the newer optional-VAE order.
+- Remove empty legacy reference-image ports, keeping only connected ports plus the next empty port below the last-frame input and above reference videos.
+
 ## 2.14.6 - 2026-09-16
 
 - Restore connect-to-grow reference-image inputs instead of displaying every slot.

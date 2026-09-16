@@ -135,7 +135,14 @@ await extension.beforeRegisterNodeDef(MaterialNodeType, { name: "MiniMaxH3Materi
 const material = Object.create(MaterialNodeType.prototype);
 material.inputs = [
     { name: "drive_audio", link: null },
-    { name: "ref_images.ref_image_0", link: null },
+    { name: "last_frame", link: null },
+    { name: "ref_video_0", link: null },
+    { name: "ref_video_audio_0", link: null },
+    { name: "ref_audio_0", link: null },
+    ...Array.from({ length: 16 }, (_, index) => ({
+        name: `ref_images.ref_image_${index}`,
+        link: index < 3 ? index + 13 : null,
+    })),
 ];
 material.outputs = [{ name: "refine_context" }];
 material.widgets = [];
@@ -143,9 +150,20 @@ material.size = [420, 500];
 material.computeSize = () => [390, 500];
 material.setSize = (size) => { material.size = size; };
 material.setDirtyCanvas = () => {};
+material.removeInput = (index) => { material.inputs.splice(index, 1); };
 material.onNodeCreated();
 assert.equal(material.inputs[0].label, "驱动音频");
-assert.equal(material.inputs[1].label, "参考图 1");
+assert.deepEqual(
+    material.inputs.map((input) => input.name),
+    [
+        "drive_audio", "last_frame",
+        "ref_images.ref_image_0", "ref_images.ref_image_1",
+        "ref_images.ref_image_2", "ref_images.ref_image_3",
+        "ref_video_0", "ref_video_audio_0", "ref_audio_0",
+    ],
+);
+assert.equal(material.inputs[2].label, "参考图 1 - <Picture 1>");
+assert.equal(material.inputs[5].label, "参考图 4");
 assert.equal(material.outputs[0].label, "采样上下文");
 material.inputs[0].link = 12;
 material.onConnectionsChange();
@@ -153,15 +171,18 @@ assert.equal(material.inputs[0].label, "驱动音频 - <Audio D>");
 material.inputs[0].link = null;
 material.onConnectionsChange();
 assert.equal(material.inputs[0].label, "驱动音频");
-material.inputs[1].link = 13;
-material.inputs.push({ name: "ref_images.ref_image_1", link: null });
+material.inputs[5].link = 16;
+material.inputs.push({ name: "ref_images.ref_image_4", link: null });
 material.onConnectionsChange();
-assert.equal(material.inputs[1].label, "参考图 1 - <Picture 1>");
-assert.equal(material.inputs[2].label, "参考图 2");
-material.inputs[2].link = 14;
-material.inputs.push({ name: "ref_images.ref_image_2", link: null });
-material.onConnectionsChange();
-assert.equal(material.inputs[2].label, "参考图 2 - <Picture 2>");
-assert.equal(material.inputs[3].label, "参考图 3");
+assert.deepEqual(
+    material.inputs.slice(2, 7).map((input) => input.name),
+    [
+        "ref_images.ref_image_0", "ref_images.ref_image_1",
+        "ref_images.ref_image_2", "ref_images.ref_image_3",
+        "ref_images.ref_image_4",
+    ],
+);
+assert.equal(material.inputs[5].label, "参考图 4 - <Picture 4>");
+assert.equal(material.inputs[6].label, "参考图 5");
 
 console.log("H3 conditioning dynamic audio label tests: PASS");

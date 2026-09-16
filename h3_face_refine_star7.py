@@ -272,6 +272,26 @@ def _collect_reference_images(ref_images, legacy_inputs=None):
     }
 
 
+def _execute_reference_to_video(reference_node, clip, video_vae, audio_vae, prompt,
+                                width, height, length, reference_quality,
+                                ref_images, ref_videos, ref_video_audios, ref_audios):
+    """Use stable parameter names across the H3 reference-node API reorder."""
+    return reference_node.execute(
+        clip=clip,
+        vae=video_vae,
+        audio_vae=audio_vae,
+        prompt=prompt,
+        width=width,
+        height=height,
+        length=length,
+        ref_image_size=reference_quality,
+        ref_images=ref_images,
+        ref_videos=ref_videos,
+        ref_video_audios=ref_video_audios,
+        ref_audios=ref_audios,
+    )
+
+
 def _decode_video_frames(vae, latent: torch.Tensor) -> torch.Tensor:
     images = vae.decode(latent)
     if images.ndim == 5:
@@ -712,11 +732,10 @@ class MiniMaxH3MaterialPromptStar7(io.ComfyNode):
         warnings.extend(prompt_warnings)
 
         if has_refs:
-            positive, latent = _unpack(MiniMaxH3ReferenceToVideo.execute(
-                clip, conditioned_prompt, width, height, int(length), ref_size,
-                vae=video_vae, audio_vae=audio_vae,
-                ref_images=ref_images, ref_videos=ref_videos,
-                ref_video_audios=ref_video_audios, ref_audios=ref_audios,
+            positive, latent = _unpack(_execute_reference_to_video(
+                MiniMaxH3ReferenceToVideo, clip, video_vae, audio_vae,
+                conditioned_prompt, width, height, int(length), ref_size,
+                ref_images, ref_videos, ref_video_audios, ref_audios,
             ))[:2]
             if first_frame is not None:
                 positive = _unpack(MiniMaxH3AddGuide.execute(

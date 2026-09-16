@@ -66,6 +66,50 @@ function dynamicLabel(name, lang) {
 }
 function labelFor(name, lang) { return TEXT[lang].labels[name] ?? dynamicLabel(name, lang); }
 function inputBaseName(input) { return String(input?.name || "").split(".").at(-1); }
+function referenceImageSlot(input) {
+    const match = inputBaseName(input).match(/^ref_image_(\d+)$/);
+    return match ? Number(match[1]) : null;
+}
+function compactMaterialReferenceImages(node) {
+    if (node.__star7CompactingReferenceImages || !Array.isArray(node.inputs)) return;
+    const references = node.inputs.map((input, index) => ({ input, index, slot: referenceImageSlot(input) }))
+        .filter(({ slot }) => slot != null);
+    if (!references.length) return;
+
+    const connected = references.filter(({ input }) => input.link != null);
+    const nextSlot = connected.length ? Math.max(...connected.map(({ slot }) => slot)) + 1 : 0;
+    const spare = references.find(({ input, slot }) => input.link == null && slot === nextSlot)
+        ?? references.find(({ input }) => input.link == null);
+    const retained = new Set(connected.map(({ input }) => input));
+    if (spare) retained.add(spare.input);
+    const stale = references.filter(({ input }) => !retained.has(input));
+    if (!stale.length) return;
+
+    node.__star7CompactingReferenceImages = true;
+    try {
+        for (const { index } of stale.sort((a, b) => b.index - a.index)) {
+            if (typeof node.removeInput === "function") node.removeInput(index);
+            else node.inputs.splice(index, 1);
+        }
+    } finally {
+        node.__star7CompactingReferenceImages = false;
+    }
+}
+function placeMaterialReferenceImages(node) {
+    const inputs = node.inputs;
+    if (!Array.isArray(inputs)) return;
+    const references = inputs.filter((input) => referenceImageSlot(input) != null)
+        .sort((a, b) => referenceImageSlot(a) - referenceImageSlot(b));
+    if (!references.length) return;
+    const remaining = inputs.filter((input) => !references.includes(input));
+    const lastFrame = remaining.findIndex((input) => inputBaseName(input) === "last_frame");
+    if (lastFrame < 0) return;
+    inputs.splice(0, inputs.length,
+        ...remaining.slice(0, lastFrame + 1),
+        ...references,
+        ...remaining.slice(lastFrame + 1),
+    );
+}
 function connectedMediaInputs(node, pattern) {
     return (node.inputs ?? []).map((input) => {
         const match = inputBaseName(input).match(pattern);
@@ -349,6 +393,9 @@ app.registerExtension({
             localizeNode(this, isFace);
             if (isFace) requestAnimationFrame(() => installFaceControls(this, text));
             else requestAnimationFrame(() => {
+                compactMaterialReferenceImages(this);
+                placeMaterialReferenceImages(this);
+                localizeNode(this, false);
                 installMaterialControls(this);
                 updateMaterialMediaLabels(this);
             });
@@ -362,6 +409,8 @@ app.registerExtension({
                 localizeNode(this, isFace);
                 if (isFace) installFaceControls(this, text);
                 else {
+                    compactMaterialReferenceImages(this);
+                    placeMaterialReferenceImages(this);
                     installMaterialControls(this);
                     updateMaterialMediaLabels(this);
                 }
@@ -373,6 +422,8 @@ app.registerExtension({
             nodeType.prototype.onConnectionsChange = function () {
                 const result = connectionsChanged?.apply(this, arguments);
                 requestAnimationFrame(() => {
+                    compactMaterialReferenceImages(this);
+                    placeMaterialReferenceImages(this);
                     localizeNode(this, false);
                     updateMaterialMediaLabels(this);
                     this.setDirtyCanvas?.(true, true);

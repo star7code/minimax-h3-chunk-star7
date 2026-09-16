@@ -12,6 +12,7 @@ from .h3_face_refine_star7 import (
     _collect_reference_images,
     _copy_conditioning_without_keyframes,
     _decode_video_frames,
+    _execute_reference_to_video,
     _face_repair_output_size,
     _fit_audio_latent,
     _option_id,
@@ -167,6 +168,42 @@ def test_legacy_reference_image_slots_survive_v3_input_normalization():
         "ref_image_0": first,
         "ref_image_1": fourth,
     }
+
+
+def test_reference_to_video_call_uses_names_supported_by_old_and_new_comfyui():
+    values = {
+        "clip": object(), "vae": object(), "audio_vae": object(), "prompt": "test",
+        "width": 1344, "height": 768, "length": 243, "ref_image_size": "match",
+        "ref_images": {"ref_image_0": object()}, "ref_videos": {},
+        "ref_video_audios": {}, "ref_audios": {},
+    }
+
+    class LegacyReferenceNode:
+        @classmethod
+        def execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                    ref_image_size="match", ref_images=None, ref_videos=None,
+                    ref_video_audios=None, ref_audios=None):
+            return values | {"signature": "legacy"}
+
+    class CurrentReferenceNode:
+        @classmethod
+        def execute(cls, clip, prompt, width, height, length, ref_image_size="match",
+                    vae=None, audio_vae=None, ref_images=None, ref_videos=None,
+                    ref_video_audios=None, ref_audios=None):
+            return values | {"signature": "current"}
+
+    for reference_node, signature in (
+        (LegacyReferenceNode, "legacy"), (CurrentReferenceNode, "current"),
+    ):
+        result = _execute_reference_to_video(reference_node, **{
+            "clip": values["clip"], "video_vae": values["vae"],
+            "audio_vae": values["audio_vae"], "prompt": values["prompt"],
+            "width": values["width"], "height": values["height"],
+            "length": values["length"], "reference_quality": values["ref_image_size"],
+            "ref_images": values["ref_images"], "ref_videos": values["ref_videos"],
+            "ref_video_audios": values["ref_video_audios"], "ref_audios": values["ref_audios"],
+        })
+        assert result["signature"] == signature
 
 
 def test_prompt_audio_tags_keep_official_order_and_use_drive_alias():
