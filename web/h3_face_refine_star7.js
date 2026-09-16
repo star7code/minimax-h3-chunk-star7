@@ -77,10 +77,16 @@ function compactMaterialReferenceImages(node) {
         .filter(({ slot }) => slot != null);
     if (!references.length) return;
 
-    const connected = references.filter(({ input }) => input.link != null);
-    const nextSlot = connected.length ? Math.max(...connected.map(({ slot }) => slot)) + 1 : 0;
-    const spare = references.find(({ input, slot }) => input.link == null && slot === nextSlot)
-        ?? references.find(({ input }) => input.link == null);
+    const connected = references.filter(({ input }) => input.link != null)
+        .sort((a, b) => a.slot - b.slot || a.index - b.index);
+    connected.forEach(({ input }, slot) => {
+        input.name = `ref_images.ref_image_${slot}`;
+    });
+    const nextSlot = connected.length;
+    const spare = nextSlot < MAX_REFERENCE_IMAGES
+        ? references.find(({ input }) => input.link == null)
+        : null;
+    if (spare) spare.input.name = `ref_images.ref_image_${nextSlot}`;
     const retained = new Set(connected.map(({ input }) => input));
     if (spare) retained.add(spare.input);
     const stale = references.filter(({ input }) => !retained.has(input));
@@ -116,6 +122,24 @@ function refreshMaterialReferenceImages(node) {
     addNextMaterialReferenceImage(node);
     placeMaterialReferenceImages(node);
 }
+function graphLink(linkRef) {
+    if (linkRef && typeof linkRef === "object") return linkRef;
+    const links = app.graph?.links;
+    if (!links) return null;
+    if (typeof links.get === "function") {
+        return links.get(linkRef) ?? links.get(String(linkRef)) ?? null;
+    }
+    return links[linkRef] ?? links[String(linkRef)] ?? null;
+}
+function syncMaterialInputSlots(node) {
+    for (const [targetSlot, input] of (node.inputs ?? []).entries()) {
+        if (input?.link == null) continue;
+        const link = graphLink(input.link);
+        if (!link) continue;
+        link.target_slot = targetSlot;
+        if (Object.hasOwn(link, "targetSlot")) link.targetSlot = targetSlot;
+    }
+}
 function placeMaterialReferenceImages(node) {
     const inputs = node.inputs;
     if (!Array.isArray(inputs)) return;
@@ -130,6 +154,7 @@ function placeMaterialReferenceImages(node) {
         ...references,
         ...remaining.slice(lastFrame + 1),
     );
+    syncMaterialInputSlots(node);
 }
 function connectedMediaInputs(node, pattern) {
     return (node.inputs ?? []).map((input) => {

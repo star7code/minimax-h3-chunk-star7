@@ -155,10 +155,8 @@ Restart ComfyUI after installing or updating.
 
 ## Example workflow
 
-- [General workflow — English](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-English.json): translated canvas labels and notes with all-in-one conditioning, chunk acceleration, live preview, and optional face restoration disabled by default.
-- [通用工作流（中文）](examples/workflows/MiniMax-H3-Activation-Chunk-Star7.json)
-- [One-click HD with external VAE — English](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-HD-English.json): master switch, optional second-pass tiling, and independent H3 chunked decode.
-- [一键高清独立 VAE 工作流（中文）](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-HD.json): Chinese version.
+- [General workflow - English](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-English.json): fully translated canvas and notes with all-in-one conditioning, chunk acceleration, live preview, independent H3 chunked decode, and optional second-pass refinement disabled by default. It is ready to use as a normal workflow immediately after import.
+- [通用工作流（中文）](examples/workflows/MiniMax-H3-Activation-Chunk-Star7.json): Chinese version with the same features and defaults.
 
 ## Recorded 1.0MP / 10-second result
 

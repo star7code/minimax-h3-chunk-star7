@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.14.9 - 2026-09-16
+
+- Keep ComfyUI graph link target-slot indices synchronized when dynamic reference-image inputs are inserted and repositioned.
+- Compact legacy or mismatched reference-image gaps so connected inputs remain contiguous before exposing the next empty slot.
+- Replace the four overlapping example workflows with one Chinese and one fully translated English general workflow; optional second-pass refinement remains disabled by default.
+
 ## 2.14.8 - 2026-09-16
 
 - Continue the reference-image connect-to-grow sequence beyond migrated four-image workflows, up to the H3 limit of 9.

@@ -1,8 +1,8 @@
 {
-  "id": "59876de5-d4bb-4a0e-84bf-49ecf0a5a92b",
+  "id": "8efbdb1d-4bbf-4465-a01e-bf2606059b0d",
   "revision": 0,
-  "last_node_id": 375,
-  "last_link_id": 487,
+  "last_node_id": 381,
+  "last_link_id": 491,
   "nodes": [
     {
       "id": 342,
@@ -77,122 +77,6 @@
       "bgcolor": "#335"
     },
     {
-      "id": 327,
-      "type": "MiniMaxH3LoadImageScaleStar7",
-      "pos": [
-        -2297.7381018474953,
-        5895.2567567059
-      ],
-      "size": [
-        272.7372778138242,
-        425.9011799564396
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 4,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            453
-          ]
-        },
-        {
-          "name": "mask",
-          "type": "MASK",
-          "links": []
-        }
-      ],
-      "properties": {
-        "cnr_id": "minimax-h3-chunk-star7",
-        "ver": "75d863dff6a7e15cbfa52f5b7d90ff1af153000d",
-        "Node name for S&R": "MiniMaxH3LoadImageScaleStar7",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.5.2"
-        }
-      },
-      "widgets_values": [
-        "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
-        1280,
-        false,
-        false,
-        "16:9",
-        "image"
-      ],
-      "widgets_values_named": {
-        "image": "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
-        "最长边": 1280,
-        "允许小图放大": false,
-        "调整比例": false,
-        "目标比例": "16:9",
-        "upload": "image"
-      },
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
-      "id": 326,
-      "type": "MiniMaxH3LoadImageScaleStar7",
-      "pos": [
-        -2599.0481303958936,
-        5894.00168718115
-      ],
-      "size": [
-        277.7308545909186,
-        424.56824299295295
-      ],
-      "flags": {},
-      "order": 2,
-      "mode": 4,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            452
-          ]
-        },
-        {
-          "name": "mask",
-          "type": "MASK",
-          "links": []
-        }
-      ],
-      "properties": {
-        "cnr_id": "minimax-h3-chunk-star7",
-        "ver": "75d863dff6a7e15cbfa52f5b7d90ff1af153000d",
-        "Node name for S&R": "MiniMaxH3LoadImageScaleStar7",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.5.2"
-        }
-      },
-      "widgets_values": [
-        "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
-        1280,
-        false,
-        false,
-        "16:9",
-        "image"
-      ],
-      "widgets_values_named": {
-        "image": "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
-        "最长边": 1280,
-        "允许小图放大": false,
-        "调整比例": false,
-        "目标比例": "16:9",
-        "upload": "image"
-      },
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
       "id": 341,
       "type": "MiniMaxH3ReferenceVideoLoadStar7",
       "pos": [
@@ -204,7 +88,7 @@
         918.945298451476
       ],
       "flags": {},
-      "order": 3,
+      "order": 1,
       "mode": 4,
       "inputs": [],
       "outputs": [
@@ -276,7 +160,7 @@
         134.84181110816007
       ],
       "flags": {},
-      "order": 4,
+      "order": 2,
       "mode": 0,
       "inputs": [],
       "outputs": [],
@@ -298,80 +182,6 @@
       "bgcolor": "#653"
     },
     {
-      "id": 126,
-      "type": "BasicScheduler",
-      "pos": [
-        -2284.1431865209533,
-        5663.479852506194
-      ],
-      "size": [
-        256.8949683004355,
-        106.93975081853569
-      ],
-      "flags": {},
-      "order": 29,
-      "mode": 0,
-      "inputs": [
-        {
-          "label": "模型",
-          "name": "model",
-          "type": "MODEL",
-          "link": 471
-        },
-        {
-          "name": "scheduler",
-          "type": "COMBO",
-          "widget": {
-            "name": "scheduler"
-          }
-        },
-        {
-          "name": "steps",
-          "type": "INT",
-          "widget": {
-            "name": "steps"
-          }
-        },
-        {
-          "name": "denoise",
-          "type": "FLOAT",
-          "widget": {
-            "name": "denoise"
-          }
-        }
-      ],
-      "outputs": [
-        {
-          "label": "Sigmas",
-          "name": "SIGMAS",
-          "type": "SIGMAS",
-          "links": [
-            235
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.30.1",
-        "Node name for S&R": "BasicScheduler",
-        "ue_properties": {
-          "version": "7.5.2",
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "simple",
-        4,
-        1
-      ],
-      "widgets_values_named": {
-        "scheduler": "simple",
-        "steps": 4,
-        "denoise": 1
-      }
-    },
-    {
       "id": 135,
       "type": "PrimitiveFloat",
       "pos": [
@@ -383,7 +193,7 @@
         64.54529507358893
       ],
       "flags": {},
-      "order": 5,
+      "order": 3,
       "mode": 0,
       "inputs": [
         {
@@ -435,7 +245,7 @@
         374.8512969686708
       ],
       "flags": {},
-      "order": 6,
+      "order": 4,
       "mode": 0,
       "inputs": [],
       "outputs": [],
@@ -468,7 +278,7 @@
         216.9601840350424
       ],
       "flags": {},
-      "order": 7,
+      "order": 5,
       "mode": 0,
       "inputs": [],
       "outputs": [],
@@ -501,7 +311,7 @@
         58
       ],
       "flags": {},
-      "order": 8,
+      "order": 6,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -531,133 +341,6 @@
       }
     },
     {
-      "id": 134,
-      "type": "ComfyMathExpression",
-      "pos": [
-        -1509.547346397245,
-        6202.942583077804
-      ],
-      "size": [
-        360,
-        160
-      ],
-      "flags": {
-        "collapsed": true
-      },
-      "order": 25,
-      "mode": 0,
-      "inputs": [
-        {
-          "label": "values.a",
-          "name": "values.a",
-          "type": "FLOAT,INT,BOOLEAN",
-          "link": 250
-        },
-        {
-          "name": "values.b",
-          "shape": 7,
-          "type": "FLOAT,INT,BOOLEAN"
-        },
-        {
-          "label": "expression",
-          "name": "expression",
-          "type": "STRING",
-          "widget": {
-            "name": "expression"
-          }
-        }
-      ],
-      "outputs": [
-        {
-          "label": "FLOAT",
-          "name": "FLOAT",
-          "type": "FLOAT",
-          "links": []
-        },
-        {
-          "label": "INT",
-          "name": "INT",
-          "type": "INT",
-          "links": [
-            380
-          ]
-        },
-        {
-          "label": "BOOL",
-          "name": "BOOL",
-          "type": "BOOLEAN",
-          "links": []
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.30.1",
-        "Node name for S&R": "ComfyMathExpression",
-        "ue_properties": {
-          "version": "7.5.2",
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17"
-      ],
-      "widgets_values_named": {
-        "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17"
-      }
-    },
-    {
-      "id": 123,
-      "type": "VAEDecodeAudio",
-      "pos": [
-        -1345.842421380735,
-        6143.02481111923
-      ],
-      "size": [
-        234.12512060059817,
-        60
-      ],
-      "flags": {
-        "collapsed": false
-      },
-      "order": 35,
-      "mode": 0,
-      "inputs": [
-        {
-          "label": "Latent",
-          "name": "samples",
-          "type": "LATENT",
-          "link": 257
-        },
-        {
-          "label": "VAE",
-          "name": "vae",
-          "type": "VAE",
-          "link": 229
-        }
-      ],
-      "outputs": [
-        {
-          "label": "音频",
-          "name": "AUDIO",
-          "type": "AUDIO",
-          "links": [
-            295
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.30.1",
-        "Node name for S&R": "VAEDecodeAudio",
-        "ue_properties": {
-          "version": "7.5.2",
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        }
-      }
-    },
-    {
       "id": 122,
       "type": "VAELoader",
       "pos": [
@@ -669,7 +352,7 @@
         79.4967672234252
       ],
       "flags": {},
-      "order": 9,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
@@ -685,8 +368,8 @@
           "name": "VAE",
           "type": "VAE",
           "links": [
-            229,
-            384
+            384,
+            490
           ]
         }
       ],
@@ -726,7 +409,7 @@
         73.11953545908364
       ],
       "flags": {},
-      "order": 10,
+      "order": 8,
       "mode": 0,
       "inputs": [
         {
@@ -742,7 +425,8 @@
           "name": "VAE",
           "type": "VAE",
           "links": [
-            383
+            383,
+            489
           ]
         }
       ],
@@ -782,7 +466,7 @@
         107.09810710387865
       ],
       "flags": {},
-      "order": 11,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {
@@ -845,39 +529,6 @@
         "type": "minimax",
         "device": "default"
       }
-    },
-    {
-      "id": 361,
-      "type": "MarkdownNote",
-      "pos": [
-        -1065.4193515774612,
-        7181.611986863979
-      ],
-      "size": [
-        410.0527210864451,
-        116.32853330255057
-      ],
-      "flags": {},
-      "order": 12,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "title": "预览注意事项",
-      "properties": {
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "version": "7.5.2",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "使用该轻量化预览节点需要下载taeh3.safetensors模型放置ComfyUI\\models\\vae_approx文件夹内\n\n已内置运行自动下载，但是可能会失败，手动下载放置更稳妥。\n\n该预览节点性能消耗非常轻微但不是没有，可以自行降低参数或者直接绕过。"
-      ],
-      "widgets_values_named": {
-        "text": "使用该轻量化预览节点需要下载taeh3.safetensors模型放置ComfyUI\\models\\vae_approx文件夹内\n\n已内置运行自动下载，但是可能会失败，手动下载放置更稳妥。\n\n该预览节点性能消耗非常轻微但不是没有，可以自行降低参数或者直接绕过。"
-      },
-      "color": "#432",
-      "bgcolor": "#653"
     },
     {
       "id": 128,
@@ -980,8 +631,7 @@
           "name": "output",
           "type": "LATENT",
           "links": [
-            256,
-            257
+            256
           ]
         },
         {
@@ -1000,192 +650,9 @@
           "widget_ue_connectable": {},
           "input_ue_unconnectable": {}
         }
-      }
-    },
-    {
-      "id": 360,
-      "type": "MiniMaxH3LivePreviewStar7",
-      "pos": [
-        -1065.8332995799267,
-        6457.499584403852
-      ],
-      "size": [
-        410.75208876169324,
-        665.073071313589
-      ],
-      "flags": {
-        "collapsed": false
       },
-      "order": 31,
-      "mode": 0,
-      "inputs": [
-        {
-          "label": "模型",
-          "name": "model",
-          "type": "MODEL",
-          "link": 481
-        },
-        {
-          "name": "preview_frames",
-          "type": "INT",
-          "widget": {
-            "name": "preview_frames"
-          }
-        },
-        {
-          "name": "preview_resolution",
-          "type": "COMBO",
-          "widget": {
-            "name": "preview_resolution"
-          }
-        }
-      ],
-      "outputs": [
-        {
-          "label": "模型",
-          "name": "model",
-          "type": "MODEL",
-          "links": [
-            470
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "minimax-h3-live-preview-star7",
-        "ver": "f5c280b57bd70149922fee0242a28dd30baef036",
-        "Node name for S&R": "MiniMaxH3LivePreviewStar7",
-        "aux_id": "star7code/minimax-h3-live-preview-star7",
-        "ue_properties": {
-          "version": "7.5.2",
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        true,
-        25,
-        "512",
-        false,
-        true,
-        ""
-      ],
-      "widgets_values_named": {
-        "__star7_preview_enabled_ui": true,
-        "preview_frames": 25,
-        "preview_resolution": "512",
-        "first_step_only": false,
-        "preview_enabled": true,
-        "preview": ""
-      },
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
-      "id": 355,
-      "type": "MarkdownNote",
-      "pos": [
-        -1967.9509100414123,
-        7171.171527760526
-      ],
-      "size": [
-        406.4396237274767,
-        115.34175088251686
-      ],
-      "flags": {},
-      "order": 13,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "title": "提示词",
-      "properties": {
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "version": "7.5.2",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "提示词的书写尤为重要，可以让ai参考官方的skills进行提示词创作，记得将参考也上传给ai。\n\n官方skills：\nhttps://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills"
-      ],
-      "widgets_values_named": {
-        "text": "提示词的书写尤为重要，可以让ai参考官方的skills进行提示词创作，记得将参考也上传给ai。\n\n官方skills：\nhttps://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills"
-      },
-      "color": "#432",
-      "bgcolor": "#653"
-    },
-    {
-      "id": 356,
-      "type": "MarkdownNote",
-      "pos": [
-        63.53292291842348,
-        5720.321991735025
-      ],
-      "size": [
-        264.8962317455549,
-        200.84253904932757
-      ],
-      "flags": {},
-      "order": 14,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "title": "导出事项",
-      "properties": {
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "version": "7.5.2",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "该选项可以自动将工作流内置保存在视频中，后续通过该节点生成的视频可以拖动到提示词载入节点处来快速导入当时使用的提示词。\n\n注意保存的工作流视频如果通过微信等方式发送会导致被压缩而失去内置工作流。使用仅视频时将不会保存工作流。\n\n还可以使用视频+工作流png来保存一张带有第一帧视频图片的工作流图片，占用存储小可以当做可视化工作流模板卡。"
-      ],
-      "widgets_values_named": {
-        "text": "该选项可以自动将工作流内置保存在视频中，后续通过该节点生成的视频可以拖动到提示词载入节点处来快速导入当时使用的提示词。\n\n注意保存的工作流视频如果通过微信等方式发送会导致被压缩而失去内置工作流。使用仅视频时将不会保存工作流。\n\n还可以使用视频+工作流png来保存一张带有第一帧视频图片的工作流图片，占用存储小可以当做可视化工作流模板卡。"
-      },
-      "color": "#432",
-      "bgcolor": "#653"
-    },
-    {
-      "id": 339,
-      "type": "Star7VideoWorkflowExport",
-      "pos": [
-        60.66375572802059,
-        5607.740723702535
-      ],
-      "size": [
-        270,
-        58
-      ],
-      "flags": {},
-      "order": 37,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "视频文件",
-          "type": "*",
-          "link": 463
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "cnr_id": "minimax-h3-chunk-star7",
-        "ver": "5870ad7fed2f53180d633c36d3e23448aafb93bd",
-        "Node name for S&R": "Star7VideoWorkflowExport",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.5.2"
-        }
-      },
-      "widgets_values": [
-        "视频内置工作流"
-      ],
-      "widgets_values_named": {
-        "导出方式": "视频内置工作流"
-      },
-      "color": "#223",
-      "bgcolor": "#335"
+      "widgets_values": [],
+      "widgets_values_named": {}
     },
     {
       "id": 365,
@@ -1199,7 +666,7 @@
         137.63768055466608
       ],
       "flags": {},
-      "order": 15,
+      "order": 10,
       "mode": 0,
       "inputs": [],
       "outputs": [],
@@ -1232,7 +699,7 @@
         173.43435687701367
       ],
       "flags": {},
-      "order": 16,
+      "order": 11,
       "mode": 0,
       "inputs": [],
       "outputs": [],
@@ -1265,7 +732,7 @@
         175.21156885953405
       ],
       "flags": {},
-      "order": 17,
+      "order": 12,
       "mode": 0,
       "inputs": [],
       "outputs": [],
@@ -1298,7 +765,7 @@
         175.01539411555586
       ],
       "flags": {},
-      "order": 18,
+      "order": 13,
       "mode": 0,
       "inputs": [],
       "outputs": [],
@@ -1318,72 +785,6 @@
       },
       "color": "#432",
       "bgcolor": "#653"
-    },
-    {
-      "id": 363,
-      "type": "MiniMaxH3ActivationChunkStar7",
-      "pos": [
-        -1072.2974041424857,
-        5608.08495217717
-      ],
-      "size": [
-        413.78268769986244,
-        299.7134734381425
-      ],
-      "flags": {},
-      "order": 28,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 473
-        }
-      ],
-      "outputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "links": [
-            471,
-            480
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "minimax-h3-chunk-star7",
-        "ver": "ec35fe2a344bd5e66dc545000a64d33a9087ff10",
-        "Node name for S&R": "MiniMaxH3ActivationChunkStar7",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.5.2"
-        }
-      },
-      "widgets_values": [
-        8192,
-        true,
-        true,
-        8192,
-        8192,
-        4096,
-        "off",
-        true,
-        "comfy_kitchen_int8"
-      ],
-      "widgets_values_named": {
-        "chunk_tokens": 8192,
-        "auto_halve_on_oom": true,
-        "verbose": true,
-        "mlp_chunk_tokens": 8192,
-        "qkv_chunk_tokens": 8192,
-        "out_proj_chunk_tokens": 4096,
-        "disable_dynamic_prefetch": "off",
-        "reuse_mlp_weights": true,
-        "attention_backend": "comfy_kitchen_int8"
-      },
-      "color": "#223",
-      "bgcolor": "#335"
     },
     {
       "id": 311,
@@ -1488,246 +889,6 @@
       "bgcolor": "#593930"
     },
     {
-      "id": 334,
-      "type": "MiniMaxH3PromptImportStar7",
-      "pos": [
-        -1968.6078868110756,
-        6159.563640472011
-      ],
-      "size": [
-        408.8734293919654,
-        950.2802806950294
-      ],
-      "flags": {},
-      "order": 19,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "prompt",
-          "type": "STRING",
-          "links": [
-            474
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "minimax-h3-chunk-star7",
-        "ver": "57f64db99d1b9c6f63a99b056a665ef9498a6ae1",
-        "Node name for S&R": "MiniMaxH3PromptImportStar7",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.5.2"
-        }
-      },
-      "widgets_values": [
-        "integrated_multimodal_description:\r\n\r\n[Shot 1] Live-action, photorealistic outdoor video, 10 seconds, one continuous take.\r\n\r\nClean cinematic live-action photography with a completely text-free visual frame throughout the entire shot. Spoken dialogue exists only as synchronized natural voice audio. The image remains purely photographic with no graphic overlays.\r\n\r\nA young woman stands in a bright, spacious modern outdoor architectural walkway during daytime. Large white concrete walls, clean geometric structures, a wide gray paved floor, and a long straight open corridor extend deep into the background. The corridor is spacious, level, and unobstructed, allowing her to continuously step backward for a long distance.\r\n\r\nThe woman wears a fitted light-gray long-sleeve high-neck top, a dark gray ankle-length fitted skirt, black strappy high-heeled sandals, and carries a dark brown leather handbag. Her dark hair is tied back with a large white ribbon. Natural daylight creates soft realistic shadows and a clean bright atmosphere.\r\n\r\nThe camera is positioned directly in front of her at approximately chest-to-eye level.\r\n\r\nThe camera holds one completely static full-body wide shot for the entire 10 seconds. Its position, height, optical axis, focal length, angle, and framing remain unchanged from beginning to end.\r\n\r\nAt the beginning, the woman stands relatively close to the camera with her entire body visible from head to feet.\r\n\r\nShe is squarely front-facing toward the lens.\r\n\r\nHer face points directly toward the camera.\r\nHer eyes look directly into the lens.\r\nHer shoulders and chest are square to the camera.\r\nThe front side of her body is clearly visible.\r\n\r\nShe naturally says:\r\n\r\n<d>[Chinese] 你就站那别动。</d>\r\n\r\nHer sentence is heard only as natural synchronized speech audio while the visual frame remains clean, photographic, and text-free.\r\n\r\nImmediately after finishing the sentence, she begins a continuous FRONT-FACING BACKWARD WALK.\r\n\r\nShe keeps facing the camera while physically traveling backward along the corridor toward the distant background.\r\n\r\nHer movement is a clear natural reverse walking gait:\r\n\r\none foot reaches backward behind her body and accepts her weight;\r\nthen the other foot reaches backward behind her body;\r\nshe repeats this alternating backward stepping pattern continuously.\r\n\r\nEach step moves her farther from the stationary camera.\r\n\r\nHer face, shoulders, chest, and torso preserve the same frontal orientation toward the lens throughout the backward movement.\r\n\r\nShe maintains direct eye contact with the camera while stepping backward.\r\n\r\nHer head remains naturally aligned toward the lens.\r\n\r\nHer upper body stays square to the camera while her legs perform repeated backward steps.\r\n\r\nThe motion is steady, controlled, continuous, and physically believable for a woman wearing high-heeled sandals.\r\n\r\n0–2 seconds:\r\nThe woman stands in the foreground, full body visible, facing directly toward the camera. She looks into the lens and delivers the dialogue.\r\n\r\n2–4 seconds:\r\nImmediately after speaking, she begins alternating backward footsteps. Her body starts translating deeper into the corridor while her frontal orientation toward the camera remains unchanged.\r\n\r\n4–7 seconds:\r\nShe continues the same steady front-facing backward walking pattern in a straight line. Each alternating backward step increases her physical distance from the camera. Her entire body gradually becomes smaller in the frame through natural perspective.\r\n\r\n7–10 seconds:\r\nShe continues stepping backward continuously toward the far background. She becomes increasingly distant and visibly smaller while still presenting the front side of her body toward the camera.\r\n\r\nThe backward gait remains visually readable throughout the shot: her feet repeatedly travel backward behind her body, her weight shifts naturally from one backward step to the next, and her physical position moves progressively deeper into the corridor.\r\n\r\nHer handbag makes subtle natural swinging movements caused by her backward steps. Her skirt and clothing respond realistically to her leg motion and light outdoor air. Her arms and upper body make small natural balance adjustments while maintaining a clearly frontal overall orientation.\r\n\r\nThe camera remains stationary and allows the increasing distance to happen entirely through her physical backward movement.\r\n\r\nThe perspective change is natural and continuous:\r\n\r\nat the beginning, her full body occupies a large portion of the frame;\r\n\r\nafter several backward steps, she is clearly farther away and moderately smaller;\r\n\r\nduring the final seconds, she continues moving deeper into the corridor and becomes very small in the frame.\r\n\r\nHer apparent size reduction is produced entirely by increasing physical distance from the fixed camera.\r\n\r\nAt the final frame, the woman is far in the background and small in the image. The front side of her body is still oriented toward the camera, and her face is still directed toward the lens.\r\n\r\nHer facial identity remains visually consistent throughout the entire distance change. The same woman, same facial structure, same hairstyle, same white ribbon, same clothing, same handbag, and same body proportions persist continuously from foreground to distant background.\r\n\r\nThe entire shot presents one simple continuous action:\r\n\r\nthe woman faces the stationary camera, speaks once, then repeatedly steps backward in a straight line while continuing to face the camera until the final frame.\r\n\r\nVisual priority:\r\ncontinuous front-facing backward walking;\r\nalternating backward footsteps;\r\nfrontal face and torso orientation toward the lens;\r\nsteadily increasing physical distance;\r\nnatural perspective scale reduction;\r\ncompletely static camera;\r\nstable character identity;\r\nclean text-free photographic imagery.\r\n\r\noverall_soundscape:\r\n\r\nNatural daytime outdoor ambience with subtle wind and distant environmental sounds. Clear synchronized female speech at the beginning. After speaking, realistic high-heeled footsteps contact the paved ground in a steady backward-walking rhythm. The footsteps gradually become quieter and more distant as she moves deeper into the corridor. Subtle handbag and clothing movement sounds remain natural.\r\n\r\nnon_diegetic_music:\r\n\r\nN/A\r\n",
-        ""
-      ],
-      "widgets_values_named": {
-        "prompt": "integrated_multimodal_description:\r\n\r\n[Shot 1] Live-action, photorealistic outdoor video, 10 seconds, one continuous take.\r\n\r\nClean cinematic live-action photography with a completely text-free visual frame throughout the entire shot. Spoken dialogue exists only as synchronized natural voice audio. The image remains purely photographic with no graphic overlays.\r\n\r\nA young woman stands in a bright, spacious modern outdoor architectural walkway during daytime. Large white concrete walls, clean geometric structures, a wide gray paved floor, and a long straight open corridor extend deep into the background. The corridor is spacious, level, and unobstructed, allowing her to continuously step backward for a long distance.\r\n\r\nThe woman wears a fitted light-gray long-sleeve high-neck top, a dark gray ankle-length fitted skirt, black strappy high-heeled sandals, and carries a dark brown leather handbag. Her dark hair is tied back with a large white ribbon. Natural daylight creates soft realistic shadows and a clean bright atmosphere.\r\n\r\nThe camera is positioned directly in front of her at approximately chest-to-eye level.\r\n\r\nThe camera holds one completely static full-body wide shot for the entire 10 seconds. Its position, height, optical axis, focal length, angle, and framing remain unchanged from beginning to end.\r\n\r\nAt the beginning, the woman stands relatively close to the camera with her entire body visible from head to feet.\r\n\r\nShe is squarely front-facing toward the lens.\r\n\r\nHer face points directly toward the camera.\r\nHer eyes look directly into the lens.\r\nHer shoulders and chest are square to the camera.\r\nThe front side of her body is clearly visible.\r\n\r\nShe naturally says:\r\n\r\n<d>[Chinese] 你就站那别动。</d>\r\n\r\nHer sentence is heard only as natural synchronized speech audio while the visual frame remains clean, photographic, and text-free.\r\n\r\nImmediately after finishing the sentence, she begins a continuous FRONT-FACING BACKWARD WALK.\r\n\r\nShe keeps facing the camera while physically traveling backward along the corridor toward the distant background.\r\n\r\nHer movement is a clear natural reverse walking gait:\r\n\r\none foot reaches backward behind her body and accepts her weight;\r\nthen the other foot reaches backward behind her body;\r\nshe repeats this alternating backward stepping pattern continuously.\r\n\r\nEach step moves her farther from the stationary camera.\r\n\r\nHer face, shoulders, chest, and torso preserve the same frontal orientation toward the lens throughout the backward movement.\r\n\r\nShe maintains direct eye contact with the camera while stepping backward.\r\n\r\nHer head remains naturally aligned toward the lens.\r\n\r\nHer upper body stays square to the camera while her legs perform repeated backward steps.\r\n\r\nThe motion is steady, controlled, continuous, and physically believable for a woman wearing high-heeled sandals.\r\n\r\n0–2 seconds:\r\nThe woman stands in the foreground, full body visible, facing directly toward the camera. She looks into the lens and delivers the dialogue.\r\n\r\n2–4 seconds:\r\nImmediately after speaking, she begins alternating backward footsteps. Her body starts translating deeper into the corridor while her frontal orientation toward the camera remains unchanged.\r\n\r\n4–7 seconds:\r\nShe continues the same steady front-facing backward walking pattern in a straight line. Each alternating backward step increases her physical distance from the camera. Her entire body gradually becomes smaller in the frame through natural perspective.\r\n\r\n7–10 seconds:\r\nShe continues stepping backward continuously toward the far background. She becomes increasingly distant and visibly smaller while still presenting the front side of her body toward the camera.\r\n\r\nThe backward gait remains visually readable throughout the shot: her feet repeatedly travel backward behind her body, her weight shifts naturally from one backward step to the next, and her physical position moves progressively deeper into the corridor.\r\n\r\nHer handbag makes subtle natural swinging movements caused by her backward steps. Her skirt and clothing respond realistically to her leg motion and light outdoor air. Her arms and upper body make small natural balance adjustments while maintaining a clearly frontal overall orientation.\r\n\r\nThe camera remains stationary and allows the increasing distance to happen entirely through her physical backward movement.\r\n\r\nThe perspective change is natural and continuous:\r\n\r\nat the beginning, her full body occupies a large portion of the frame;\r\n\r\nafter several backward steps, she is clearly farther away and moderately smaller;\r\n\r\nduring the final seconds, she continues moving deeper into the corridor and becomes very small in the frame.\r\n\r\nHer apparent size reduction is produced entirely by increasing physical distance from the fixed camera.\r\n\r\nAt the final frame, the woman is far in the background and small in the image. The front side of her body is still oriented toward the camera, and her face is still directed toward the lens.\r\n\r\nHer facial identity remains visually consistent throughout the entire distance change. The same woman, same facial structure, same hairstyle, same white ribbon, same clothing, same handbag, and same body proportions persist continuously from foreground to distant background.\r\n\r\nThe entire shot presents one simple continuous action:\r\n\r\nthe woman faces the stationary camera, speaks once, then repeatedly steps backward in a straight line while continuing to face the camera until the final frame.\r\n\r\nVisual priority:\r\ncontinuous front-facing backward walking;\r\nalternating backward footsteps;\r\nfrontal face and torso orientation toward the lens;\r\nsteadily increasing physical distance;\r\nnatural perspective scale reduction;\r\ncompletely static camera;\r\nstable character identity;\r\nclean text-free photographic imagery.\r\n\r\noverall_soundscape:\r\n\r\nNatural daytime outdoor ambience with subtle wind and distant environmental sounds. Clear synchronized female speech at the beginning. After speaking, realistic high-heeled footsteps contact the paved ground in a steady backward-walking rhythm. The footsteps gradually become quieter and more distant as she moves deeper into the corridor. Subtle handbag and clothing movement sounds remain natural.\r\n\r\nnon_diegetic_music:\r\n\r\nN/A\r\n",
-        "star7_prompt_import_actions": ""
-      },
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
-      "id": 150,
-      "type": "VHS_VideoCombine",
-      "pos": [
-        -635.0248306663609,
-        5608.099395541711
-      ],
-      "size": [
-        669.5340877358212,
-        1511.748573860013
-      ],
-      "flags": {
-        "collapsed": false
-      },
-      "order": 36,
-      "mode": 0,
-      "inputs": [
-        {
-          "label": "图像",
-          "name": "images",
-          "type": "IMAGE",
-          "link": 487
-        },
-        {
-          "label": "音频",
-          "name": "audio",
-          "shape": 7,
-          "type": "AUDIO",
-          "link": 295
-        },
-        {
-          "label": "批次管理",
-          "name": "meta_batch",
-          "shape": 7,
-          "type": "VHS_BatchManager"
-        },
-        {
-          "name": "vae",
-          "shape": 7,
-          "type": "VAE"
-        },
-        {
-          "label": "帧率",
-          "name": "frame_rate",
-          "type": "FLOAT",
-          "widget": {
-            "name": "frame_rate"
-          }
-        },
-        {
-          "label": "循环次数",
-          "name": "loop_count",
-          "type": "INT",
-          "widget": {
-            "name": "loop_count"
-          }
-        },
-        {
-          "label": "文件名前缀",
-          "name": "filename_prefix",
-          "type": "STRING",
-          "widget": {
-            "name": "filename_prefix"
-          }
-        },
-        {
-          "label": "格式",
-          "name": "format",
-          "type": "COMBO",
-          "widget": {
-            "name": "format"
-          }
-        },
-        {
-          "label": "Ping-Pong",
-          "name": "pingpong",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "pingpong"
-          }
-        },
-        {
-          "label": "保存到输出文件夹",
-          "name": "save_output",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "save_output"
-          }
-        }
-      ],
-      "outputs": [
-        {
-          "label": "文件名",
-          "name": "Filenames",
-          "type": "VHS_FILENAMES",
-          "links": [
-            463
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfyui-videohelpersuite",
-        "ver": "993082e4f2473bf4acaf06f51e33877a7eb38960",
-        "Node name for S&R": "VHS_VideoCombine",
-        "ue_properties": {
-          "version": "7.5.2",
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": {
-        "frame_rate": 24,
-        "loop_count": 0,
-        "filename_prefix": "MiniMax-h3/%date:yyyy-MM-dd%/minimax-h3-star7",
-        "format": "video/nvenc_h264-mp4",
-        "pix_fmt": "yuv420p",
-        "bitrate": 5,
-        "megabit": true,
-        "save_metadata": true,
-        "pingpong": false,
-        "save_output": true
-      },
-      "widgets_values_named": {
-        "frame_rate": 24,
-        "loop_count": 0,
-        "filename_prefix": "MiniMax-h3/%date:yyyy-MM-dd%/minimax-h3-star7",
-        "format": "video/nvenc_h264-mp4",
-        "pix_fmt": "yuv420p",
-        "bitrate": 5,
-        "megabit": true,
-        "save_metadata": true,
-        "pingpong": false,
-        "save_output": true
-      }
-    },
-    {
-      "id": 325,
-      "type": "MiniMaxH3LoadImageScaleStar7",
-      "pos": [
-        -2893.0441416510657,
-        5895.175763881026
-      ],
-      "size": [
-        264.352969297654,
-        422
-      ],
-      "flags": {
-        "collapsed": false
-      },
-      "order": 20,
-      "mode": 4,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            449
-          ]
-        },
-        {
-          "name": "mask",
-          "type": "MASK",
-          "links": []
-        }
-      ],
-      "properties": {
-        "cnr_id": "minimax-h3-chunk-star7",
-        "ver": "75d863dff6a7e15cbfa52f5b7d90ff1af153000d",
-        "Node name for S&R": "MiniMaxH3LoadImageScaleStar7",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.5.2"
-        }
-      },
-      "widgets_values": [
-        "予希同学AI-别乱输指令 人物出图差全在提示词-01(1).jpg",
-        1280,
-        false,
-        false,
-        "16:9",
-        "image"
-      ],
-      "widgets_values_named": {
-        "image": "予希同学AI-别乱输指令 人物出图差全在提示词-01(1).jpg",
-        "最长边": 1280,
-        "允许小图放大": false,
-        "调整比例": false,
-        "目标比例": "16:9",
-        "upload": "image"
-      },
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
       "id": 303,
       "type": "MiniMaxH3FP16LoaderStar7",
       "pos": [
@@ -1739,7 +900,7 @@
         68.98107103879283
       ],
       "flags": {},
-      "order": 21,
+      "order": 14,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -1767,6 +928,215 @@
       ],
       "widgets_values_named": {
         "unet_name": "minimax-h3\\minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors"
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 131,
+      "type": "RandomNoise",
+      "pos": [
+        -1519.2404135366269,
+        5879.576991383897
+      ],
+      "size": [
+        403.4622706479033,
+        85.60179641564173
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "noise_seed",
+          "type": "INT",
+          "widget": {
+            "name": "noise_seed"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "噪波生成",
+          "name": "NOISE",
+          "type": "NOISE",
+          "links": [
+            232
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.30.1",
+        "Node name for S&R": "RandomNoise",
+        "ue_properties": {
+          "version": "7.5.2",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        664798883836897,
+        "randomize"
+      ],
+      "widgets_values_named": {
+        "noise_seed": 664798883836897,
+        "control_after_generate": "randomize"
+      }
+    },
+    {
+      "id": 339,
+      "type": "Star7VideoWorkflowExport",
+      "pos": [
+        56.16058408204174,
+        5615.420313836973
+      ],
+      "size": [
+        270,
+        58
+      ],
+      "flags": {},
+      "order": 37,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "视频文件",
+          "type": "*",
+          "link": 463
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "minimax-h3-chunk-star7",
+        "ver": "5870ad7fed2f53180d633c36d3e23448aafb93bd",
+        "Node name for S&R": "Star7VideoWorkflowExport",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        "视频内置工作流"
+      ],
+      "widgets_values_named": {
+        "导出方式": "视频内置工作流"
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 326,
+      "type": "MiniMaxH3LoadImageScaleStar7",
+      "pos": [
+        -2604.7699133829997,
+        5894.00168718115
+      ],
+      "size": [
+        277.7308545909186,
+        424.56824299295295
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            452
+          ]
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "minimax-h3-chunk-star7",
+        "ver": "75d863dff6a7e15cbfa52f5b7d90ff1af153000d",
+        "Node name for S&R": "MiniMaxH3LoadImageScaleStar7",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
+        1280,
+        false,
+        false,
+        "16:9",
+        "image"
+      ],
+      "widgets_values_named": {
+        "image": "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
+        "最长边": 1280,
+        "允许小图放大": false,
+        "调整比例": false,
+        "目标比例": "16:9",
+        "upload": "image"
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 327,
+      "type": "MiniMaxH3LoadImageScaleStar7",
+      "pos": [
+        -2304.1750880638656,
+        5895.2567567059
+      ],
+      "size": [
+        272.7372778138242,
+        425.9011799564396
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            453
+          ]
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "minimax-h3-chunk-star7",
+        "ver": "75d863dff6a7e15cbfa52f5b7d90ff1af153000d",
+        "Node name for S&R": "MiniMaxH3LoadImageScaleStar7",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
+        1280,
+        false,
+        false,
+        "16:9",
+        "image"
+      ],
+      "widgets_values_named": {
+        "image": "予希同学AI-别乱输指令 人物出图差全在提示词-01.jpg",
+        "最长边": 1280,
+        "允许小图放大": false,
+        "调整比例": false,
+        "目标比例": "16:9",
+        "upload": "image"
       },
       "color": "#223",
       "bgcolor": "#335"
@@ -2016,7 +1386,7 @@
           "links": []
         },
         {
-          "label": "修复上下文",
+          "label": "采样上下文",
           "name": "refine_context",
           "type": "STAR7_H3_REFINE_CONTEXT",
           "links": [
@@ -2069,42 +1439,58 @@
       "bgcolor": "#335"
     },
     {
-      "id": 131,
-      "type": "RandomNoise",
+      "id": 360,
+      "type": "MiniMaxH3LivePreviewStar7",
       "pos": [
-        -1519.2404135366269,
-        5879.576991383897
+        -1065.8332995799267,
+        6457.499584403852
       ],
       "size": [
-        403.4622706479033,
-        85.60179641564173
+        410.75208876169324,
+        665.073071313589
       ],
-      "flags": {},
-      "order": 22,
+      "flags": {
+        "collapsed": false
+      },
+      "order": 31,
       "mode": 0,
       "inputs": [
         {
-          "name": "noise_seed",
+          "label": "模型",
+          "name": "model",
+          "type": "MODEL",
+          "link": 481
+        },
+        {
+          "name": "preview_frames",
           "type": "INT",
           "widget": {
-            "name": "noise_seed"
+            "name": "preview_frames"
+          }
+        },
+        {
+          "name": "preview_resolution",
+          "type": "COMBO",
+          "widget": {
+            "name": "preview_resolution"
           }
         }
       ],
       "outputs": [
         {
-          "label": "噪波生成",
-          "name": "NOISE",
-          "type": "NOISE",
+          "label": "模型",
+          "name": "model",
+          "type": "MODEL",
           "links": [
-            232
+            470
           ]
         }
       ],
       "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.30.1",
-        "Node name for S&R": "RandomNoise",
+        "cnr_id": "minimax-h3-live-preview-star7",
+        "ver": "f5c280b57bd70149922fee0242a28dd30baef036",
+        "Node name for S&R": "MiniMaxH3LivePreviewStar7",
+        "aux_id": "star7code/minimax-h3-live-preview-star7",
         "ue_properties": {
           "version": "7.5.2",
           "widget_ue_connectable": {},
@@ -2112,23 +1498,634 @@
         }
       },
       "widgets_values": [
-        418760787091879,
-        "randomize"
+        true,
+        25,
+        "512",
+        false,
+        true,
+        ""
       ],
       "widgets_values_named": {
-        "noise_seed": 418760787091879,
-        "control_after_generate": "randomize"
+        "__star7_preview_enabled_ui": true,
+        "preview_frames": 25,
+        "preview_resolution": "512",
+        "first_step_only": false,
+        "preview_enabled": true,
+        "preview": ""
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 150,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        -635.2004174623277,
+        5613.5652608536275
+      ],
+      "size": [
+        669.5340877358212,
+        1511.748573860013
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 36,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "图像",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 487
+        },
+        {
+          "label": "音频",
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 491
+        },
+        {
+          "label": "批次管理",
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager"
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE"
+        },
+        {
+          "label": "帧率",
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "widget": {
+            "name": "frame_rate"
+          }
+        },
+        {
+          "label": "循环次数",
+          "name": "loop_count",
+          "type": "INT",
+          "widget": {
+            "name": "loop_count"
+          }
+        },
+        {
+          "label": "文件名前缀",
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          }
+        },
+        {
+          "label": "格式",
+          "name": "format",
+          "type": "COMBO",
+          "widget": {
+            "name": "format"
+          }
+        },
+        {
+          "label": "Ping-Pong",
+          "name": "pingpong",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "pingpong"
+          }
+        },
+        {
+          "label": "保存到输出文件夹",
+          "name": "save_output",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "save_output"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "文件名",
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": [
+            463
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "993082e4f2473bf4acaf06f51e33877a7eb38960",
+        "Node name for S&R": "VHS_VideoCombine",
+        "ue_properties": {
+          "version": "7.5.2",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": {
+        "frame_rate": 24,
+        "loop_count": 0,
+        "filename_prefix": "MiniMax-h3/%date:yyyy-MM-dd%/minimax-h3-star7",
+        "format": "video/nvenc_h264-mp4",
+        "pix_fmt": "yuv420p",
+        "bitrate": 5,
+        "megabit": true,
+        "save_metadata": true,
+        "pingpong": false,
+        "save_output": true
+      },
+      "widgets_values_named": {
+        "frame_rate": 24,
+        "loop_count": 0,
+        "filename_prefix": "MiniMax-h3/%date:yyyy-MM-dd%/minimax-h3-star7",
+        "format": "video/nvenc_h264-mp4",
+        "pix_fmt": "yuv420p",
+        "bitrate": 5,
+        "megabit": true,
+        "save_metadata": true,
+        "pingpong": false,
+        "save_output": true
       }
+    },
+    {
+      "id": 134,
+      "type": "ComfyMathExpression",
+      "pos": [
+        -1509.547346397245,
+        6208.427863602469
+      ],
+      "size": [
+        360,
+        160
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 25,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "values.a",
+          "name": "values.a",
+          "type": "FLOAT,INT,BOOLEAN",
+          "link": 250
+        },
+        {
+          "name": "values.b",
+          "shape": 7,
+          "type": "FLOAT,INT,BOOLEAN"
+        },
+        {
+          "label": "expression",
+          "name": "expression",
+          "type": "STRING",
+          "widget": {
+            "name": "expression"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "FLOAT",
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": []
+        },
+        {
+          "label": "INT",
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            380
+          ]
+        },
+        {
+          "label": "BOOL",
+          "name": "BOOL",
+          "type": "BOOLEAN",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.30.1",
+        "Node name for S&R": "ComfyMathExpression",
+        "ue_properties": {
+          "version": "7.5.2",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17"
+      ],
+      "widgets_values_named": {
+        "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17"
+      }
+    },
+    {
+      "id": 356,
+      "type": "MarkdownNote",
+      "pos": [
+        56.16058408204174,
+        5727.420313836973
+      ],
+      "size": [
+        268.8275138339169,
+        197.47291275935822
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "导出事项",
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.5.2",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "该选项可以自动将工作流内置保存在视频中，后续通过该节点生成的视频可以拖动到提示词载入节点处来快速导入当时使用的提示词。\n\n注意保存的工作流视频如果通过微信等方式发送会导致被压缩而失去内置工作流。使用仅视频时将不会保存工作流。\n\n还可以使用视频+工作流png来保存一张带有第一帧视频图片的工作流图片，占用存储小可以当做可视化工作流模板卡。"
+      ],
+      "widgets_values_named": {
+        "text": "该选项可以自动将工作流内置保存在视频中，后续通过该节点生成的视频可以拖动到提示词载入节点处来快速导入当时使用的提示词。\n\n注意保存的工作流视频如果通过微信等方式发送会导致被压缩而失去内置工作流。使用仅视频时将不会保存工作流。\n\n还可以使用视频+工作流png来保存一张带有第一帧视频图片的工作流图片，占用存储小可以当做可视化工作流模板卡。"
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 361,
+      "type": "MarkdownNote",
+      "pos": [
+        -1064.8236180490794,
+        7169.69702176757
+      ],
+      "size": [
+        410.0527210864451,
+        116.32853330255057
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "预览注意事项",
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.5.2",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "使用该轻量化预览节点需要下载taeh3.safetensors模型放置ComfyUI\\models\\vae_approx文件夹内\n\n已内置运行自动下载，但是可能会失败，手动下载放置更稳妥。\n\n该预览节点性能消耗非常轻微但不是没有，可以自行降低参数或者直接绕过。"
+      ],
+      "widgets_values_named": {
+        "text": "使用该轻量化预览节点需要下载taeh3.safetensors模型放置ComfyUI\\models\\vae_approx文件夹内\n\n已内置运行自动下载，但是可能会失败，手动下载放置更稳妥。\n\n该预览节点性能消耗非常轻微但不是没有，可以自行降低参数或者直接绕过。"
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 355,
+      "type": "MarkdownNote",
+      "pos": [
+        -1966.9661724318241,
+        7156.893265154312
+      ],
+      "size": [
+        406.4396237274767,
+        115.34175088251686
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "提示词",
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.5.2",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "提示词的书写尤为重要，可以让ai参考官方的skills进行提示词创作，记得将参考也上传给ai。\n\n官方skills：\nhttps://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills"
+      ],
+      "widgets_values_named": {
+        "text": "提示词的书写尤为重要，可以让ai参考官方的skills进行提示词创作，记得将参考也上传给ai。\n\n官方skills：\nhttps://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills"
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 377,
+      "type": "MiniMaxH3ChunkedDecodeStar7",
+      "pos": [
+        -1337.5852717400098,
+        6134.979603739457
+      ],
+      "size": [
+        227.6763671875,
+        69.69578774175443
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 35,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "音视频潜空间",
+          "name": "av_latent",
+          "type": "LATENT",
+          "link": 488
+        },
+        {
+          "label": "视频 VAE",
+          "name": "video_vae",
+          "type": "VAE",
+          "link": 489
+        },
+        {
+          "label": "音频 VAE",
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 490
+        }
+      ],
+      "outputs": [
+        {
+          "label": "图像",
+          "name": "frames",
+          "type": "IMAGE",
+          "links": [
+            487
+          ]
+        },
+        {
+          "label": "音频",
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            491
+          ]
+        },
+        {
+          "label": "运行报告",
+          "name": "report",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "minimax-h3-chunk-star7",
+        "ver": "e0ac4cfa579dd7ddab9ffe9527155b96f40d6eca",
+        "Node name for S&R": "MiniMaxH3ChunkedDecodeStar7",
+        "ue_properties": {
+          "version": "7.5.2",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        }
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 379,
+      "type": "MarkdownNote",
+      "pos": [
+        -1518.2816209627963,
+        7598.439903889382
+      ],
+      "size": [
+        419.7250633935049,
+        191.34071147314444
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "二采注意事项",
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.5.2",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "使用该二采节点需要下载minimax_h3_latent_upscaler_3d_fp16.safetensors模型放置models\\latent_upscale_models文件夹内\n\n按照自己机器的性能尽量将每格的像素压在1.0以内，例如4.0使用四格甚至六格，原理是逐块生成最后拼接为高画质视频\n\n已内置运行自动下载，但是可能会失败，手动下载放置更稳妥。\n\n如果只需要人脸修复节点，双击搜索人脸修复节点替换该节点即可，需要下载并放置对应yolo模型：models\\ultralytics\\bbox\\face_yolov8m.pt"
+      ],
+      "widgets_values_named": {
+        "text": "使用该二采节点需要下载minimax_h3_latent_upscaler_3d_fp16.safetensors模型放置models\\latent_upscale_models文件夹内\n\n按照自己机器的性能尽量将每格的像素压在1.0以内，例如4.0使用四格甚至六格，原理是逐块生成最后拼接为高画质视频\n\n已内置运行自动下载，但是可能会失败，手动下载放置更稳妥。\n\n如果只需要人脸修复节点，双击搜索人脸修复节点替换该节点即可，需要下载并放置对应yolo模型：models\\ultralytics\\bbox\\face_yolov8m.pt"
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 126,
+      "type": "BasicScheduler",
+      "pos": [
+        -2284.1431865209533,
+        5663.479852506194
+      ],
+      "size": [
+        256.8949683004355,
+        106.93975081853569
+      ],
+      "flags": {},
+      "order": 29,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "模型",
+          "name": "model",
+          "type": "MODEL",
+          "link": 471
+        },
+        {
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          }
+        },
+        {
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          }
+        },
+        {
+          "name": "denoise",
+          "type": "FLOAT",
+          "widget": {
+            "name": "denoise"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "Sigmas",
+          "name": "SIGMAS",
+          "type": "SIGMAS",
+          "links": [
+            235
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.30.1",
+        "Node name for S&R": "BasicScheduler",
+        "ue_properties": {
+          "version": "7.5.2",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "simple",
+        4,
+        1
+      ],
+      "widgets_values_named": {
+        "scheduler": "simple",
+        "steps": 4,
+        "denoise": 1
+      }
+    },
+    {
+      "id": 363,
+      "type": "MiniMaxH3ActivationChunkStar7",
+      "pos": [
+        -1072.2974041424857,
+        5608.08495217717
+      ],
+      "size": [
+        413.78268769986244,
+        299.7134734381425
+      ],
+      "flags": {},
+      "order": 28,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 473
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            471,
+            480
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "minimax-h3-chunk-star7",
+        "ver": "ec35fe2a344bd5e66dc545000a64d33a9087ff10",
+        "Node name for S&R": "MiniMaxH3ActivationChunkStar7",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        8192,
+        true,
+        true,
+        8192,
+        8192,
+        4096,
+        "off",
+        true,
+        "comfy_kitchen_int8"
+      ],
+      "widgets_values_named": {
+        "chunk_tokens": 8192,
+        "auto_halve_on_oom": true,
+        "verbose": true,
+        "mlp_chunk_tokens": 8192,
+        "qkv_chunk_tokens": 8192,
+        "out_proj_chunk_tokens": 4096,
+        "disable_dynamic_prefetch": "off",
+        "reuse_mlp_weights": true,
+        "attention_backend": "comfy_kitchen_int8"
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 334,
+      "type": "MiniMaxH3PromptImportStar7",
+      "pos": [
+        -1968.6078868110756,
+        6159.563640472011
+      ],
+      "size": [
+        408.8734293919654,
+        950.2802806950294
+      ],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "links": [
+            474
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "minimax-h3-chunk-star7",
+        "ver": "57f64db99d1b9c6f63a99b056a665ef9498a6ae1",
+        "Node name for S&R": "MiniMaxH3PromptImportStar7",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        "integrated_multimodal_description:\n\n[Shot 1]\nLive-action, cinematic, modern police-procedural thriller. A realistic forensic evidence room inside a criminal investigation unit. The lighting is cool, clean, and professional, with practical overhead light, computer monitor glow, and a restrained high-end procedural atmosphere.\n\nA young detective stands beside a forensic workstation, holding a clean latent fingerprint film carefully between two fingers. A comparison monitor beside him shows a forensic match result clearly indicating a complete match to the deceased, forming an apparently perfect suicide-evidence chain.\n\nThe camera begins in a level medium close shot, clean and controlled, with no visual excess. The mood feels routine, efficient, and believable, like a normal case conclusion inside a professional police team.\n\nThe young detective looks toward the team leader with confidence and says in a firm, matter-of-fact voice (S1):\n<d>[Chinese] 队长，现场只有死者指纹，自杀定论没问题。</d>\n\nNo subtitles or captions appear on screen.\n\nThe monitor interface remains visible in the background, suggesting a conclusive forensic match, while keyboard taps and equipment hum continue underneath the line.\n\n[Shot 2] At 00:04.000, the camera cuts to a macro close-up.\n\nA middle-aged team leader leans in. His expression turns sharp and intensely focused. The lens pushes into the fingerprint film and isolates one extremely subtle flaw near the outer edge: a tiny artificial trimming mark, almost invisible at first glance.\n\nThe environment sound narrows dramatically. The room tone falls away. No one speaks.\n\nThe camera pushes in further with microscopic attention to detail, locking onto the faint cut-like edge on the fingerprint film. The tension suddenly shifts from routine certainty to silent suspicion.\n\nThe team leader's breathing becomes just barely audible. His gaze hardens as he realizes the evidence has been manipulated.\n\n[Shot 3] At 00:07.000, the camera cuts to a tight side-profile shot of the team leader.\n\nThe lighting becomes slightly darker and more contrast-driven, while the background softly falls away. His face remains calm, but his eyes carry cold certainty and controlled anger. The implication lands instantly: someone falsified evidence and tried to force the case into a closed suicide ruling.\n\nHe speaks quietly, firmly, and with piercing authority (S2):\n<d>[Chinese] 指纹是后贴的。这不是自杀，是有人故意破坏现场。</d>\n\nNo subtitles or captions appear on screen.\n\nHold for a beat on his side profile as the meaning settles. The shot ends with a powerful suspenseful freeze in the atmosphere, as if a much larger hidden case has just begun to surface.\n\noverall_soundscape:\n\nSubtle keyboard tapping, low forensic equipment hum, quiet office room tone, and restrained investigative ambience in the opening. During the macro discovery shot, the environmental sound compresses until almost everything drops away except a faint breath and minimal room presence. In the final shot, a low tense silence dominates, allowing the final line to land with maximum weight.\n\nnon_diegetic_music:\n\nA restrained modern investigative thriller score begins with subtle low-frequency pulses and minimal sustained textures. The music remains understated during the opening procedural setup. At the discovery of the trimming mark, the score tightens into sparse suspense. In the final shot, a deep low cinematic accent lands beneath the team leader's conclusion, followed by a lingering unresolved suspense tone that leaves a strong hook for a larger conspiracy.",
+        ""
+      ],
+      "widgets_values_named": {
+        "prompt": "integrated_multimodal_description:\n\n[Shot 1]\nLive-action, cinematic, modern police-procedural thriller. A realistic forensic evidence room inside a criminal investigation unit. The lighting is cool, clean, and professional, with practical overhead light, computer monitor glow, and a restrained high-end procedural atmosphere.\n\nA young detective stands beside a forensic workstation, holding a clean latent fingerprint film carefully between two fingers. A comparison monitor beside him shows a forensic match result clearly indicating a complete match to the deceased, forming an apparently perfect suicide-evidence chain.\n\nThe camera begins in a level medium close shot, clean and controlled, with no visual excess. The mood feels routine, efficient, and believable, like a normal case conclusion inside a professional police team.\n\nThe young detective looks toward the team leader with confidence and says in a firm, matter-of-fact voice (S1):\n<d>[Chinese] 队长，现场只有死者指纹，自杀定论没问题。</d>\n\nNo subtitles or captions appear on screen.\n\nThe monitor interface remains visible in the background, suggesting a conclusive forensic match, while keyboard taps and equipment hum continue underneath the line.\n\n[Shot 2] At 00:04.000, the camera cuts to a macro close-up.\n\nA middle-aged team leader leans in. His expression turns sharp and intensely focused. The lens pushes into the fingerprint film and isolates one extremely subtle flaw near the outer edge: a tiny artificial trimming mark, almost invisible at first glance.\n\nThe environment sound narrows dramatically. The room tone falls away. No one speaks.\n\nThe camera pushes in further with microscopic attention to detail, locking onto the faint cut-like edge on the fingerprint film. The tension suddenly shifts from routine certainty to silent suspicion.\n\nThe team leader's breathing becomes just barely audible. His gaze hardens as he realizes the evidence has been manipulated.\n\n[Shot 3] At 00:07.000, the camera cuts to a tight side-profile shot of the team leader.\n\nThe lighting becomes slightly darker and more contrast-driven, while the background softly falls away. His face remains calm, but his eyes carry cold certainty and controlled anger. The implication lands instantly: someone falsified evidence and tried to force the case into a closed suicide ruling.\n\nHe speaks quietly, firmly, and with piercing authority (S2):\n<d>[Chinese] 指纹是后贴的。这不是自杀，是有人故意破坏现场。</d>\n\nNo subtitles or captions appear on screen.\n\nHold for a beat on his side profile as the meaning settles. The shot ends with a powerful suspenseful freeze in the atmosphere, as if a much larger hidden case has just begun to surface.\n\noverall_soundscape:\n\nSubtle keyboard tapping, low forensic equipment hum, quiet office room tone, and restrained investigative ambience in the opening. During the macro discovery shot, the environmental sound compresses until almost everything drops away except a faint breath and minimal room presence. In the final shot, a low tense silence dominates, allowing the final line to land with maximum weight.\n\nnon_diegetic_music:\n\nA restrained modern investigative thriller score begins with subtle low-frequency pulses and minimal sustained textures. The music remains understated during the opening procedural setup. At the discovery of the trimming mark, the score tightens into sparse suspense. In the final shot, a deep low cinematic accent lands beneath the team leader's conclusion, followed by a lingering unresolved suspense tone that leaves a strong hook for a larger conspiracy.",
+        "star7_prompt_import_actions": ""
+      },
+      "color": "#223",
+      "bgcolor": "#335"
     },
     {
       "id": 115,
       "type": "ResolutionSelector",
       "pos": [
-        -2896.3028788132488,
-        5652.791274839537
+        -2894.2085056734727,
+        5633.942491800759
       ],
       "size": [
-        270.6818381158014,
+        272.776211255577,
         150
       ],
       "flags": {},
@@ -2203,25 +2200,85 @@
       },
       "widgets_values": [
         "9:16 (Portrait Widescreen)",
-        0.6,
+        1,
         32
       ],
       "widgets_values_named": {
         "aspect_ratio": "9:16 (Portrait Widescreen)",
-        "megapixels": 0.6,
+        "megapixels": 1,
         "multiple": 32
       }
     },
     {
-      "id": 124,
-      "type": "MiniMaxH3FaceRefineStar7",
+      "id": 325,
+      "type": "MiniMaxH3LoadImageScaleStar7",
       "pos": [
-        -1519.393570083211,
-        6953.264747079437
+        -2893.0441416510657,
+        5895.175763881026
       ],
       "size": [
-        417.91463968576545,
-        626
+        264.352969297654,
+        422
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 24,
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            449
+          ]
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "minimax-h3-chunk-star7",
+        "ver": "75d863dff6a7e15cbfa52f5b7d90ff1af153000d",
+        "Node name for S&R": "MiniMaxH3LoadImageScaleStar7",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        "予希同学AI-别乱输指令 人物出图差全在提示词-01(1).jpg",
+        1280,
+        false,
+        false,
+        "16:9",
+        "image"
+      ],
+      "widgets_values_named": {
+        "image": "予希同学AI-别乱输指令 人物出图差全在提示词-01(1).jpg",
+        "最长边": 1280,
+        "允许小图放大": false,
+        "调整比例": false,
+        "目标比例": "16:9",
+        "upload": "image"
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 376,
+      "type": "MiniMaxH3OneClickHDStar7",
+      "pos": [
+        -1520.8041474500396,
+        6949.372861388837
+      ],
+      "size": [
+        418,
+        602
       ],
       "flags": {
         "collapsed": false
@@ -2236,30 +2293,30 @@
           "link": 256
         },
         {
-          "label": "修复上下文",
-          "name": "refine_context",
+          "label": "采样上下文",
+          "name": "h3_context",
           "type": "STAR7_H3_REFINE_CONTEXT",
           "link": 482
         },
         {
-          "label": "启用修复",
-          "name": "enable_refine",
+          "label": "启用高清二采",
+          "name": "enable_hd",
           "type": "BOOLEAN",
           "widget": {
-            "name": "enable_refine"
+            "name": "enable_hd"
           }
         },
         {
-          "label": "修复人脸数量",
-          "name": "face_count",
-          "type": "INT",
+          "label": "高清放大模型",
+          "name": "upscale_model",
+          "type": "COMBO",
           "widget": {
-            "name": "face_count"
+            "name": "upscale_model"
           },
           "link": null
         },
         {
-          "label": "修复预设",
+          "label": "高清预设",
           "name": "preset",
           "type": "COMBO",
           "widget": {
@@ -2267,65 +2324,31 @@
           }
         },
         {
-          "label": "目标人脸优先",
-          "name": "target_face",
-          "type": "COMBO",
+          "label": "目标像素（MP）",
+          "name": "target_megapixels",
+          "type": "FLOAT",
           "widget": {
-            "name": "target_face"
+            "name": "target_megapixels"
           }
         },
         {
-          "label": "修复步数",
+          "label": "高清修复步数",
           "name": "refine_steps",
           "type": "INT",
           "widget": {
             "name": "refine_steps"
-          },
-          "link": null
+          }
         },
         {
-          "label": "修复强度",
-          "name": "custom_strength",
+          "label": "高清修复强度",
+          "name": "refine_strength",
           "type": "FLOAT",
           "widget": {
-            "name": "custom_strength"
+            "name": "refine_strength"
           }
         },
         {
-          "label": "修复尺寸",
-          "name": "custom_canvas",
-          "type": "COMBO",
-          "widget": {
-            "name": "custom_canvas"
-          }
-        },
-        {
-          "label": "人脸取景范围",
-          "name": "custom_crop_context",
-          "type": "FLOAT",
-          "widget": {
-            "name": "custom_crop_context"
-          }
-        },
-        {
-          "label": "融合强度",
-          "name": "custom_blend",
-          "type": "FLOAT",
-          "widget": {
-            "name": "custom_blend"
-          }
-        },
-        {
-          "label": "边缘羽化",
-          "name": "custom_feather",
-          "type": "INT",
-          "widget": {
-            "name": "custom_feather"
-          },
-          "link": null
-        },
-        {
-          "label": "修复种子",
+          "label": "高清种子",
           "name": "seed",
           "type": "INT",
           "widget": {
@@ -2333,119 +2356,116 @@
           }
         },
         {
-          "label": "保持修复清晰度",
-          "name": "preserve_repair_detail",
-          "type": "BOOLEAN",
+          "label": "二采注意力",
+          "name": "second_pass_attention",
+          "type": "COMBO",
           "widget": {
-            "name": "preserve_repair_detail"
+            "name": "second_pass_attention"
           },
           "link": null
+        },
+        {
+          "label": "启用分格",
+          "name": "enable_tiling",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "enable_tiling"
+          }
+        },
+        {
+          "label": "分格数量",
+          "name": "tile_count",
+          "type": "INT",
+          "widget": {
+            "name": "tile_count"
+          }
+        },
+        {
+          "label": "分格重叠（像素）",
+          "name": "tile_overlap",
+          "type": "INT",
+          "widget": {
+            "name": "tile_overlap"
+          }
         }
       ],
       "outputs": [
         {
-          "label": "修复画面",
-          "name": "refined_images",
-          "type": "IMAGE",
+          "label": "采样结果",
+          "name": "hd_av_latent",
+          "type": "LATENT",
           "links": [
-            487
+            488
           ]
+        },
+        {
+          "label": "运行报告",
+          "name": "report",
+          "type": "STRING",
+          "links": []
         }
       ],
       "properties": {
         "cnr_id": "minimax-h3-chunk-star7",
-        "ver": "36c35edcc3704686dbb4535ea6b572be8c1519f5",
-        "Node name for S&R": "MiniMaxH3FaceRefineStar7",
+        "ver": "e0ac4cfa579dd7ddab9ffe9527155b96f40d6eca",
+        "Node name for S&R": "MiniMaxH3OneClickHDStar7",
+        "star7CustomHDParams": {
+          "target_megapixels": 2,
+          "refine_steps": 4,
+          "refine_strength": 0.3
+        },
+        "star7HDSavedValues": {
+          "enable_hd": false,
+          "upscale_model": "minimax_h3_latent_upscaler_3d_fp16.safetensors",
+          "preset": "自定义",
+          "target_megapixels": 2,
+          "refine_steps": 4,
+          "refine_strength": 0.3,
+          "seed": 274496241150463,
+          "enable_tiling": true,
+          "tile_count": 4,
+          "tile_overlap": 128,
+          "second_pass_attention": "继承一采"
+        },
         "ue_properties": {
           "version": "7.5.2",
           "widget_ue_connectable": {},
           "input_ue_unconnectable": {}
-        },
-        "star7CustomFaceParams": {
-          "refine_steps": 4,
-          "custom_strength": 0.25,
-          "custom_canvas": "512",
-          "custom_crop_context": 2.8,
-          "custom_blend": 0.8,
-          "custom_feather": 24
         }
       },
       "widgets_values": [
         false,
-        1,
-        "远景小脸",
-        "主人物",
+        "minimax_h3_latent_upscaler_3d_fp16.safetensors",
+        "自定义",
+        2,
         4,
-        0.48,
-        "768",
-        2.4,
-        0.95,
-        18,
-        438834102156487,
+        0.3,
+        274496241150463,
         "randomize",
-        true
+        "继承一采",
+        true,
+        4,
+        128
       ],
       "widgets_values_named": {
-        "enable_refine": false,
-        "face_count": 1,
-        "preset": "远景小脸",
-        "target_face": "主人物",
+        "enable_hd": false,
+        "upscale_model": "minimax_h3_latent_upscaler_3d_fp16.safetensors",
+        "preset": "自定义",
+        "target_megapixels": 2,
         "refine_steps": 4,
-        "custom_strength": 0.48,
-        "custom_canvas": "768",
-        "custom_crop_context": 2.4,
-        "custom_blend": 0.95,
-        "custom_feather": 18,
-        "seed": 438834102156487,
+        "refine_strength": 0.3,
+        "seed": 274496241150463,
         "control_after_generate": "randomize",
-        "preserve_repair_detail": true
+        "second_pass_attention": "继承一采",
+        "enable_tiling": true,
+        "tile_count": 4,
+        "tile_overlap": 128
       },
       "color": "#223",
       "bgcolor": "#335"
-    },
-    {
-      "id": 369,
-      "type": "MarkdownNote",
-      "pos": [
-        -1517.9847573817772,
-        7636.7240381652155
-      ],
-      "size": [
-        415.65235053366666,
-        123.8800271040036
-      ],
-      "flags": {},
-      "order": 24,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "title": "人脸修复注意事项",
-      "properties": {
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "version": "7.5.2",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "为简化节点该节点直接集成视频vae节点，关闭修复按钮即可作为单独vae节点使用，因此不要绕过该节点，但是可以使用原vae节点替换。修复按钮默认为关闭状态需要使用自行开启，比较耗时间。可以降低修复尺寸以提高速度，但是质量也会相应降低。增加修复人脸的数量时间也是成倍增加的，因为是一轮一轮进行的。\n\n使用该修复人脸节点需要下载face_yolov8m.pt模型\n\n放置于ComfyUI/models/ultralytics/bbox文件夹内"
-      ],
-      "widgets_values_named": {
-        "text": "为简化节点该节点直接集成视频vae节点，关闭修复按钮即可作为单独vae节点使用，因此不要绕过该节点，但是可以使用原vae节点替换。修复按钮默认为关闭状态需要使用自行开启，比较耗时间。可以降低修复尺寸以提高速度，但是质量也会相应降低。增加修复人脸的数量时间也是成倍增加的，因为是一轮一轮进行的。\n\n使用该修复人脸节点需要下载face_yolov8m.pt模型\n\n放置于ComfyUI/models/ultralytics/bbox文件夹内"
-      },
-      "color": "#432",
-      "bgcolor": "#653"
     }
   ],
   "links": [
-    [
-      229,
-      122,
-      0,
-      123,
-      1,
-      "VAE"
-    ],
     [
       232,
       131,
@@ -2477,30 +2497,6 @@
       134,
       0,
       "FLOAT"
-    ],
-    [
-      256,
-      127,
-      0,
-      124,
-      0,
-      "LATENT"
-    ],
-    [
-      257,
-      127,
-      0,
-      123,
-      0,
-      "LATENT"
-    ],
-    [
-      295,
-      123,
-      0,
-      150,
-      1,
-      "AUDIO"
     ],
     [
       380,
@@ -2695,14 +2691,6 @@
       "MODEL"
     ],
     [
-      482,
-      275,
-      4,
-      124,
-      1,
-      "STAR7_H3_REFINE_CONTEXT"
-    ],
-    [
       484,
       342,
       1,
@@ -2711,12 +2699,60 @@
       "AUDIO"
     ],
     [
+      256,
+      127,
+      0,
+      376,
+      0,
+      "LATENT"
+    ],
+    [
+      482,
+      275,
+      4,
+      376,
+      1,
+      "STAR7_H3_REFINE_CONTEXT"
+    ],
+    [
       487,
-      124,
+      377,
       0,
       150,
       0,
       "IMAGE"
+    ],
+    [
+      488,
+      376,
+      0,
+      377,
+      0,
+      "LATENT"
+    ],
+    [
+      489,
+      121,
+      0,
+      377,
+      1,
+      "VAE"
+    ],
+    [
+      490,
+      122,
+      0,
+      377,
+      2,
+      "VAE"
+    ],
+    [
+      491,
+      377,
+      1,
+      150,
+      1,
+      "AUDIO"
     ]
   ],
   "groups": [
@@ -2793,13 +2829,13 @@
       4
     ],
     "VHS_latentpreviewrate": 0,
-    "frontendVersion": "1.51.10",
+    "frontendVersion": "1.52.7",
     "VHS_latentpreview": false,
     "ds": {
-      "scale": 0.33809166040571287,
+      "scale": 0.7972024500000102,
       "offset": [
-        3742.6101171073938,
-        -4934.180997909074
+        3595.8880488192235,
+        -5371.303192702325
       ]
     },
     "anomalous_hashes": {

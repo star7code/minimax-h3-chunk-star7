@@ -136,7 +136,7 @@ const material = Object.create(MaterialNodeType.prototype);
 material.inputs = [
     { name: "drive_audio", link: null },
     { name: "last_frame", link: null },
-    { name: "ref_video_0", link: null },
+    { name: "ref_video_0", link: 30 },
     { name: "ref_video_audio_0", link: null },
     { name: "ref_audio_0", link: null },
     ...Array.from({ length: 16 }, (_, index) => ({
@@ -156,6 +156,13 @@ material.addInput = (name, type) => {
     material.inputs.push(input);
     return input;
 };
+material.id = 275;
+app.graph.links = {
+    13: { target_id: 275, target_slot: 5 },
+    14: { target_id: 275, target_slot: 6 },
+    15: { target_id: 275, target_slot: 7 },
+    30: { target_id: 275, target_slot: 2 },
+};
 material.onNodeCreated();
 assert.equal(material.inputs[0].label, "驱动音频");
 assert.deepEqual(
@@ -170,6 +177,10 @@ assert.deepEqual(
 assert.equal(material.inputs[2].label, "参考图 1 - <Picture 1>");
 assert.equal(material.inputs[5].label, "参考图 4");
 assert.equal(material.outputs[0].label, "采样上下文");
+assert.equal(app.graph.links[13].target_slot, 2);
+assert.equal(app.graph.links[14].target_slot, 3);
+assert.equal(app.graph.links[15].target_slot, 4);
+assert.equal(app.graph.links[30].target_slot, 6);
 material.inputs[0].link = 12;
 material.onConnectionsChange();
 assert.equal(material.inputs[0].label, "驱动音频 - <Audio D>");
@@ -177,6 +188,7 @@ material.inputs[0].link = null;
 material.onConnectionsChange();
 assert.equal(material.inputs[0].label, "驱动音频");
 material.inputs[5].link = 16;
+app.graph.links[16] = { target_id: 275, target_slot: 5 };
 material.onConnectionsChange();
 assert.deepEqual(
     material.inputs.slice(2, 7).map((input) => input.name),
@@ -188,16 +200,62 @@ assert.deepEqual(
 );
 assert.equal(material.inputs[5].label, "参考图 4 - <Picture 4>");
 assert.equal(material.inputs[6].label, "参考图 5");
+assert.equal(app.graph.links[16].target_slot, 5);
+assert.equal(app.graph.links[30].target_slot, 7);
 
 for (let slot = 4; slot < 9; slot += 1) {
     const input = material.inputs.find((item) => item.name === `ref_images.ref_image_${slot}`);
     assert.ok(input, `reference image ${slot + 1} must be available`);
     input.link = slot + 13;
+    app.graph.links[slot + 13] = { target_id: 275, target_slot: material.inputs.indexOf(input) };
     material.onConnectionsChange();
 }
 assert.deepEqual(
     material.inputs.filter((input) => input.name.startsWith("ref_images.")).map((input) => input.name),
     Array.from({ length: 9 }, (_, slot) => `ref_images.ref_image_${slot}`),
 );
+assert.equal(app.graph.links[30].target_slot, 11);
+
+const materialWithHole = Object.create(MaterialNodeType.prototype);
+materialWithHole.id = 276;
+materialWithHole.inputs = [
+    { name: "last_frame", link: null },
+    { name: "ref_images.ref_image_0", type: "IMAGE", link: 40 },
+    { name: "ref_images.ref_image_1", type: "IMAGE", link: 41 },
+    { name: "ref_images.ref_image_2", type: "IMAGE", link: 42 },
+    { name: "ref_images.ref_image_3", type: "IMAGE", link: null },
+    { name: "ref_images.ref_image_4", type: "IMAGE", link: 44 },
+];
+materialWithHole.outputs = [];
+materialWithHole.widgets = [];
+materialWithHole.size = [420, 500];
+materialWithHole.computeSize = () => [390, 500];
+materialWithHole.setSize = (size) => { materialWithHole.size = size; };
+materialWithHole.setDirtyCanvas = () => {};
+materialWithHole.removeInput = (index) => { materialWithHole.inputs.splice(index, 1); };
+materialWithHole.addInput = (name, type) => {
+    const input = { name, type, link: null };
+    materialWithHole.inputs.push(input);
+    return input;
+};
+Object.assign(app.graph.links, {
+    40: { target_id: 276, target_slot: 1 },
+    41: { target_id: 276, target_slot: 2 },
+    42: { target_id: 276, target_slot: 3 },
+    44: { target_id: 276, target_slot: 5 },
+});
+materialWithHole.onNodeCreated();
+assert.deepEqual(
+    materialWithHole.inputs.map((input) => [input.name, input.link]),
+    [
+        ["last_frame", null],
+        ["ref_images.ref_image_0", 40],
+        ["ref_images.ref_image_1", 41],
+        ["ref_images.ref_image_2", 42],
+        ["ref_images.ref_image_3", 44],
+        ["ref_images.ref_image_4", null],
+    ],
+);
+assert.equal(app.graph.links[44].target_slot, 4);
 
 console.log("H3 conditioning dynamic audio label tests: PASS");

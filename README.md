@@ -354,10 +354,8 @@ STAR7_SLA_LONG_SELF_TEST=1
 
 ## 示例工作流
 
-- [通用工作流（中文）](examples/workflows/MiniMax-H3-Activation-Chunk-Star7.json)：同一工作流适配 SM75、SM80+ 等不同架构，并包含多合一条件载入、分块、实时预览和默认关闭的一键人脸修复。
-- [General workflow (English)](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-English.json)：对应的英文画布与说明版本，节点内部 ID 保持兼容。
-- [一键高清独立 VAE 工作流（中文）](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-HD.json)：含高清总开关、可选二采分格和独立 H3 分块解码。
-- [One-click HD with external VAE (English)](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-HD-English.json)：对应英文版。
+- [通用工作流（中文）](examples/workflows/MiniMax-H3-Activation-Chunk-Star7.json)：包含多合一条件载入、分块、实时预览、独立 H3 分块解码和默认关闭的可选二采；导入后可直接作为普通工作流使用。
+- [General workflow (English)](examples/workflows/MiniMax-H3-Activation-Chunk-Star7-English.json)：完整翻译的英文画布与说明版本，功能和默认设置与中文版一致。
 
 示例中的参考条件来自 [T8mars/comfyui-minimax-h3-audio-T8](https://github.com/T8mars/comfyui-minimax-h3-audio-T8)。仓库不包含可能涉及版权或隐私的参考素材，导入工作流后请替换占位文件。
 
