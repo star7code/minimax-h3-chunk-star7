@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.14.6 - 2026-09-16
+
+- Restore connect-to-grow reference-image inputs instead of displaying every slot.
+- Raise the autogrow reference-image capacity from 4 to the upstream H3 limit of 9 while preserving prompt order.
+
 ## 2.14.5 - 2026-09-16
 
 - Expand all-in-one conditioning from 4 to 16 reference-image inputs.

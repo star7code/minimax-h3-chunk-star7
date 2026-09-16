@@ -110,7 +110,7 @@ function localizeNode(node, isFace) {
     const text = TEXT[lang];
     node.title = isFace ? text.faceTitle : text.materialTitle;
     for (const item of [...(node.inputs ?? []), ...(node.outputs ?? []), ...(node.widgets ?? [])]) {
-        const label = labelFor(item.name, lang);
+        const label = labelFor(inputBaseName(item), lang);
         if (label) item.label = item.localized_name = label;
     }
 }

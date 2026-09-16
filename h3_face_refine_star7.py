@@ -14,6 +14,7 @@ import torch
 
 import comfy.nested_tensor
 import folder_paths
+from comfy_api.latest import io
 
 from .vendor.h3facerefine.core import (
     H3FaceStitch,
@@ -28,6 +29,7 @@ from .vendor.h3facerefine.core import (
 
 _LOG = logging.getLogger("Star7H3FaceRefine")
 _CONTEXT_TYPE = "STAR7_H3_REFINE_CONTEXT"
+_CONTEXT_IO = io.Custom(_CONTEXT_TYPE)
 _FACE_DETECTOR_NAME = "face_yolov8m.pt"
 _FACE_DETECTOR_SHA256 = "717923c19b3f4bbf5250b728f1fa6b2cb72a33aed1d236ea9caf0e21ad943e5f"
 _FACE_DETECTOR_URLS = (
@@ -36,7 +38,7 @@ _FACE_DETECTOR_URLS = (
 )
 _FACE_DETECTOR_LOCK = threading.Lock()
 _FPS = 24
-_MAX_REFERENCE_IMAGES = 16
+_MAX_REFERENCE_IMAGES = 9
 _MAX_REFERENCE_VIDEO_FRAMES = 15 * _FPS
 _MIN_RECOMMENDED_REFERENCE_VIDEO_FRAMES = 2 * _FPS
 _MEGAPIXEL = 1024 * 1024
@@ -248,12 +250,22 @@ def _prepare_prompt_tags(prompt: str, pictures: int, videos: int, audios: int,
     return normalized, list(dict.fromkeys(warnings))
 
 
-def _collect_reference_images(first_images, extra_inputs):
-    values = tuple(first_images) + tuple(
-        extra_inputs.get(f"ref_image_{index}")
-        for index in range(len(first_images), _MAX_REFERENCE_IMAGES)
-    )
-    connected = [image for image in values if image is not None]
+def _collect_reference_images(ref_images, legacy_inputs=None):
+    def slot(name):
+        try:
+            return int(str(name).rsplit("_", 1)[-1])
+        except ValueError:
+            return _MAX_REFERENCE_IMAGES
+
+    values = dict(ref_images or {})
+    values.update({
+        name: image for name, image in (legacy_inputs or {}).items()
+        if name.startswith("ref_image_") and name not in values
+    })
+    connected = [
+        image for _, image in sorted(values.items(), key=lambda item: slot(item[0]))
+        if image is not None
+    ]
     return {
         f"ref_image_{index}": image
         for index, image in enumerate(connected)
@@ -526,59 +538,75 @@ def _ensure_face_detector() -> str:
         )
 
 
-class MiniMaxH3MaterialPromptStar7:
+class MiniMaxH3MaterialPromptStar7(io.ComfyNode):
     """Unified H3 conditioning plus a compact context for the later face-refine pass."""
 
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "model": ("MODEL",),
-                "clip": ("CLIP",),
-                "video_vae": ("VAE",),
-                "audio_vae": ("VAE",),
-                "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True, "default": ""}),
-                "width": ("INT", {"default": 1344, "min": 32, "max": 16384, "step": 32}),
-                "height": ("INT", {"default": 768, "min": 32, "max": 16384, "step": 32}),
-                "length": ("INT", {"default": 243, "min": 5, "max": 3600, "step": 17}),
-                "task_type": (_TASK_OPTIONS, {"default": "自动判断 / Auto"}),
-                "audio_mode": (_AUDIO_OPTIONS, {"default": "锁定原音 / Lock Source"}),
-                "audio_denoise_strength": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "reference_quality": (_REFERENCE_SIZE_OPTIONS, {"default": "匹配生成画布 / Match"}),
-            },
-            "optional": {
-                "drive_audio": ("AUDIO",),
-                "final_audio": ("AUDIO",),
-                "first_frame": ("IMAGE",),
-                "last_frame": ("IMAGE",),
-                **{f"ref_image_{index}": ("IMAGE",) for index in range(_MAX_REFERENCE_IMAGES)},
-                "ref_video_0": ("IMAGE",),
-                "ref_video_1": ("IMAGE",),
-                "ref_video_2": ("IMAGE",),
-                "ref_video_audio_0": ("AUDIO",),
-                "ref_video_audio_1": ("AUDIO",),
-                "ref_video_audio_2": ("AUDIO",),
-                "ref_audio_0": ("AUDIO",),
-                "ref_audio_1": ("AUDIO",),
-            },
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MiniMaxH3MaterialPromptStar7",
+            display_name="MiniMax H3 All-in-one Conditioning - Star7",
+            category="Star7/MiniMax H3",
+            description="Unified H3 text/image/video/audio conditioning with one-line Star7 face-refine context reuse.",
+            accept_all_inputs=True,
+            inputs=[
+                io.Model.Input("model"),
+                io.Clip.Input("clip"),
+                io.Vae.Input("video_vae"),
+                io.Vae.Input("audio_vae"),
+                io.String.Input("prompt", multiline=True, dynamic_prompts=True, default=""),
+                io.Int.Input("width", default=1344, min=32, max=16384, step=32),
+                io.Int.Input("height", default=768, min=32, max=16384, step=32),
+                io.Int.Input("length", default=243, min=5, max=3600, step=17),
+                io.Combo.Input("task_type", options=_TASK_OPTIONS, default="自动判断 / Auto"),
+                io.Combo.Input("audio_mode", options=_AUDIO_OPTIONS, default="锁定原音 / Lock Source"),
+                io.Float.Input("audio_denoise_strength", default=0.35, min=0.0, max=1.0, step=0.01),
+                io.Combo.Input("reference_quality", options=_REFERENCE_SIZE_OPTIONS, default="匹配生成画布 / Match"),
+                io.Audio.Input("drive_audio", optional=True),
+                io.Audio.Input("final_audio", optional=True),
+                io.Image.Input("first_frame", optional=True),
+                io.Image.Input("last_frame", optional=True),
+                io.Autogrow.Input(
+                    "ref_images",
+                    optional=True,
+                    tooltip="Reference images. Connecting one slot automatically reveals the next.",
+                    template=io.Autogrow.TemplatePrefix(
+                        input=io.Image.Input("ref_image"),
+                        prefix="ref_image_",
+                        min=0,
+                        max=_MAX_REFERENCE_IMAGES,
+                    ),
+                ),
+                io.Image.Input("ref_video_0", optional=True),
+                io.Image.Input("ref_video_1", optional=True),
+                io.Image.Input("ref_video_2", optional=True),
+                io.Audio.Input("ref_video_audio_0", optional=True),
+                io.Audio.Input("ref_video_audio_1", optional=True),
+                io.Audio.Input("ref_video_audio_2", optional=True),
+                io.Audio.Input("ref_audio_0", optional=True),
+                io.Audio.Input("ref_audio_1", optional=True),
+            ],
+            outputs=[
+                io.Model.Output(display_name="model"),
+                io.Conditioning.Output(display_name="positive"),
+                io.Latent.Output(display_name="av_latent"),
+                io.Audio.Output(display_name="mux_audio"),
+                _CONTEXT_IO.Output(display_name="refine_context"),
+                io.String.Output(display_name="report"),
+            ],
+        )
 
-    RETURN_TYPES = ("MODEL", "CONDITIONING", "LATENT", "AUDIO", _CONTEXT_TYPE, "STRING")
-    RETURN_NAMES = ("model", "positive", "av_latent", "mux_audio", "refine_context", "report")
-    FUNCTION = "build"
-    CATEGORY = "Star7/MiniMax H3"
-    DESCRIPTION = "Unified H3 text/image/video/audio conditioning with one-line Star7 face-refine context reuse."
-
-    def build(
-        self, model, clip, video_vae, audio_vae, prompt, width, height, length,
+    @classmethod
+    def execute(
+        cls, model, clip, video_vae, audio_vae, prompt, width, height, length,
         task_type="自动判断 / Auto", audio_mode="锁定原音 / Lock Source",
         audio_denoise_strength=0.35, reference_quality="匹配生成画布 / Match",
         drive_audio=None, final_audio=None, first_frame=None, last_frame=None,
-        ref_image_0=None, ref_image_1=None, ref_image_2=None, ref_image_3=None,
+        ref_images=None,
         ref_video_0=None, ref_video_1=None, ref_video_2=None,
         ref_video_audio_0=None, ref_video_audio_1=None, ref_video_audio_2=None,
         ref_audio_0=None, ref_audio_1=None,
-        **extra_inputs,
+        **legacy_inputs,
     ):
         from comfy_extras.nodes_minimax_h3 import (
             MiniMaxH3AddGuide,
@@ -605,9 +633,7 @@ class MiniMaxH3MaterialPromptStar7:
             warnings.append(f"audio mode {mode} has no driving audio; using native audio generation")
             mode = "native"
 
-        ref_images = _collect_reference_images(
-            (ref_image_0, ref_image_1, ref_image_2, ref_image_3), extra_inputs
-        )
+        ref_images = _collect_reference_images(ref_images, legacy_inputs)
         ref_videos = {f"ref_video_{i}": item for i, item in enumerate(
                       (ref_video_0, ref_video_1, ref_video_2)) if item is not None}
         ref_video_audios = {f"ref_video_audio_{i}": item for i, item in enumerate(
@@ -744,7 +770,7 @@ class MiniMaxH3MaterialPromptStar7:
         _LOG.info(report.splitlines()[0])
         for warning in warnings:
             _LOG.warning("Star7 H3 conditioning | %s", warning)
-        return model, positive, latent, mux_audio, context, report
+        return io.NodeOutput(model, positive, latent, mux_audio, context, report)
 
 
 _PRESETS = {

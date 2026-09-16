@@ -135,7 +135,7 @@ await extension.beforeRegisterNodeDef(MaterialNodeType, { name: "MiniMaxH3Materi
 const material = Object.create(MaterialNodeType.prototype);
 material.inputs = [
     { name: "drive_audio", link: null },
-    ...Array.from({ length: 16 }, (_, index) => ({ name: `ref_image_${index}`, link: null })),
+    { name: "ref_images.ref_image_0", link: null },
 ];
 material.outputs = [{ name: "refine_context" }];
 material.widgets = [];
@@ -146,7 +146,6 @@ material.setDirtyCanvas = () => {};
 material.onNodeCreated();
 assert.equal(material.inputs[0].label, "驱动音频");
 assert.equal(material.inputs[1].label, "参考图 1");
-assert.equal(material.inputs[16].label, "参考图 16");
 assert.equal(material.outputs[0].label, "采样上下文");
 material.inputs[0].link = 12;
 material.onConnectionsChange();
@@ -154,14 +153,15 @@ assert.equal(material.inputs[0].label, "驱动音频 - <Audio D>");
 material.inputs[0].link = null;
 material.onConnectionsChange();
 assert.equal(material.inputs[0].label, "驱动音频");
-material.inputs[4].link = 13;
-material.inputs[16].link = 14;
+material.inputs[1].link = 13;
+material.inputs.push({ name: "ref_images.ref_image_1", link: null });
 material.onConnectionsChange();
-assert.equal(material.inputs[4].label, "参考图 4 - <Picture 1>");
-assert.equal(material.inputs[16].label, "参考图 16 - <Picture 2>");
-material.inputs[4].link = null;
+assert.equal(material.inputs[1].label, "参考图 1 - <Picture 1>");
+assert.equal(material.inputs[2].label, "参考图 2");
+material.inputs[2].link = 14;
+material.inputs.push({ name: "ref_images.ref_image_2", link: null });
 material.onConnectionsChange();
-assert.equal(material.inputs[4].label, "参考图 4");
-assert.equal(material.inputs[16].label, "参考图 16 - <Picture 1>");
+assert.equal(material.inputs[2].label, "参考图 2 - <Picture 2>");
+assert.equal(material.inputs[3].label, "参考图 3");
 
 console.log("H3 conditioning dynamic audio label tests: PASS");

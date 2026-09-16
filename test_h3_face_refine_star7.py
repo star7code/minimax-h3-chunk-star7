@@ -1,6 +1,7 @@
 import torch
 
 import comfy.nested_tensor
+from comfy_api.latest._io import build_nested_inputs, get_finalized_class_inputs
 
 from .h3_face_refine_star7 import (
     H3FaceStitch,
@@ -134,25 +135,38 @@ def test_prompt_media_tags_are_repaired_without_strict_failure():
     assert warnings
 
 
-def test_reference_images_support_sixteen_slots_and_compact_gaps():
-    images = [object() for _ in range(16)]
+def test_reference_images_support_nine_slots_and_compact_gaps():
+    images = [object() for _ in range(9)]
     all_images = _collect_reference_images(
-        tuple(images[:4]),
-        {f"ref_image_{index}": images[index] for index in range(4, 16)},
+        {f"ref_image_{index}": images[index] for index in range(9)},
     )
-    assert list(all_images) == [f"ref_image_{index}" for index in range(16)]
+    assert list(all_images) == [f"ref_image_{index}" for index in range(9)]
     assert list(all_images.values()) == images
 
     gapped = _collect_reference_images(
-        (None, images[1], None, images[3]),
         {
+            "ref_image_1": images[1],
+            "ref_image_3": images[3],
             "ref_image_4": images[4],
-            "ref_image_15": images[15],
-            "ref_image_16": object(),
+            "ref_image_8": images[8],
         },
     )
     assert list(gapped) == [f"ref_image_{index}" for index in range(4)]
-    assert list(gapped.values()) == [images[1], images[3], images[4], images[15]]
+    assert list(gapped.values()) == [images[1], images[3], images[4], images[8]]
+
+
+def test_legacy_reference_image_slots_survive_v3_input_normalization():
+    first, fourth = object(), object()
+    live_inputs = {"ref_image_0": first, "ref_image_3": fourth}
+    _, _, v3_data = get_finalized_class_inputs(
+        MiniMaxH3MaterialPromptStar7.INPUT_TYPES(), live_inputs
+    )
+    nested = build_nested_inputs(live_inputs, v3_data)
+    assert MiniMaxH3MaterialPromptStar7.ACCEPT_ALL_INPUTS is True
+    assert _collect_reference_images(nested["ref_images"], nested) == {
+        "ref_image_0": first,
+        "ref_image_1": fourth,
+    }
 
 
 def test_prompt_audio_tags_keep_official_order_and_use_drive_alias():
@@ -245,9 +259,12 @@ def test_reference_matched_track_is_reserved_before_multiface_fill():
 def test_public_node_contract_is_two_wire_face_refine():
     material = MiniMaxH3MaterialPromptStar7.INPUT_TYPES()
     face = MiniMaxH3FaceRefineStar7.INPUT_TYPES()
-    assert material["required"]["model"] == ("MODEL",)
-    image_inputs = [name for name in material["optional"] if name.startswith("ref_image_")]
-    assert image_inputs == [f"ref_image_{index}" for index in range(16)]
+    assert material["required"]["model"][0] == "MODEL"
+    autogrow_type, autogrow_options = material["optional"]["ref_images"]
+    assert autogrow_type == "COMFY_AUTOGROW_V3"
+    assert autogrow_options["template"]["prefix"] == "ref_image_"
+    assert autogrow_options["template"]["min"] == 0
+    assert autogrow_options["template"]["max"] == 9
     assert MiniMaxH3MaterialPromptStar7.RETURN_NAMES[4] == "refine_context"
     assert face["required"]["sampled_av_latent"] == ("LATENT",)
     assert face["required"]["refine_context"] == ("STAR7_H3_REFINE_CONTEXT",)
