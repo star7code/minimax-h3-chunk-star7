@@ -1033,7 +1033,7 @@ class MiniMaxH3OneClickHDStar7:
                 "target_megapixels": (
                     "FLOAT", {"default": 1.0, "min": 0.20, "max": 36.0, "step": 0.05}
                 ),
-                "refine_steps": ("INT", {"default": 2, "min": 0, "max": 12, "step": 1}),
+                "refine_steps": ("INT", {"default": 2, "min": 1, "max": 50, "step": 1}),
                 "refine_strength": (
                     "FLOAT", {"default": 0.25, "min": 0.0, "max": 0.50, "step": 0.01}
                 ),
@@ -1110,16 +1110,16 @@ class MiniMaxH3OneClickHDStar7:
         elif preset != "自定义":
             raise RuntimeError(f"Unknown Star7 H3 HD preset: {preset}")
         target_megapixels = float(target_megapixels)
-        refine_steps = int(refine_steps)
+        # Keep API submissions and legacy workflows inside the same range as
+        # the widget.  Older graphs may still carry the former zero value.
+        refine_steps = max(1, min(50, int(refine_steps)))
         refine_strength = float(refine_strength)
         if preset == "自定义":
-            # Keep legacy/saved custom workflows internally consistent. The UI
-            # applies the same coupling immediately when either control changes.
+            # A positive step count with a zero strength is most commonly an
+            # accidental legacy combination, so retain the existing safe
+            # low-strength repair instead of silently skipping the second pass.
             if refine_steps > 0 and refine_strength <= 0.0:
                 refine_strength = 0.18
-            elif refine_steps <= 0:
-                refine_steps = 0
-                refine_strength = 0.0
 
         _LOG.info(
             "Star7 H3 HD | profile=%s preset=%s target=%.2fMP refine=%d strength=%.2f",

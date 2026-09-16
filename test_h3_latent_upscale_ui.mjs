@@ -82,14 +82,15 @@ assert.equal(strength.value, 0.30);
 steps.value = 0;
 steps.callback();
 assert.equal(preset.value, "自定义");
-assert.equal(strength.value, 0.0);
+assert.equal(steps.value, 1);
+assert.equal(strength.value, 0.30);
 steps.value = 3;
 steps.callback();
 assert.equal(preset.value, "自定义");
-assert.equal(strength.value, 0.18);
+assert.equal(strength.value, 0.30);
 strength.value = 0.0;
 strength.callback();
-assert.equal(steps.value, 0);
+assert.equal(steps.value, 3);
 assert.equal(tileCount.disabled, true);
 enableTiling.value = true;
 enableTiling.callback();
@@ -138,10 +139,12 @@ node.properties.star7HDSavedValues = {
     enable_tiling: true, tile_count: 16, tile_overlap: 160,
     second_pass_attention: "comfy_kitchen_int8",
 };
+steps.value = 0;
 tileCount.value = null;
 upscaleModel.value = null;
 secondPassAttention.value = null;
 node.onConfigure({});
+assert.equal(steps.value, 1);
 assert.equal(tileCount.value, 16);
 assert.equal(upscaleModel.value, "custom_3d.safetensors");
 assert.equal(secondPassAttention.value, "comfy_kitchen_int8");

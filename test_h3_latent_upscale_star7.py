@@ -95,6 +95,8 @@ def test_schema_has_scene_presets_and_latent_output():
     ]
     assert schema["hidden"] == {"unique_id": "UNIQUE_ID", "prompt": "PROMPT"}
     assert schema["required"]["refine_steps"][1]["default"] == 2
+    assert schema["required"]["refine_steps"][1]["min"] == 1
+    assert schema["required"]["refine_steps"][1]["max"] == 50
     assert schema["required"]["refine_strength"][1]["default"] == 0.25
     assert schema["required"]["target_megapixels"][1]["max"] == 36.0
     assert schema["required"]["enable_hd"][1]["default"] is True

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.14.3 - 2026-09-16
+
+- Constrain one-click HD refinement to 1–50 steps in the UI and backend.
+- Repair legacy workflows that saved a zero refinement-step value.
+
 ## 2.14.2 - 2026-09-16
 
 - Raise the one-click HD target control ceiling to 36.0 MP.

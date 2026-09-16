@@ -95,6 +95,9 @@ function validSavedValue(name, value) {
     if (name === "second_pass_attention" || name === "upscale_model") {
         return typeof value === "string" && value.length > 0;
     }
+    if (name === "refine_steps") {
+        return Number.isInteger(value) && value >= 1 && value <= 50;
+    }
     return typeof value === "number" && Number.isFinite(value);
 }
 
@@ -112,16 +115,20 @@ function repairInvalidInputs(node) {
     for (const [name, fallback] of Object.entries(SAVED_DEFAULTS)) {
         const item = widget(node, name);
         if (!item) continue;
+        if (name === "refine_steps" && typeof item.value === "number" && Number.isFinite(item.value)) {
+            item.value = Math.max(1, Math.min(50, Math.round(item.value)));
+        }
         if (validSavedValue(name, item.value)) continue;
         const savedValue = saved[name];
         item.value = validSavedValue(name, savedValue) ? savedValue : fallback;
     }
     const custom = node.properties?.star7CustomHDParams ?? {};
-    node.properties.star7CustomHDParams = Object.fromEntries(PARAMS.map((name) => [
-        name,
-        typeof custom[name] === "number" && Number.isFinite(custom[name])
-            ? custom[name] : BALANCED[name],
-    ]));
+    node.properties.star7CustomHDParams = Object.fromEntries(PARAMS.map((name) => {
+        let value = typeof custom[name] === "number" && Number.isFinite(custom[name])
+            ? custom[name] : BALANCED[name];
+        if (name === "refine_steps") value = Math.max(1, Math.min(50, Math.round(value)));
+        return [name, value];
+    }));
 }
 
 function presetValues(node, name) {
@@ -331,11 +338,10 @@ function install(node) {
             const steps = widget(node, "refine_steps");
             const strength = widget(node, "refine_strength");
             if (name === "refine_steps") {
-                if (Number(item.value) > 0 && Number(strength?.value) <= 0) strength.value = 0.18;
-                if (Number(item.value) <= 0 && strength) strength.value = 0.0;
+                item.value = Math.max(1, Math.min(50, Math.round(Number(item.value) || 1)));
+                if (Number(strength?.value) <= 0) strength.value = 0.18;
             } else if (name === "refine_strength") {
                 if (Number(item.value) > 0 && Number(steps?.value) <= 0) steps.value = 1;
-                if (Number(item.value) <= 0 && steps) steps.value = 0;
             }
             if (preset && preset.value !== "自定义") {
                 preset.value = "自定义";
