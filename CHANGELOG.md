@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.14.8 - 2026-09-16
+
+- Continue the reference-image connect-to-grow sequence beyond migrated four-image workflows, up to the H3 limit of 9.
+
 ## 2.14.7 - 2026-09-16
 
 - Support both the ComfyUI 0.34 H3 reference-node argument order and the newer optional-VAE order.

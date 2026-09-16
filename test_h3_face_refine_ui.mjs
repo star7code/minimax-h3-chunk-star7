@@ -151,6 +151,11 @@ material.computeSize = () => [390, 500];
 material.setSize = (size) => { material.size = size; };
 material.setDirtyCanvas = () => {};
 material.removeInput = (index) => { material.inputs.splice(index, 1); };
+material.addInput = (name, type) => {
+    const input = { name, type, link: null };
+    material.inputs.push(input);
+    return input;
+};
 material.onNodeCreated();
 assert.equal(material.inputs[0].label, "驱动音频");
 assert.deepEqual(
@@ -172,7 +177,6 @@ material.inputs[0].link = null;
 material.onConnectionsChange();
 assert.equal(material.inputs[0].label, "驱动音频");
 material.inputs[5].link = 16;
-material.inputs.push({ name: "ref_images.ref_image_4", link: null });
 material.onConnectionsChange();
 assert.deepEqual(
     material.inputs.slice(2, 7).map((input) => input.name),
@@ -184,5 +188,16 @@ assert.deepEqual(
 );
 assert.equal(material.inputs[5].label, "参考图 4 - <Picture 4>");
 assert.equal(material.inputs[6].label, "参考图 5");
+
+for (let slot = 4; slot < 9; slot += 1) {
+    const input = material.inputs.find((item) => item.name === `ref_images.ref_image_${slot}`);
+    assert.ok(input, `reference image ${slot + 1} must be available`);
+    input.link = slot + 13;
+    material.onConnectionsChange();
+}
+assert.deepEqual(
+    material.inputs.filter((input) => input.name.startsWith("ref_images.")).map((input) => input.name),
+    Array.from({ length: 9 }, (_, slot) => `ref_images.ref_image_${slot}`),
+);
 
 console.log("H3 conditioning dynamic audio label tests: PASS");

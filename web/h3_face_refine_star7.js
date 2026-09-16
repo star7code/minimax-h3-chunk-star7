@@ -3,6 +3,7 @@ import { api } from "../../scripts/api.js";
 
 const FACE_NODE = "MiniMaxH3FaceRefineStar7";
 const MATERIAL_NODE = "MiniMaxH3MaterialPromptStar7";
+const MAX_REFERENCE_IMAGES = 9;
 const PRESETS = {
     "自动平衡": { refine_steps: 4, custom_strength: 0.30, custom_canvas: "自动", custom_crop_context: 2.6, custom_blend: 0.90, custom_feather: 20 },
     "真人保真": { refine_steps: 4, custom_strength: 0.25, custom_canvas: "512", custom_crop_context: 2.8, custom_blend: 0.82, custom_feather: 24 },
@@ -94,6 +95,26 @@ function compactMaterialReferenceImages(node) {
     } finally {
         node.__star7CompactingReferenceImages = false;
     }
+}
+function addNextMaterialReferenceImage(node) {
+    if (!Array.isArray(node.inputs)) return;
+    const references = node.inputs.filter((input) => referenceImageSlot(input) != null);
+    if (!references.length) return;
+    const connected = references.filter((input) => input.link != null);
+    const nextSlot = connected.length
+        ? Math.max(...connected.map(referenceImageSlot)) + 1
+        : 0;
+    if (nextSlot >= MAX_REFERENCE_IMAGES || references.some((input) => referenceImageSlot(input) === nextSlot)) return;
+
+    const template = references[0];
+    const name = `ref_images.ref_image_${nextSlot}`;
+    if (typeof node.addInput === "function") node.addInput(name, template.type ?? "IMAGE");
+    else node.inputs.push({ name, type: template.type ?? "IMAGE", link: null });
+}
+function refreshMaterialReferenceImages(node) {
+    compactMaterialReferenceImages(node);
+    addNextMaterialReferenceImage(node);
+    placeMaterialReferenceImages(node);
 }
 function placeMaterialReferenceImages(node) {
     const inputs = node.inputs;
@@ -393,8 +414,7 @@ app.registerExtension({
             localizeNode(this, isFace);
             if (isFace) requestAnimationFrame(() => installFaceControls(this, text));
             else requestAnimationFrame(() => {
-                compactMaterialReferenceImages(this);
-                placeMaterialReferenceImages(this);
+                refreshMaterialReferenceImages(this);
                 localizeNode(this, false);
                 installMaterialControls(this);
                 updateMaterialMediaLabels(this);
@@ -409,8 +429,7 @@ app.registerExtension({
                 localizeNode(this, isFace);
                 if (isFace) installFaceControls(this, text);
                 else {
-                    compactMaterialReferenceImages(this);
-                    placeMaterialReferenceImages(this);
+                    refreshMaterialReferenceImages(this);
                     installMaterialControls(this);
                     updateMaterialMediaLabels(this);
                 }
@@ -422,8 +441,7 @@ app.registerExtension({
             nodeType.prototype.onConnectionsChange = function () {
                 const result = connectionsChanged?.apply(this, arguments);
                 requestAnimationFrame(() => {
-                    compactMaterialReferenceImages(this);
-                    placeMaterialReferenceImages(this);
+                    refreshMaterialReferenceImages(this);
                     localizeNode(this, false);
                     updateMaterialMediaLabels(this);
                     this.setDirtyCanvas?.(true, true);
