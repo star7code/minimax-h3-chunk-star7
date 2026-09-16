@@ -62,6 +62,18 @@ const strength = node.widgets.find((item) => item.name === "refine_strength");
 const secondPassAttention = node.widgets.find((item) => item.name === "second_pass_attention");
 assert.equal(secondPassAttention.label, "二采注意力");
 assert.equal(tileCount.label, "分格数量");
+tileCount.value = 5;
+tileCount.callback();
+assert.equal(tileCount.value, 6);
+tileCount.value = 7;
+tileCount.callback();
+assert.equal(tileCount.value, 8);
+tileCount.value = 9;
+tileCount.callback();
+assert.equal(tileCount.value, 9);
+tileCount.value = 8;
+tileCount.callback();
+assert.equal(tileCount.value, 8);
 assert.equal(upscaleModel.label, "高清放大模型");
 assert.equal(upscaleModel.value, "minimax_h3_latent_upscaler_3d_fp16.safetensors");
 assert.equal(upscaleModel.options?.getOptionLabel, undefined);
@@ -110,6 +122,8 @@ const sigmaStatus = node.widgets.find((item) => item.__star7HDSigmaStatus);
 assert.ok(sigmaStatus);
 assert.equal(sigmaStatus.disabled, true);
 assert.ok(sigmaStatus.name.includes("等待运行"));
+steps.value = 2;
+strength.value = 0.24;
 eventHandler({ detail: {
     node_id: 376, sigmas: "0.7200,0.6000,0.4000,0.0000", shift: 6,
     steps: 3, strength: 0.30, profile: "Turbo/Distilled",
@@ -117,14 +131,32 @@ eventHandler({ detail: {
 assert.ok(sigmaStatus.name.includes("0.7200 → 0.6000 → 0.4000 → 0.0000"));
 assert.ok(sigmaStatus.name.includes("Shift 6"));
 assert.ok(sigmaStatus.name.includes("Turbo/Distilled"));
-assert.equal(steps.value, 3);
-assert.equal(strength.value, 0.30);
+assert.equal(steps.value, 2);
+assert.equal(strength.value, 0.24);
 assert.ok(node.widgets.indexOf(sigmaStatus) < node.widgets.indexOf(node.__star7HDReset));
 assert.ok(node.widgets.indexOf(sigmaStatus) > node.widgets.indexOf(secondPassAttention));
 eventHandler({ detail: {
     node_id: 376, sigmas: "0.7500,0.6792,0.5714,0.3871,0.0000", shift: 12,
     steps: 4, strength: 0.20, profile: "Base",
 } });
+// Runtime results are display-only. In particular, bypass reports zeros and
+// must not overwrite values which need to survive toggling and page reloads.
+steps.value = 3;
+strength.value = 0.27;
+enableHD.value = false;
+enableHD.callback();
+eventHandler({ detail: {
+    node_id: 376, sigmas: "off", steps: 0, strength: 0.0, profile: "disabled",
+} });
+assert.equal(steps.value, 3);
+assert.equal(strength.value, 0.27);
+enableHD.value = true;
+enableHD.callback();
+assert.equal(steps.value, 3);
+assert.equal(strength.value, 0.27);
+node.onSerialize({});
+assert.equal(node.properties.star7HDSavedValues.refine_steps, 3);
+assert.equal(node.properties.star7HDSavedValues.refine_strength, 0.27);
 preset.value = "高质量";
 preset.callback();
 assert.equal(steps.value, 6);

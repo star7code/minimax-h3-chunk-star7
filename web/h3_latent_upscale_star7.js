@@ -18,6 +18,10 @@ const BALANCED = { ...PRESETS["平衡高清"] };
 const PARAMS = Object.keys(BALANCED);
 const HD_CONTROLS = ["upscale_model", "preset", "target_megapixels", "refine_steps", "refine_strength", "seed", "second_pass_attention"];
 const TILE_CONTROLS = ["tile_count", "tile_overlap"];
+const VALID_TILE_COUNTS = [
+    2, 4, 6, 8, 9, 12, 15, 16, 18, 20, 24, 25, 28, 30, 32, 35, 36,
+    40, 42, 45, 48, 49, 50, 54, 56, 60, 63, 64,
+];
 const SAVED_DEFAULTS = {
     enable_hd: true, upscale_model: "minimax_h3_latent_upscaler_3d_fp16.safetensors",
     preset: "平衡高清", target_megapixels: 1.0,
@@ -98,7 +102,24 @@ function validSavedValue(name, value) {
     if (name === "refine_steps") {
         return Number.isInteger(value) && value >= 1 && value <= 50;
     }
+    if (name === "tile_count") return VALID_TILE_COUNTS.includes(value);
     return typeof value === "number" && Number.isFinite(value);
+}
+
+function nearestTileCount(value, previous = null) {
+    const numeric = Math.max(2, Math.min(64, Math.round(Number(value) || 2)));
+    if (VALID_TILE_COUNTS.includes(numeric)) return numeric;
+    if (Number.isFinite(previous) && numeric > previous) {
+        return VALID_TILE_COUNTS.find((candidate) => candidate > numeric)
+            ?? VALID_TILE_COUNTS.at(-1);
+    }
+    if (Number.isFinite(previous) && numeric < previous) {
+        return [...VALID_TILE_COUNTS].reverse().find((candidate) => candidate < numeric)
+            ?? VALID_TILE_COUNTS[0];
+    }
+    return VALID_TILE_COUNTS.reduce((best, candidate) =>
+        Math.abs(candidate - numeric) < Math.abs(best - numeric) ? candidate : best
+    );
 }
 
 function snapshotInputs(node) {
@@ -117,6 +138,9 @@ function repairInvalidInputs(node) {
         if (!item) continue;
         if (name === "refine_steps" && typeof item.value === "number" && Number.isFinite(item.value)) {
             item.value = Math.max(1, Math.min(50, Math.round(item.value)));
+        }
+        if (name === "tile_count" && typeof item.value === "number" && Number.isFinite(item.value)) {
+            item.value = nearestTileCount(item.value);
         }
         if (validSavedValue(name, item.value)) continue;
         const savedValue = saved[name];
@@ -207,21 +231,16 @@ function updateSigmaStatus(node, detail) {
     const shift = Number(detail?.shift);
     const suffix = Number.isFinite(shift) ? ` · Shift ${shift}` : "";
     const profile = String(detail?.profile ?? "");
-    node.__star7HDProfile = profile;
-    const profileSuffix = profile ? ` · ${profile}` : "";
-    const actualSteps = Number(detail?.steps);
-    const actualStrength = Number(detail?.strength);
-    if (Number.isFinite(actualSteps) && Number.isFinite(actualStrength)) {
-        node.__star7ApplyingHDPreset = true;
-        try {
-            const steps = widget(node, "refine_steps");
-            const strength = widget(node, "refine_strength");
-            if (steps) steps.value = actualSteps;
-            if (strength) strength.value = actualStrength;
-        } finally {
-            node.__star7ApplyingHDPreset = false;
-        }
+    // A bypass report has no sampler/model profile of its own. Preserve the
+    // last real profile so turning HD back on keeps the same preset family.
+    if (raw !== "off" && profile && profile !== "disabled") {
+        node.__star7HDProfile = profile;
     }
+    const profileSuffix = profile ? ` · ${profile}` : "";
+    // Runtime status describes what the completed execution actually used. It
+    // must never be written back into editable inputs: a disabled/bypassed run
+    // intentionally reports steps=0 and strength=0, and persisting those values
+    // used to erase the user's second-pass settings after switching pages.
     item.name = lang === "zh"
         ? `实际 Sigma：${sequence}${suffix}${profileSuffix}`
         : `Actual sigmas: ${sequence}${suffix}${profileSuffix}`;
@@ -283,6 +302,7 @@ function install(node) {
             const result = originalConfigure?.apply(this, args);
             repairInvalidInputs(this);
             this.__star7LastHDPreset = String(widget(this, "preset")?.value || "平衡高清");
+            this.__star7LastTileCount = nearestTileCount(widget(this, "tile_count")?.value);
             refreshEnabledState(this);
             return result;
         };
@@ -297,6 +317,20 @@ function install(node) {
         };
     }
     const preset = widget(node, "preset");
+    const tileCount = widget(node, "tile_count");
+    node.__star7LastTileCount = nearestTileCount(tileCount?.value);
+    if (tileCount && !tileCount.__star7TileCountWrapped) {
+        tileCount.__star7TileCountWrapped = true;
+        const original = tileCount.callback;
+        tileCount.callback = (...args) => {
+            const previous = node.__star7LastTileCount;
+            original?.apply(tileCount, args);
+            tileCount.value = nearestTileCount(tileCount.value, previous);
+            node.__star7LastTileCount = tileCount.value;
+            node.properties.star7HDSavedValues = snapshotInputs(node);
+            node.setDirtyCanvas?.(true, true);
+        };
+    }
     for (const toggleName of ["enable_hd", "enable_tiling"]) {
         const toggle = widget(node, toggleName);
         if (!toggle || toggle.__star7HDWrapped) continue;

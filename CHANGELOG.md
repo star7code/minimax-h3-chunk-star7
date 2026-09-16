@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.14.4 - 2026-09-16
+
+- Preserve HD settings when second-pass refinement is disabled and reopened.
+- Keep selectable tile counts exact and choose compact grids by frame aspect.
+
 ## 2.14.3 - 2026-09-16
 
 - Constrain one-click HD refinement to 1–50 steps in the UI and backend.

@@ -134,20 +134,21 @@ def test_spatial_tiles_are_even_aligned_and_weights_cover_the_canvas():
     assert torch.all(denominator > 0)
 
 
-def test_smart_grid_avoids_bad_odd_strips_and_respects_orientation():
+def test_smart_grid_keeps_exact_selectable_count_and_respects_orientation():
     assert _smart_tile_grid(40, 80, 2) == (1, 2)
-    assert _smart_tile_grid(40, 80, 3) == (2, 2)
     assert _smart_tile_grid(40, 80, 4) == (2, 2)
-    assert _smart_tile_grid(40, 80, 5) == (2, 3)
-    assert _smart_tile_grid(40, 80, 7) == (2, 4)
-    assert _smart_tile_grid(80, 40, 5) == (3, 2)
-    assert _smart_tile_grid(64, 64, 7) == (3, 3)
-    assert _smart_tile_grid(32, 96, 3) == (1, 3)
+    assert _smart_tile_grid(40, 80, 6) == (2, 3)
+    assert _smart_tile_grid(80, 40, 6) == (3, 2)
+    assert _smart_tile_grid(64, 64, 9) == (3, 3)
+    assert _smart_tile_grid(90, 160, 9) == (3, 3)
+    assert _smart_tile_grid(90, 160, 12) == (3, 4)
+    assert _smart_tile_grid(160, 90, 12) == (4, 3)
+    assert _smart_tile_grid(100, 400, 4) == (1, 4)
 
 
 def test_smart_grid_handles_sixteen_tiles_without_extreme_tile_shapes():
-    assert _smart_tile_grid(90, 160, 16) == (3, 6)
-    assert _smart_tile_grid(160, 90, 16) == (6, 3)
+    assert _smart_tile_grid(90, 160, 16) == (4, 4)
+    assert _smart_tile_grid(160, 90, 16) == (4, 4)
     assert _smart_tile_grid(120, 160, 16) == (4, 4)
     assert _smart_tile_grid(160, 120, 16) == (4, 4)
     assert _smart_tile_grid(128, 128, 16) == (4, 4)

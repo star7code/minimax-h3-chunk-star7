@@ -336,46 +336,53 @@ def _crop_tile(tensor, tile):
     return tensor[..., top:bottom, left:right].contiguous()
 
 
+def _has_compact_factor_pair(count: int):
+    """Return whether count has a useful 2-D factor pair for ordinary video."""
+    if count == 2:
+        return True
+    for rows in range(2, int(math.sqrt(count)) + 1):
+        if count % rows == 0 and (count // rows) / rows <= 2.0:
+            return True
+    return False
+
+
+_VALID_TILE_COUNTS = tuple(
+    count for count in range(2, 65) if _has_compact_factor_pair(count)
+)
+
+
+def _normalize_tile_count(value: int):
+    """Repair legacy/API values to the nearest selectable exact tile count."""
+    requested = max(2, min(int(value), 64))
+    return min(_VALID_TILE_COUNTS, key=lambda count: (abs(count - requested), -count))
+
+
 def _smart_tile_grid(height: int, width: int, requested_count: int):
-    """Choose a compact, aspect-aware grid with at least the requested tile count."""
-    requested = max(2, min(int(requested_count), 64))
-    aspect = max(float(width), 1.0) / max(float(height), 1.0)
-    if requested == 2:
-        return (1, 2) if aspect >= 1.0 else (2, 1)
-    if requested == 4:
-        return 2, 2
+    """Keep an exact tile count and choose its most square aspect-aware grid."""
+    count = _normalize_tile_count(requested_count)
+    frame_aspect = max(float(width), 1.0) / max(float(height), 1.0)
     candidates = []
-    # A requested count is a lower bound. Search a small band above it so 16:9
-    # can use 3x6 (18 near-square tiles) instead of being forced into sixteen
-    # wide 4x4 tiles, while 1:1 and 4:3 still prefer the exact 4x4 grid.
-    extra_limit = max(2, int(math.ceil(math.sqrt(requested))))
-    axis_limit = max(2, int(math.ceil(math.sqrt((requested + extra_limit) * max(aspect, 1.0 / aspect)))) + 1)
-    for rows in range(1, axis_limit + 1):
-        for columns in range(1, axis_limit + 1):
-            count = rows * columns
-            if count < requested or count > requested + extra_limit:
-                continue
-            # Do not create a long one-dimensional strip set unless its resulting
-            # tiles are already close to square (useful for true panoramas).
-            tile_aspect = aspect * rows / columns
+    for rows in range(1, int(math.sqrt(count)) + 1):
+        if count % rows:
+            continue
+        columns = count // rows
+        for candidate_rows, candidate_columns in {
+            (rows, columns), (columns, rows)
+        }:
+            tile_aspect = frame_aspect * candidate_rows / candidate_columns
             shape_cost = abs(math.log(max(tile_aspect, 1e-6)))
-            one_axis_cost = (
-                0.60 if count > 2 and min(rows, columns) == 1
-                and not 0.75 <= tile_aspect <= 1.333 else 0.0
-            )
             orientation_cost = 0.0
-            if aspect > 1.1 and rows > columns:
-                orientation_cost = 0.35
-            elif aspect < (1.0 / 1.1) and columns > rows:
-                orientation_cost = 0.35
-            extra_cost = (count - requested) * (0.18 if requested <= 8 else 0.12)
+            if frame_aspect > 1.0 and candidate_columns < candidate_rows:
+                orientation_cost = 1e-6
+            elif frame_aspect < 1.0 and candidate_rows < candidate_columns:
+                orientation_cost = 1e-6
             candidates.append((
-                shape_cost + one_axis_cost + orientation_cost + extra_cost,
-                count - requested, count, rows, columns,
+                shape_cost + orientation_cost,
+                max(candidate_rows, candidate_columns),
+                candidate_rows,
+                candidate_columns,
             ))
-    if not candidates:
-        return (1, 2) if width >= height else (2, 1)
-    _, _, _, rows, columns = min(candidates)
+    _, _, rows, columns = min(candidates)
     return rows, columns
 
 
