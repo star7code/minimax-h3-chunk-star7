@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.14.5 - 2026-09-16
+
+- Expand all-in-one conditioning from 4 to 16 reference-image inputs.
+- Keep prompt picture numbering contiguous when optional input slots are skipped.
+
 ## 2.14.4 - 2026-09-16
 
 - Preserve HD settings when second-pass refinement is disabled and reopened.

@@ -36,6 +36,7 @@ _FACE_DETECTOR_URLS = (
 )
 _FACE_DETECTOR_LOCK = threading.Lock()
 _FPS = 24
+_MAX_REFERENCE_IMAGES = 16
 _MAX_REFERENCE_VIDEO_FRAMES = 15 * _FPS
 _MIN_RECOMMENDED_REFERENCE_VIDEO_FRAMES = 2 * _FPS
 _MEGAPIXEL = 1024 * 1024
@@ -245,6 +246,18 @@ def _prepare_prompt_tags(prompt: str, pictures: int, videos: int, audios: int,
     for placeholder, official_tag in hidden_aliases:
         normalized = normalized.replace(placeholder, official_tag)
     return normalized, list(dict.fromkeys(warnings))
+
+
+def _collect_reference_images(first_images, extra_inputs):
+    values = tuple(first_images) + tuple(
+        extra_inputs.get(f"ref_image_{index}")
+        for index in range(len(first_images), _MAX_REFERENCE_IMAGES)
+    )
+    connected = [image for image in values if image is not None]
+    return {
+        f"ref_image_{index}": image
+        for index, image in enumerate(connected)
+    }
 
 
 def _decode_video_frames(vae, latent: torch.Tensor) -> torch.Tensor:
@@ -538,10 +551,7 @@ class MiniMaxH3MaterialPromptStar7:
                 "final_audio": ("AUDIO",),
                 "first_frame": ("IMAGE",),
                 "last_frame": ("IMAGE",),
-                "ref_image_0": ("IMAGE",),
-                "ref_image_1": ("IMAGE",),
-                "ref_image_2": ("IMAGE",),
-                "ref_image_3": ("IMAGE",),
+                **{f"ref_image_{index}": ("IMAGE",) for index in range(_MAX_REFERENCE_IMAGES)},
                 "ref_video_0": ("IMAGE",),
                 "ref_video_1": ("IMAGE",),
                 "ref_video_2": ("IMAGE",),
@@ -568,6 +578,7 @@ class MiniMaxH3MaterialPromptStar7:
         ref_video_0=None, ref_video_1=None, ref_video_2=None,
         ref_video_audio_0=None, ref_video_audio_1=None, ref_video_audio_2=None,
         ref_audio_0=None, ref_audio_1=None,
+        **extra_inputs,
     ):
         from comfy_extras.nodes_minimax_h3 import (
             MiniMaxH3AddGuide,
@@ -594,8 +605,9 @@ class MiniMaxH3MaterialPromptStar7:
             warnings.append(f"audio mode {mode} has no driving audio; using native audio generation")
             mode = "native"
 
-        ref_images = {f"ref_image_{i}": item for i, item in enumerate(
-                      (ref_image_0, ref_image_1, ref_image_2, ref_image_3)) if item is not None}
+        ref_images = _collect_reference_images(
+            (ref_image_0, ref_image_1, ref_image_2, ref_image_3), extra_inputs
+        )
         ref_videos = {f"ref_video_{i}": item for i, item in enumerate(
                       (ref_video_0, ref_video_1, ref_video_2)) if item is not None}
         ref_video_audios = {f"ref_video_audio_{i}": item for i, item in enumerate(
@@ -708,7 +720,7 @@ class MiniMaxH3MaterialPromptStar7:
             "audio_vae": audio_vae,
             "prompt": conditioned_prompt,
             "task_type": resolved,
-            "identity_reference": ref_image_0,
+            "identity_reference": ref_images.get("ref_image_0"),
             # Keep the original endpoint pixels outside CONDITIONING so local face
             # repair remains free of full-frame anchors, while the HD node can
             # re-encode them at its actual target resolution instead of injecting

@@ -8,6 +8,7 @@ from .h3_face_refine_star7 import (
     MiniMaxH3MaterialPromptStar7,
     _aligned_reference_frames,
     _build_multiface_picks,
+    _collect_reference_images,
     _copy_conditioning_without_keyframes,
     _decode_video_frames,
     _face_repair_output_size,
@@ -133,6 +134,27 @@ def test_prompt_media_tags_are_repaired_without_strict_failure():
     assert warnings
 
 
+def test_reference_images_support_sixteen_slots_and_compact_gaps():
+    images = [object() for _ in range(16)]
+    all_images = _collect_reference_images(
+        tuple(images[:4]),
+        {f"ref_image_{index}": images[index] for index in range(4, 16)},
+    )
+    assert list(all_images) == [f"ref_image_{index}" for index in range(16)]
+    assert list(all_images.values()) == images
+
+    gapped = _collect_reference_images(
+        (None, images[1], None, images[3]),
+        {
+            "ref_image_4": images[4],
+            "ref_image_15": images[15],
+            "ref_image_16": object(),
+        },
+    )
+    assert list(gapped) == [f"ref_image_{index}" for index in range(4)]
+    assert list(gapped.values()) == [images[1], images[3], images[4], images[15]]
+
+
 def test_prompt_audio_tags_keep_official_order_and_use_drive_alias():
     prompt, warnings = _prepare_prompt_tags(
         "drive=<Audio D>; video=<Audio 1>; standalone=<Audio 2>",
@@ -224,6 +246,8 @@ def test_public_node_contract_is_two_wire_face_refine():
     material = MiniMaxH3MaterialPromptStar7.INPUT_TYPES()
     face = MiniMaxH3FaceRefineStar7.INPUT_TYPES()
     assert material["required"]["model"] == ("MODEL",)
+    image_inputs = [name for name in material["optional"] if name.startswith("ref_image_")]
+    assert image_inputs == [f"ref_image_{index}" for index in range(16)]
     assert MiniMaxH3MaterialPromptStar7.RETURN_NAMES[4] == "refine_context"
     assert face["required"]["sampled_av_latent"] == ("LATENT",)
     assert face["required"]["refine_context"] == ("STAR7_H3_REFINE_CONTEXT",)
