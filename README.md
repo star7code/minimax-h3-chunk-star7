@@ -84,6 +84,7 @@ RTX 20 系建议配合 [MiniMax H3 FP16 Exact Fix - Star7](https://github.com/st
 | `sla_sm75_qk_int8_pv_fp16` | QK INT8、PV FP16、FP32 softmax/累积 | SLA 精度优先 |
 | `sla_sm75_all_int8` | QK/PV INT8、FP32 softmax/累积、完整音频查询保护 | SLA 性能优先；建议按提示词验证画质与语音 |
 | `sol_sm75_all_int8` | Q64/K64，精确块 + 质心近似，PV INT8 | SM75 Sol 标准可见模式 |
+| `vsa_sm75` | FastH3 VSA、10% 保留、0%–100% 全采样区间、SM75 专用路径 | 需要带完整压缩门的 FastH3/VSA 模型 |
 | `hybrid_sm75_ck_sla_all_int8` | CK / SLA All-INT8 / CK | 采样步级质量与速度折中 |
 | `hybrid_sm75_ck_sol_all_int8` | CK / Sol All-INT8 / CK | 采样步级质量与速度折中 |
 
@@ -95,6 +96,7 @@ RTX 20 系建议配合 [MiniMax H3 FP16 Exact Fix - Star7](https://github.com/st
 | `sla_sm80+_all_int8` | QK/PV INT8、FP32 softmax/累积、完整音频查询保护 | 性能/质量对照模式，需实机验证 |
 | `sol_sm80+_bf16_official` | NVIDIA 官方 BF16 exact+approx Sol-Attn、音频 KV sink 与完整音频查询保护 | SM80+ Sol 标准模式 |
 | `sol_sm80+_all_int8` | Star7 exact+centroid Sol、PV INT8、音频 KV sink 与完整音频查询保护 | 性能/质量对照模式，需实机验证 |
+| `vsa_sm80+` | FastH3 VSA、10% 保留、0%–100% 全采样区间、SM80+ 路径 | 需要带完整压缩门的 FastH3/VSA 模型 |
 | `hybrid_sm80+_ck_sla_qk_int8_pv_bf16` | CK / SLA BF16-PV / CK | SM80+ Hybrid SLA 标准模式 |
 | `hybrid_sm80+_ck_sol_bf16_official` | CK / NVIDIA 官方 BF16 Sol / CK | SM80+ Hybrid Sol 标准模式 |
 | `hybrid_sm80+_ck_sla_all_int8` | CK / SLA All-INT8 / CK | SM80+ Hybrid SLA 性能模式 |
@@ -324,7 +326,7 @@ Loader -> LoRA -> Sage Attention Patch -> Activation Chunk - Star7
 
 并选择 `attention_backend=existing`。本节点只安装 QKV/RoPE/MLP 分块并保留传入模型的注意力实现。
 
-FastH3 VSA 模型同样选择 `attention_backend=existing`：VSA 加速由上游增强载入节点独立提供，本节点只追加 QKV、RoPE 与 MLP 分块，不替换 VSA attention；未连接本节点时，VSA 仍可独立运行。
+上游增强载入节点已经安装 VSA 时，可以选择 `attention_backend=existing`，本节点只追加 QKV、RoPE 与 MLP 分块。也可以直接选择架构对应的 `vsa_sm75` 或 `vsa_sm80+`：SM75 使用 Star7 预编译 CUDA producer，SM80+ 使用 Comfy Kitchen Sol-Attn；两条直连路径都要求带完整压缩门的 FastH3/VSA 模型，producer 不可用时会在采样前终止，不会静默退回 dense。
 
 外部 TE-Speed 等 block-loop 缓存可以接在本节点之前；完整步与缓存前缀仍会经过 Star7 block/attention 补丁。节点使用 model clone、弱绑定 forward 和可识别 wrapper 标记，避免重复包装与旧模型被闭包长期强引用。
 

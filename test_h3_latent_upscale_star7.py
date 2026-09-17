@@ -10,6 +10,7 @@ from .h3_latent_upscale_star7 import (
     _sampling_profile,
     _pdd_partition,
     _pdd_tail_sigmas,
+    _native_flow_tail_sigmas,
     _smart_tile_grid,
     _spatial_tile_plan,
     _tile_windows,
@@ -122,36 +123,52 @@ def test_master_switch_bypasses_before_context_or_model_loading():
 def test_spatial_tiles_are_even_aligned_and_weights_cover_the_canvas():
     video = torch.zeros((1, 24, 3, 40, 80))
     grid, tiles = _spatial_tile_plan(video, 3, 128)
-    assert grid == (2, 2)
-    assert len(tiles) == 4
+    assert grid == (1, 3)
+    assert len(tiles) == 3
     assert min(tile[0] for tile in tiles) == 0
     assert max(tile[1] for tile in tiles) == 40
     assert min(tile[2] for tile in tiles) == 0
     assert max(tile[3] for tile in tiles) == 80
     assert all(all(value % 2 == 0 for value in tile) for tile in tiles)
     windows, denominator = _tile_windows(tiles, 40, 80, video.device)
-    assert len(windows) == 4
+    assert all((top, bottom) == (0, 40) for top, bottom, _, _ in tiles)
+    assert tiles[0][3] - tiles[1][2] == 16  # 128px halo on both sides
+    assert len(windows) == 3
     assert torch.all(denominator > 0)
 
 
-def test_smart_grid_keeps_exact_selectable_count_and_respects_orientation():
+def test_smart_grid_keeps_exact_strip_count_and_respects_orientation():
     assert _smart_tile_grid(40, 80, 2) == (1, 2)
-    assert _smart_tile_grid(40, 80, 4) == (2, 2)
-    assert _smart_tile_grid(40, 80, 6) == (2, 3)
-    assert _smart_tile_grid(80, 40, 6) == (3, 2)
-    assert _smart_tile_grid(64, 64, 9) == (3, 3)
-    assert _smart_tile_grid(90, 160, 9) == (3, 3)
-    assert _smart_tile_grid(90, 160, 12) == (3, 4)
-    assert _smart_tile_grid(160, 90, 12) == (4, 3)
+    assert _smart_tile_grid(40, 80, 4) == (1, 4)
+    assert _smart_tile_grid(40, 80, 5) == (1, 5)
+    assert _smart_tile_grid(40, 80, 7) == (1, 7)
+    assert _smart_tile_grid(80, 40, 6) == (6, 1)
+    assert _smart_tile_grid(64, 64, 9) == (1, 9)
+    assert _smart_tile_grid(90, 160, 12) == (1, 12)
+    assert _smart_tile_grid(160, 90, 12) == (12, 1)
     assert _smart_tile_grid(100, 400, 4) == (1, 4)
 
 
-def test_smart_grid_handles_sixteen_tiles_without_extreme_tile_shapes():
-    assert _smart_tile_grid(90, 160, 16) == (4, 4)
-    assert _smart_tile_grid(160, 90, 16) == (4, 4)
-    assert _smart_tile_grid(120, 160, 16) == (4, 4)
-    assert _smart_tile_grid(160, 120, 16) == (4, 4)
-    assert _smart_tile_grid(128, 128, 16) == (4, 4)
+def test_portrait_strips_span_full_width_and_keep_exact_prime_count():
+    video = torch.zeros((1, 24, 3, 80, 40))
+    grid, tiles = _spatial_tile_plan(video, 7, 128)
+    assert grid == (7, 1)
+    assert len(tiles) == 7
+    assert all((left, right) == (0, 40) for _, _, left, right in tiles)
+
+
+def test_base_native_flow_tail_matches_expected_split_sigmas():
+    assert torch.allclose(
+        _native_flow_tail_sigmas(4, 12),
+        torch.tensor([0.9230769, 0.8780488, 0.8, 0.6315789, 0.0]),
+        atol=1e-6,
+    )
+    assert torch.allclose(
+        _native_flow_tail_sigmas(6, 12),
+        torch.tensor([0.9729730, 0.9523810, 0.9230769, 0.8780488, 0.8, 0.6315789, 0.0]),
+        atol=1e-6,
+    )
+    assert len(_native_flow_tail_sigmas(99, 12)) == 9
 
 
 def test_tiled_model_proxy_merges_video_and_averages_audio_predictions():
@@ -171,6 +188,31 @@ def test_tiled_model_proxy_merges_video_and_averages_audio_predictions():
     merged_video, merged_audio = comfy.utils.unpack_latents(merged, shapes)
     assert torch.allclose(merged_video, video * 2)
     assert torch.allclose(merged_audio, audio * 2)
+
+
+def test_tiled_model_gives_each_strip_an_independent_attention_cache_marker():
+    video = torch.arange(32, dtype=torch.float32).reshape(1, 1, 1, 4, 8)
+    audio = torch.arange(4, dtype=torch.float32).reshape(1, 1, 1, 4)
+    packed, shapes = comfy.utils.pack_latents([video, audio])
+    seen = []
+
+    class Model:
+        latent_image = None
+        noise = None
+
+        def __call__(self, value, _sigma, **kwargs):
+            options = kwargs["model_options"]["transformer_options"]
+            seen.append(options["star7_spatial_tile_id"])
+            return value
+
+    model_options = {"transformer_options": {"uuids": ("base",)}}
+    grid, tiles = _spatial_tile_plan(video, 2, 32)
+    _SpatialTileModel(Model(), shapes, grid, tiles)(
+        packed, torch.tensor([0.5]), model_options=model_options,
+    )
+    assert seen == [0, 1]
+    assert model_options["transformer_options"]["uuids"] == ("base",)
+    assert "star7_spatial_tile_id" not in model_options["transformer_options"]
 
 
 def test_hd_endpoint_guides_are_reencoded_at_target_resolution():

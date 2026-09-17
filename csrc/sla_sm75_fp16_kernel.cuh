@@ -193,7 +193,8 @@ __global__ void star7_sm75_sparse_qk_i8_pv_f16(
     const int8_t *__restrict__ VCentroidInt8 = nullptr,
     const float *__restrict__ VScale = nullptr,
     const float *__restrict__ VCentroidScale = nullptr,
-    uint32_t v_padded_length = 0) {
+    uint32_t v_padded_length = 0,
+    const int32_t *__restrict__ BlockLen = nullptr) {
   constexpr uint32_t PACK_QK = 16;
   constexpr uint32_t MMA_M = 16;
   constexpr uint32_t MMA_N = 16;
@@ -333,9 +334,12 @@ __global__ void star7_sm75_sparse_qk_i8_pv_f16(
     const uint32_t k_lane_base = key_start +
         get_warp_idx_k<NUM_WARPS_Q, NUM_WARPS_K>() * WARP_K +
         2 * (lane % 4);
-    if (key_block == key_blocks - 1)
+    const uint32_t valid_key_end = BlockLen
+        ? key_start + min(CTA_K, static_cast<uint32_t>(max(BlockLen[key_block], 1)))
+        : length;
+    if (BlockLen || key_block == key_blocks - 1)
       apply_out_of_bound_mask<TILES_Q, TILES_K>(
-          k_lane_base, probabilities, length, -1.0e30f);
+          k_lane_base, probabilities, valid_key_end, -1.0e30f);
 
     const float score_scale = attention_scale * math::log2e * q_scale *
         KScale[(batch * heads + head) * key_blocks + key_block];

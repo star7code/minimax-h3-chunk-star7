@@ -28,7 +28,7 @@ The dropdown intentionally uses stable backend IDs so workflows remain portable 
 | `existing` | Keep the incoming model's current attention implementation, including an upstream Sage or other patch |
 | `comfy_kitchen_int8` | Use ComfyUI / Comfy Kitchen INT8 attention |
 
-For a FastH3 VSA model, select `existing`. The upstream enhanced loader owns VSA acceleration; this node adds only QKV, RoPE, and MLP chunking without replacing VSA attention. VSA remains independently usable when this node is absent.
+When an enhanced upstream loader has already installed VSA, select `existing` to add only QKV, RoPE, and MLP chunking. Alternatively, select the direct `vsa_sm75` or `vsa_sm80+` path: SM75 uses Star7's precompiled CUDA producer, while SM80+ uses Comfy Kitchen Sol-Attn. Both direct paths require a gated FastH3/VSA checkpoint and stop before sampling if their producer is unavailable instead of silently running dense attention.
 
 ### SM75 / RTX 20 series
 
@@ -37,6 +37,7 @@ For a FastH3 VSA model, select `existing`. The upstream enhanced loader owns VSA
 | `sla_sm75_qk_int8_pv_fp16` | SLA with INT8 QK, FP16 PV, and FP32 softmax/accumulation |
 | `sla_sm75_all_int8` | SLA with INT8 QK/PV and protected full attention for target-audio queries |
 | `sol_sm75_all_int8` | Sol Q64/K64 exact selected blocks plus centroid approximation, with INT8 PV |
+| `vsa_sm75` | FastH3 VSA with 10% keep over the full 0%–100% sampling interval; requires a gated VSA checkpoint |
 | `hybrid_sm75_ck_sla_all_int8` | CK / SLA All-INT8 / CK across sampling steps |
 | `hybrid_sm75_ck_sol_all_int8` | CK / Sol All-INT8 / CK across sampling steps |
 
@@ -48,6 +49,7 @@ For a FastH3 VSA model, select `existing`. The upstream enhanced loader owns VSA
 | `sla_sm80+_all_int8` | SLA INT8 QK/PV comparison mode with full-attention audio queries |
 | `sol_sm80+_bf16_official` | Official NVIDIA BF16 exact+approx Sol-Attn with audio KV sinks and full-attention audio queries |
 | `sol_sm80+_all_int8` | Star7 exact+centroid Sol with INT8 PV, audio KV sinks, and full-attention audio queries |
+| `vsa_sm80+` | FastH3 VSA with 10% keep over the full 0%–100% sampling interval; requires a gated VSA checkpoint |
 | `hybrid_sm80+_ck_sla_qk_int8_pv_bf16` | CK / SLA BF16-PV / CK |
 | `hybrid_sm80+_ck_sol_bf16_official` | CK / official NVIDIA BF16 Sol / CK |
 | `hybrid_sm80+_ck_sla_all_int8` | CK / SLA All-INT8 / CK |

@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.14.4"
+NODE_VERSION = "2.15.0"
 FP16_EXACT_PATCH_FLAG = "star7_minimax_h3_fp16_exact_fix"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
@@ -37,6 +37,10 @@ LEGACY_SOL_SM86PLUS_ALL_INT8_BACKEND_NAME = "sol_sm80+_all_int8_experimental"
 HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sol_all_int8"
 HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME = "hybrid_sm80+_ck_sol_all_int8"
 HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME = "hybrid_sm80+_ck_sol_bf16_official"
+VSA_SM75_BACKEND_NAME = "vsa_sm75"
+VSA_SM80PLUS_BACKEND_NAME = "vsa_sm80+"
+VSA_BACKEND_NAMES = {VSA_SM75_BACKEND_NAME, VSA_SM80PLUS_BACKEND_NAME}
+VSA_START_PERCENT = 0.0
 LEGACY_SM80PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_fp16"
 HYBRID_BACKEND_NAMES = {
     HYBRID_ALL_INT8_BACKEND_NAME,
@@ -139,6 +143,7 @@ def _attention_backend_choices():
         "sla_sm75_qk_int8_pv_fp16",
         SM75_ALL_INT8_BACKEND_NAME,
         SOL_SM75_ALL_INT8_BACKEND_NAME,
+        VSA_SM75_BACKEND_NAME,
         HYBRID_ALL_INT8_BACKEND_NAME,
         HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
     ]
@@ -147,6 +152,7 @@ def _attention_backend_choices():
         SM86PLUS_ALL_INT8_BACKEND_NAME,
         SOL_SM86PLUS_BACKEND_NAME,
         SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
+        VSA_SM80PLUS_BACKEND_NAME,
         HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME,
         HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
         HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME,
@@ -1225,6 +1231,24 @@ def _ck_int8_attention_available(ck_module=None) -> bool:
     return callable(getattr(ck_module, "int8_attention", None))
 
 
+def _require_ck_int8_attention(context: str):
+    """Resolve CK INT8 strictly so an explicit selection never falls back."""
+    try:
+        import comfy_kitchen
+    except (ImportError, RuntimeError) as exc:
+        raise RuntimeError(
+            f"{context} requires Comfy Kitchen INT8 attention, but comfy_kitchen "
+            f"could not be loaded: {exc}. No dense-attention fallback was used."
+        ) from exc
+    if not _ck_int8_attention_available(comfy_kitchen):
+        raise RuntimeError(
+            f"{context} requires Comfy Kitchen INT8 attention, but the active "
+            "comfy_kitchen build has no usable INT8 attention kernel. "
+            "No dense-attention fallback was used."
+        )
+    return comfy_kitchen
+
+
 def _sm75_h3_out_proj_fused_candidate(linear, x: torch.Tensor) -> bool:
     if x.ndim != 2 or x.device.type != "cuda" or x.shape[-1] != 7168:
         return False
@@ -1671,6 +1695,11 @@ def _step_backend_label(transformer_options: dict):
             backend = "Hybrid"
     elif configured == "comfy_kitchen_int8":
         backend = "CK"
+    elif configured in VSA_BACKEND_NAMES:
+        backend = (
+            "VSA" if transformer_options.get("_star7_vsa_step_active")
+            else "Dense"
+        )
     elif configured.startswith("sla_"):
         backend = "SLA"
     else:
@@ -2123,6 +2152,26 @@ def _load_sol_backend():
     return sol_backend
 
 
+def _load_vsa_sm75_backend():
+    try:
+        from . import vsa_sm75_backend
+    except ImportError:
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).with_name("vsa_sm75_backend.py")
+        module_name = "star7_vsa_sm75_backend"
+        if module_name in sys.modules:
+            return sys.modules[module_name]
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Unable to load Star7 SM75 VSA backend from {path}")
+        vsa_sm75_backend = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = vsa_sm75_backend
+        spec.loader.exec_module(vsa_sm75_backend)
+    return vsa_sm75_backend
+
+
 def _merge_token_ranges(ranges, length):
     merged = []
     for start, end in sorted(
@@ -2473,13 +2522,19 @@ def _sla_segment_passthrough(
     """Expose H3 packed segments to SLA while preserving the upstream block."""
     original_forward = _weak_callable(original_forward)
 
-    def forward(self, x, t_emb, mod_segments, rope_freqs, transformer_options={}):
+    def forward(
+        self, x, t_emb, mod_segments, rope_freqs, transformer_options={},
+        attention=None, **kwargs,
+    ):
         old_segments = getattr(self.attn, "_star7_sla_mod_segments", None)
         self.attn._star7_sla_mod_segments = mod_segments
         try:
+            call_kwargs = dict(kwargs)
+            call_kwargs["transformer_options"] = transformer_options
+            if attention is not None:
+                call_kwargs["attention"] = attention
             result = original_forward(
-                x, t_emb, mod_segments, rope_freqs,
-                transformer_options=transformer_options,
+                x, t_emb, mod_segments, rope_freqs, **call_kwargs
             )
             # One check after the complete block catches attention projection,
             # residual/gating and MLP failures without adding extra host
@@ -2505,6 +2560,305 @@ def _sla_segment_passthrough(
     forward._star7_wrapper_kind = "sla-segment-block"
     forward._star7_original_forward = original_forward
     return forward
+
+
+def _minimax_vsa_sm75_forward(
+    attn, x, rope_freqs, transformer_options, patch, block_index,
+):
+    """Run FastH3 VSA with the native SM75 fine-attention kernel."""
+    import comfy.model_management as mm
+    import comfy.quant_ops
+
+    layout = transformer_options["minimax_h3_layout"]
+    plan = patch.vsa_plan(layout, x.device)
+    sequence = int(plan["n"])
+    upstream_dtype = x.dtype
+    padded = x.new_zeros((sequence, x.shape[1]))
+    padded[plan["inv"]] = x
+    gate = attn.to_gate_compress(padded).view(
+        1, sequence, attn.heads, attn.head_dim,
+    ).to(torch.float16)
+    padded_rope = patch.vsa_rope_freqs(rope_freqs, plan)
+    q, k, v = _prepare_h3_qkv_chunked(
+        attn, padded, padded_rope, mm, comfy.quant_ops,
+        output_dtype=torch.float16,
+    )
+    del padded
+
+    backend = _load_vsa_sm75_backend()
+    q_mean = backend.block_means(q, plan["block_len"])
+    k_mean = backend.block_means(k, plan["block_len"])
+    v_mean = backend.block_means(v, plan["block_len"])
+    row_count, lut, density = backend.build_topk_routing(
+        q_mean, k_mean, topk_ratio=patch.topk_ratio,
+        prefix_blocks=plan["n_prefix"],
+    )
+    q_int8, k_int8, q_scale, k_scale = backend.quantize_qk(q, k, k_mean)
+    del q, k
+    owned_v = [v]
+    del v
+    output = backend.run_fine(
+        q_int8, k_int8, owned_v, q_scale, k_scale, row_count, lut,
+        plan["block_len"],
+    )
+    del q_int8, k_int8, q_scale, k_scale, row_count, lut
+    backend.add_coarse_(output, q_mean, k_mean, v_mean, gate)
+    out = output.transpose(1, 2).reshape(
+        sequence, attn.heads * attn.head_dim,
+    )[plan["inv"]]
+    if out.dtype != upstream_dtype:
+        out = out.to(upstream_dtype)
+    patch.log_once(
+        ("star7-sm75-vsa", sequence),
+        f"native SM75 VSA: {layout.seq_len} tokens, {sequence} padded rows, "
+        f"{plan['n_prefix']} prefix tiles, first-block fine density "
+        f"{density * 100.0:.2f}%",
+    )
+    return attn.out_proj(out)
+
+
+def _star7_vsa_block_patch(sparse, block, block_index, patch):
+    """Run core VSA after Star7's FP16/BF16 block-local normalization."""
+    def attention(h, rope_freqs=None, transformer_options={}):
+        if _CONFIG.get("attention_backend") == VSA_SM75_BACKEND_NAME:
+            return _minimax_vsa_sm75_forward(
+                block.attn, h, rope_freqs, transformer_options, patch,
+                block_index,
+            )
+        tile_id = transformer_options.get("star7_spatial_tile_id")
+        if tile_id is not None:
+            transformer_options = dict(transformer_options)
+            transformer_options["uuids"] = (
+                *tuple(transformer_options.get("uuids", ())),
+                ("star7-spatial-tile", int(tile_id)),
+            )
+        return sparse.h3_sparse_attention(
+            block.attn, h, rope_freqs, transformer_options, patch, block_index
+        )
+
+    def block_patch(args, extra):
+        x = args["img"]
+        rope_freqs = args["rope_freqs"]
+        transformer_options = args["transformer_options"]
+        if block_index == 0:
+            transformer_options["_star7_vsa_step_active"] = False
+        reason = None
+        if rope_freqs is None or x.device.type != "cuda":
+            reason = "missing RoPE or not on CUDA"
+        elif block.attn.head_dim != sparse.HEAD_DIM:
+            reason = f"head_dim {block.attn.head_dim} != {sparse.HEAD_DIM}"
+        else:
+            reason = patch.dense_reason(
+                transformer_options, int(x.shape[0]), block_index
+            )
+        if reason is None:
+            if _CONFIG.get("attention_backend") == VSA_SM75_BACKEND_NAME:
+                available, unavailable_reason = _load_vsa_sm75_backend().availability()
+            else:
+                available = bool(sparse.ck.sol_attn_is_available(x.device))
+                unavailable_reason = "Comfy Kitchen Sol-Attn is unavailable"
+            if not available:
+                raise RuntimeError(
+                    "Star7 VSA lost its compiled producer at runtime: "
+                    f"{unavailable_reason}. The task was stopped instead of "
+                    "silently running dense attention."
+                )
+        if reason is None:
+            layout = transformer_options.get("minimax_h3_layout")
+            if layout is None or layout.seq_len != int(x.shape[0]):
+                reason = "no matching H3 layout"
+        if reason is None:
+            transformer_options["_star7_vsa_step_active"] = True
+            args = {**args, "attention": attention}
+        else:
+            patch.log_once(
+                ("star7-dense", int(x.shape[0]), reason),
+                f"dense ({int(x.shape[0])} tokens): {reason}",
+            )
+        return extra["original_block"](args)
+
+    block_patch._star7_vsa_patch = patch
+    return block_patch
+
+
+def _require_vsa_producer(sparse, capability, path: str):
+    """Reject a VSA path that would otherwise execute every block as dense."""
+    if path == VSA_SM75_BACKEND_NAME:
+        available, reason = _load_vsa_sm75_backend().availability()
+        if available:
+            return
+        raise RuntimeError(
+            f"Star7 {path} is unavailable on SM75: {reason}. Install the matching "
+            "precompiled Star7 SM75 VSA binary. No dense fallback was used."
+        )
+    device = torch.device("cuda", torch.cuda.current_device())
+    try:
+        available = bool(sparse.ck.sol_attn_is_available(device))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Star7 {path} could not probe the Comfy Kitchen Sol-Attn producer: "
+            f"{exc}. The task was stopped before sampling."
+        ) from exc
+    if available:
+        return
+    architecture = f"SM{capability[0]}{capability[1]}"
+    recommendation = (
+        "Use sol_sm75_all_int8 or an SM75 CK/Sol Hybrid mode instead."
+        if capability == (7, 5)
+        else "Install a Comfy Kitchen build with Sol-Attn support for this GPU."
+    )
+    raise RuntimeError(
+        f"Star7 {path} is unavailable on {architecture}: the installed Comfy "
+        "Kitchen has no compiled sol_attn/sol_attn_chunked producer for this GPU. "
+        "Without that producer VSA would run dense attention on every block and "
+        f"can be much slower than CK. {recommendation} No dense fallback was used."
+    )
+
+
+def _apply_integrated_vsa_patch(model, verbose: bool):
+    try:
+        import comfy.patcher_extension
+        from comfy.ldm.minimax.model import MiniMaxH3Model
+        import comfy_extras.nodes_sparse_attention as sparse
+    except (ImportError, AttributeError) as exc:
+        raise RuntimeError(
+            "Star7 integrated VSA requires ComfyUI 0.36 or newer with "
+            "Model Sparse Attention support"
+        ) from exc
+
+    diffusion_model = model.get_model_object("diffusion_model")
+    if not isinstance(diffusion_model, MiniMaxH3Model):
+        raise ValueError("Star7 VSA can only be applied to MiniMax H3")
+    missing_gates = [
+        index for index, block in enumerate(diffusion_model.blocks)
+        if getattr(block.attn, "to_gate_compress", None) is None
+    ]
+    if missing_gates:
+        raise ValueError(
+            "Star7 VSA requires a FastH3/VSA checkpoint with compression gates; "
+            f"missing gates on block(s) {missing_gates[:6]}"
+        )
+
+    model_sampling = model.get_model_object("model_sampling")
+    patch = sparse.SparseAttnPatch(
+        tau=1.3,
+        topk_ratio=0.10,
+        vsa=True,
+        sigma_start=float(model_sampling.percent_to_sigma(VSA_START_PERCENT)),
+        sigma_end=float(model_sampling.percent_to_sigma(1.0)),
+        min_tokens=12288,
+        dense_blocks=set(),
+        sink_conditioning="exact_kv_and_rows",
+        extra_tokens=0,
+        verbose=bool(verbose),
+    )
+    patched = model.clone()
+    sparse.install_override(
+        patch, patched.model_options.setdefault("transformer_options", {})
+    )
+    patched.add_callback_with_key(
+        comfy.patcher_extension.CallbacksMP.ON_PREPARE_STATE,
+        "star7_integrated_vsa",
+        lambda model_patcher, timestep, model_options: sparse.install_override(
+            patch, model_options["transformer_options"]
+        ),
+    )
+    patched.add_callback_with_key(
+        comfy.patcher_extension.CallbacksMP.ON_CLEANUP,
+        "star7_integrated_vsa",
+        lambda model_patcher: patch.reset(),
+    )
+    for index, block in enumerate(diffusion_model.blocks):
+        patched.set_model_patch_replace(
+            _star7_vsa_block_patch(sparse, block, index, patch),
+            "dit", "double_block", index,
+        )
+    return patched
+
+
+def _upgrade_upstream_core_vsa(model, diffusion_model) -> bool:
+    """Upgrade an upstream ComfyUI VSA replacement to the Star7 FP16-safe form."""
+    replacements = model.model_options.get("transformer_options", {}).get(
+        "patches_replace", {}
+    ).get("dit", {})
+    upgraded = 0
+    try:
+        import comfy_extras.nodes_sparse_attention as sparse
+    except ImportError:
+        return False
+    for index, block in enumerate(diffusion_model.blocks):
+        replacement = replacements.get(("double_block", index))
+        function = getattr(replacement, "__func__", replacement)
+        closure = dict(zip(
+            getattr(getattr(function, "__code__", None), "co_freevars", ()),
+            getattr(function, "__closure__", None) or (),
+        ))
+        patch_cell = closure.get("patch")
+        patch = patch_cell.cell_contents if patch_cell is not None else None
+        if not isinstance(patch, sparse.SparseAttnPatch) or not patch.vsa:
+            continue
+        if upgraded == 0:
+            capability = (
+                torch.cuda.get_device_capability()
+                if torch.cuda.is_available() else None
+            )
+            if capability is None:
+                raise RuntimeError("Star7 VSA requires an available CUDA device")
+            _require_vsa_producer(sparse, capability, "upstream VSA")
+        model.set_model_patch_replace(
+            _star7_vsa_block_patch(sparse, block, index, patch),
+            "dit", "double_block", index,
+        )
+        upgraded += 1
+    if upgraded:
+        _LOG.info(
+            "[Star7 H3 Chunk] Upgraded %d upstream H3 VSA block replacements "
+            "for FP16 Exact and tiled-refine compatibility",
+            upgraded,
+        )
+    return upgraded == len(diffusion_model.blocks)
+
+
+def _install_integrated_vsa(model, attention_backend: str, verbose: bool):
+    """Install H3 VSA with an explicit GPU-family contract."""
+    capability = (
+        torch.cuda.get_device_capability() if torch.cuda.is_available() else None
+    )
+    if capability is None:
+        raise RuntimeError("Star7 VSA requires an available CUDA device")
+    if attention_backend == VSA_SM75_BACKEND_NAME:
+        if capability != (7, 5):
+            raise RuntimeError(
+                f"{VSA_SM75_BACKEND_NAME} requires SM75, but the active GPU is "
+                f"SM{capability[0]}{capability[1]}"
+            )
+    elif capability < (8, 0):
+        raise RuntimeError(
+            f"{VSA_SM80PLUS_BACKEND_NAME} requires SM80 or newer, but the active "
+            f"GPU is SM{capability[0]}{capability[1]}"
+        )
+
+    try:
+        import comfy_extras.nodes_sparse_attention as sparse
+    except ImportError as exc:
+        raise RuntimeError(
+            "Star7 VSA requires ComfyUI 0.36 or newer with Model Sparse Attention"
+        ) from exc
+    _require_vsa_producer(sparse, capability, attention_backend)
+
+    options = model.model_options.setdefault("transformer_options", {})
+    if options.get("star7_integrated_vsa_backend") == attention_backend:
+        return model, capability
+    patched = _apply_integrated_vsa_patch(model, verbose)
+    patched.model_options.setdefault("transformer_options", {})[
+        "star7_integrated_vsa_backend"
+    ] = attention_backend
+    _LOG.info(
+        "[Star7 H3 Chunk] Integrated VSA enabled | path=%s | SM%d%d | "
+        "keep=10%% | active=0%%..100%% | min_tokens=12288",
+        attention_backend, capability[0], capability[1],
+    )
+    return patched, capability
 
 
 def _prepare_h3_qkv_chunked(
@@ -2846,6 +3200,12 @@ def install_model_patch(
             requested_attention_backend,
             attention_backend,
         )
+    integrated_vsa = attention_backend in VSA_BACKEND_NAMES
+    vsa_capability = None
+    if integrated_vsa:
+        model, vsa_capability = _install_integrated_vsa(
+            model, attention_backend, verbose
+        )
     install_patch(
         chunk_tokens=chunk_tokens,
         auto_halve_on_oom=auto_halve_on_oom,
@@ -2866,6 +3226,10 @@ def install_model_patch(
     if not isinstance(diffusion_model, h3_model.MiniMaxH3Model):
         _LOG.warning("[Star7 H3 Chunk] Non-H3 model received; only the guarded RoPE dispatch was installed")
         return patched
+    upstream_vsa = (
+        _upgrade_upstream_core_vsa(patched, diffusion_model)
+        if not integrated_vsa else False
+    )
 
     # ComfyUI 0.34 introduced an AIMDO malloc graph around the official H3
     # block loop. Star7 changes the per-block allocation pattern by chunking
@@ -2902,6 +3266,8 @@ def install_model_patch(
     )
     first_attn_func = getattr(first_attn_patch, "__func__", first_attn_patch)
     attention_patch_name = getattr(first_attn_func, "__name__", "native")
+    if integrated_vsa:
+        attention_patch_name = attention_backend
     sage_attention = attention_patch_name == "minimax_sageattn_forward"
     if verbose and sage_attention:
         _LOG.warning(
@@ -2936,9 +3302,15 @@ def install_model_patch(
     sla_backend = None
     sol_backend = None
     _CONFIG["hybrid_sla_backend"] = None
-    capability = (
+    capability = vsa_capability or (
         torch.cuda.get_device_capability() if torch.cuda.is_available() else None
     )
+    if upstream_vsa:
+        attention_patch_name = (
+            VSA_SM75_BACKEND_NAME
+            if capability == (7, 5) else VSA_SM80PLUS_BACKEND_NAME
+            if capability and capability >= (8, 0) else "vsa"
+        )
     # A global --fp16-unet can override H3's normal BF16 policy.  Protected
     # FP16 from a Star7 loader is valid; reject only an unprotected upstream
     # FP16 model before backend-dependent NaN/Inf can appear.
@@ -2984,19 +3356,7 @@ def install_model_patch(
         capability = sol_backend.check_runtime_support(requested_sol_backend)
 
     if hybrid_attention:
-        try:
-            import comfy_kitchen
-            ck_available = _ck_int8_attention_available(comfy_kitchen)
-        except (ImportError, RuntimeError) as exc:
-            raise RuntimeError(
-                "Star7 Hybrid Attention requires the existing "
-                f"comfy_kitchen_int8 path; it is unavailable: {exc}"
-            ) from exc
-        if not ck_available:
-            raise RuntimeError(
-                "Star7 Hybrid Attention requires the existing "
-                "comfy_kitchen_int8 path, but it is unavailable."
-            )
+        _require_ck_int8_attention("Star7 Hybrid Attention")
 
     if capability == (7, 5) and not star7_fp16:
         _LOG.warning(
@@ -3065,32 +3425,16 @@ def install_model_patch(
         sol_attention = attention_backend in strict_sol_backends or hybrid_sol_attention
         _CONFIG["auto_sla_probe"] = _auto_sla_probe_for_capability(capability)
     elif attention_backend == "comfy_kitchen_int8":
-        try:
-            import comfy_kitchen
-            ck_available = _ck_int8_attention_available(comfy_kitchen)
-        except (ImportError, RuntimeError) as exc:
-            ck_available = False
-            if verbose:
-                _LOG.warning(
-                    "[Star7 H3 Chunk] Comfy Kitchen INT8 is unavailable (%s); "
-                    "keeping the existing attention backend",
-                    exc,
-                )
-        if ck_available:
-            for index, block in enumerate(diffusion_model.blocks):
-                patched.add_object_patch(
-                    f"diffusion_model.blocks.{index}.attn.forward",
-                    _weak_method(block.attn, _minimax_ck_int8_attention_forward),
-                )
-            attention_patch_name = "star7_comfy_kitchen_int8"
-            sage_attention = False
-            ck_attention = True
-        else:
-            _LOG.warning(
-                "[Star7 H3 Chunk] Comfy Kitchen INT8 attention was requested "
-                "but is unavailable; keeping the existing attention backend"
+        _require_ck_int8_attention("Star7 comfy_kitchen_int8")
+        for index, block in enumerate(diffusion_model.blocks):
+            patched.add_object_patch(
+                f"diffusion_model.blocks.{index}.attn.forward",
+                _weak_method(block.attn, _minimax_ck_int8_attention_forward),
             )
-    elif attention_backend != "existing":
+        attention_patch_name = "star7_comfy_kitchen_int8"
+        sage_attention = False
+        ck_attention = True
+    elif attention_backend != "existing" and not integrated_vsa:
         raise ValueError(f"unknown attention backend: {attention_backend}")
 
     # Every supported attention backend converges on the same H3 output
@@ -3343,7 +3687,13 @@ class MiniMaxH3ActivationChunkStar7:
                             "recommended Sol mode directly calls NVIDIA official BF16 "
                             "exact+approx Sol-Attn. SM75 exposes the native All-INT8 Sol path; "
                             "it keeps exact selected blocks and centroid contributions for "
-                            "unselected blocks while quantizing PV. Hybrid modes schedule "
+                            "unselected blocks while quantizing PV. "
+                            "vsa_sm75 and vsa_sm80+ install FastH3 VSA directly and require "
+                            "a VSA checkpoint with compression gates. SM75 uses Star7's "
+                            "precompiled Q64/K64 CUDA producer; SM80+ uses Comfy Kitchen "
+                            "Sol-Attn. Unavailable architectures stop before sampling instead "
+                            "of running dense. "
+                            "Hybrid modes schedule "
                             "CK/SLA/CK or CK/Sol/CK by complete sampling step. Strict sparse "
                             "modes never silently fall back."
                         ),
@@ -3361,7 +3711,7 @@ class MiniMaxH3ActivationChunkStar7:
         "MiniMax H3 model patch with independent QKV, split-half RoPE, out_proj, and MLP activation "
         "chunking. It preserves INT8/ConvRot weights and the upstream DiT block structure "
         "for FP16/BF16, Sage, LoRA, and third-party compatibility. Attention can preserve "
-        "the incoming backend or select CK INT8, architecture-specific SLA/Sol, and "
+        "the incoming backend or select CK INT8, architecture-specific VSA/SLA/Sol, and "
         "step-level CK/Sparse/CK Hybrid paths. Strict sparse modes report failures without "
         "substituting another backend. Compatible with the separate FP16 Exact Fix - Star7."
     )

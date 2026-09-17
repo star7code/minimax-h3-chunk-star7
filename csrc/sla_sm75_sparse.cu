@@ -108,7 +108,7 @@ STAR7_EXPORT int star7_sla_sm75_launch(
       reinterpret_cast<const int32_t *>(lut), length, selected_blocks,
       q_block_base, stride_b, stride_h, attention_scale, nullptr, 0,
       nullptr, nullptr, nullptr, nullptr, 0, 0,
-      nullptr, nullptr, nullptr, nullptr, 0);
+      nullptr, nullptr, nullptr, nullptr, 0, nullptr);
 
   error = cudaPeekAtLastError();
   return error == cudaSuccess ? 0 : 2000 + static_cast<int>(error);
@@ -299,7 +299,8 @@ STAR7_EXPORT int star7_sol_sm75_launch(
       reinterpret_cast<const half *>(v_centroid),
       reinterpret_cast<const float *>(k_centroid_scale),
       reinterpret_cast<const uint8_t *>(exact_mask),
-      centroid_count, centroid_padded, nullptr, nullptr, nullptr, nullptr, 0);
+      centroid_count, centroid_padded, nullptr, nullptr, nullptr, nullptr, 0,
+      nullptr);
   error = cudaPeekAtLastError();
   return error == cudaSuccess ? 0 : 7000 + static_cast<int>(error);
 }
@@ -346,6 +347,43 @@ STAR7_EXPORT int star7_sol_sm75_launch_all_int8(
   return error == cudaSuccess ? 0 : 9000 + static_cast<int>(error);
 }
 
+STAR7_EXPORT int star7_vsa_sm75_launch_all_int8(
+    std::uintptr_t q, std::uintptr_t k, std::uintptr_t v,
+    std::uintptr_t q_scale, std::uintptr_t k_scale, std::uintptr_t v_scale,
+    std::uintptr_t row_count, std::uintptr_t lut, std::uintptr_t block_len,
+    std::uintptr_t output, int batch, int heads, int length,
+    int padded_length, int lut_stride, float attention_scale,
+    std::uintptr_t stream) {
+  const int q_blocks = (length + kSolCtaQ - 1) / kSolCtaQ;
+  if (!q || !k || !v || !q_scale || !k_scale || !v_scale || !row_count ||
+      !lut || !block_len || !output || batch <= 0 || heads <= 0 ||
+      length <= 0 || length % kSolCtaK != 0 || padded_length != length ||
+      lut_stride <= 0 || lut_stride > q_blocks) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+  auto kernel = star7_sm75_sparse_qk_i8_pv_f16<
+      kSolCtaQ, kSolCtaK, kSolWarpQ, kSolWarpK, kHeadDim, false, true>;
+  cudaError_t error = cudaFuncSetAttribute(
+      kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSolShared);
+  if (error != cudaSuccess) return 16000 + static_cast<int>(error);
+  const int stride_h = length * kHeadDim;
+  const int stride_b = heads * stride_h;
+  dim3 grid(q_blocks, heads, batch);
+  dim3 block(32, kSolWarps);
+  kernel<<<grid, block, kSolShared, reinterpret_cast<cudaStream_t>(stream)>>>(
+      reinterpret_cast<int8_t *>(q), reinterpret_cast<int8_t *>(k), nullptr,
+      reinterpret_cast<half *>(output), reinterpret_cast<float *>(q_scale),
+      reinterpret_cast<float *>(k_scale), reinterpret_cast<const int32_t *>(lut),
+      length, lut_stride, 0, stride_b, stride_h, attention_scale,
+      reinterpret_cast<const int32_t *>(row_count), lut_stride,
+      nullptr, nullptr, nullptr, nullptr, 0, 0,
+      reinterpret_cast<const int8_t *>(v), nullptr,
+      reinterpret_cast<const float *>(v_scale), nullptr, padded_length,
+      reinterpret_cast<const int32_t *>(block_len));
+  error = cudaPeekAtLastError();
+  return error == cudaSuccess ? 0 : 17000 + static_cast<int>(error);
+}
+
 STAR7_EXPORT int star7_sol_sm75_launch_all_int8_complete(
     std::uintptr_t q, std::uintptr_t k, std::uintptr_t v,
     std::uintptr_t q_scale, std::uintptr_t k_scale, std::uintptr_t v_scale,
@@ -387,7 +425,8 @@ STAR7_EXPORT int star7_sol_sm75_launch_all_int8_complete(
       centroid_padded, reinterpret_cast<const int8_t *>(v),
       reinterpret_cast<const int8_t *>(v_centroid),
       reinterpret_cast<const float *>(v_scale),
-      reinterpret_cast<const float *>(v_centroid_scale), padded_length);
+      reinterpret_cast<const float *>(v_centroid_scale), padded_length,
+      nullptr);
   error = cudaPeekAtLastError();
   return error == cudaSuccess ? 0 : 15000 + static_cast<int>(error);
 }

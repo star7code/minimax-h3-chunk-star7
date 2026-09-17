@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.15.0 - 2026-09-17
+
+- Aligned base-H3 second-pass refinement with the tail of its native eight-step
+  shifted-flow schedule while keeping the existing compact frontend controls.
+- Switched spatial refinement to exact-count long-edge strips with a per-side
+  overlap halo, full short-axis context, and support for every count from 2–64.
+- Added direct `vsa_sm75` and `vsa_sm80+` attention paths above their
+  architecture-specific Hybrid choices.
+- Added a precompiled SM75 VSA Q64/K64 All-INT8 fine-attention kernel with
+  per-tile `block_len` masking; Top-K routing and the learned FP32 coarse gate
+  now run without depending on Comfy Kitchen Sol-Attn or falling back to dense.
+- Upgraded ComfyUI H3 VSA block replacements inside Star7 so FP16 Exact blocks
+  accept the attention override and every transformer block remains eligible.
+- Isolated VSA routing state per spatial second-pass strip so tiled refinement
+  cannot reuse statistics from a neighboring strip.
+- Collapsed native SM75 VSA activation statistics from one line per transformer
+  block to one representative first-block line per sequence shape.
+- Run direct `vsa_sm75` and `vsa_sm80+` for the full sampling interval instead
+  of spending the first 20% of steps in prohibitively slow dense attention;
+  explicit CK/Sparse Hybrid modes retain their independent step schedule.
+
 ## 2.14.9 - 2026-09-16
 
 - Keep ComfyUI graph link target-slot indices synchronized when dynamic reference-image inputs are inserted and repositioned.

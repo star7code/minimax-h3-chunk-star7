@@ -1395,6 +1395,29 @@ def test_ck_attention_probe_supports_versions_without_availability_helper():
     )
 
 
+def test_ck_selection_never_silently_falls_back_when_kernel_is_unavailable():
+    unavailable = types.ModuleType("comfy_kitchen")
+    unavailable.int8_attention_is_available = lambda: False
+    unavailable.int8_attention = lambda *args, **kwargs: None
+    with mock.patch.dict(sys.modules, {"comfy_kitchen": unavailable}):
+        try:
+            chunk_nodes._require_ck_int8_attention("Star7 comfy_kitchen_int8")
+        except RuntimeError as exc:
+            message = str(exc)
+            assert "no usable INT8 attention kernel" in message
+            assert "No dense-attention fallback was used" in message
+        else:
+            raise AssertionError("explicit CK selection silently accepted no kernel")
+
+    available = types.ModuleType("comfy_kitchen")
+    available.int8_attention_is_available = lambda: True
+    available.int8_attention = lambda *args, **kwargs: None
+    with mock.patch.dict(sys.modules, {"comfy_kitchen": available}):
+        assert chunk_nodes._require_ck_int8_attention(
+            "Star7 comfy_kitchen_int8"
+        ) is available
+
+
 def test_legacy_node_alias_is_deprecated():
     assert chunk_nodes.NODE_CLASS_MAPPINGS["MiniMaxH3ActivationChunkStar7"] is (
         chunk_nodes.MiniMaxH3ActivationChunkStar7
@@ -1642,6 +1665,7 @@ def test_sla_backend_is_strict_and_architecture_checked():
         backend.SM75_BACKEND_NAME,
         backend.SM75_ALL_INT8_BACKEND_NAME,
         sol.SOL_SM75_ALL_INT8_BACKEND_NAME,
+        chunk_nodes.VSA_SM75_BACKEND_NAME,
         chunk_nodes.HYBRID_ALL_INT8_BACKEND_NAME,
         chunk_nodes.HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
     ]
@@ -1650,6 +1674,7 @@ def test_sla_backend_is_strict_and_architecture_checked():
         backend.SM86PLUS_ALL_INT8_BACKEND_NAME,
         sol.SOL_SM86PLUS_BACKEND_NAME,
         sol.SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
+        chunk_nodes.VSA_SM80PLUS_BACKEND_NAME,
         chunk_nodes.HYBRID_SM86PLUS_ALL_INT8_BACKEND_NAME,
         chunk_nodes.HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
         chunk_nodes.HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME,
@@ -1674,6 +1699,7 @@ def test_sla_backend_is_strict_and_architecture_checked():
     assert chunk_nodes._canonical_attention_backend(
         chunk_nodes.HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME
     ) == chunk_nodes.HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME
+
 
     original_available = backend.torch.cuda.is_available
     original_capability = backend.torch.cuda.get_device_capability
@@ -1751,6 +1777,213 @@ def test_sla_backend_is_strict_and_architecture_checked():
         backend.torch.cuda.get_device_capability = original_capability
         backend.triton = original_triton
         backend._load_sm75_backend = original_native_loader
+
+
+def test_integrated_vsa_paths_validate_architecture_and_apply_core_patch():
+    assert chunk_nodes.VSA_START_PERCENT == 0.0
+
+    class Model:
+        def __init__(self):
+            self.model_options = {"transformer_options": {}}
+
+    original_available = torch.cuda.is_available
+    original_capability = torch.cuda.get_device_capability
+    original_apply = chunk_nodes._apply_integrated_vsa_patch
+    original_require = chunk_nodes._require_vsa_producer
+    calls = []
+    try:
+        torch.cuda.is_available = lambda: True
+        torch.cuda.get_device_capability = lambda _device=None: (7, 5)
+
+        def fake_apply(model, verbose):
+            calls.append(verbose)
+            return model
+
+        chunk_nodes._apply_integrated_vsa_patch = fake_apply
+        chunk_nodes._require_vsa_producer = lambda *_args, **_kwargs: None
+        model, capability = chunk_nodes._install_integrated_vsa(
+            Model(), chunk_nodes.VSA_SM75_BACKEND_NAME, False
+        )
+        assert capability == (7, 5)
+        assert calls == [False]
+        assert model.model_options["transformer_options"][
+            "star7_integrated_vsa_backend"
+        ] == chunk_nodes.VSA_SM75_BACKEND_NAME
+
+        try:
+            chunk_nodes._install_integrated_vsa(
+                Model(), chunk_nodes.VSA_SM80PLUS_BACKEND_NAME, False
+            )
+        except RuntimeError as exc:
+            assert "requires SM80" in str(exc)
+        else:
+            raise AssertionError("SM80+ VSA incorrectly accepted SM75")
+
+        torch.cuda.get_device_capability = lambda _device=None: (8, 9)
+        chunk_nodes._install_integrated_vsa(
+            Model(), chunk_nodes.VSA_SM80PLUS_BACKEND_NAME, False
+        )
+        try:
+            chunk_nodes._install_integrated_vsa(
+                Model(), chunk_nodes.VSA_SM75_BACKEND_NAME, False
+            )
+        except RuntimeError as exc:
+            assert "requires SM75" in str(exc)
+        else:
+            raise AssertionError("SM75 VSA incorrectly accepted SM89")
+    finally:
+        chunk_nodes._apply_integrated_vsa_patch = original_apply
+        chunk_nodes._require_vsa_producer = original_require
+        torch.cuda.is_available = original_available
+        torch.cuda.get_device_capability = original_capability
+
+
+def test_vsa_rejects_missing_producer_and_reports_actual_step_backend():
+    sparse = SimpleNamespace(
+        ck=SimpleNamespace(sol_attn_is_available=lambda _device: False)
+    )
+    try:
+        chunk_nodes._require_vsa_producer(
+            sparse, (8, 0), chunk_nodes.VSA_SM80PLUS_BACKEND_NAME
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "no compiled sol_attn/sol_attn_chunked producer" in message
+        assert "Comfy Kitchen build with Sol-Attn support" in message
+        assert "No dense fallback was used" in message
+    else:
+        raise AssertionError("VSA accepted a GPU with no compiled producer")
+
+    sm75 = chunk_nodes._load_vsa_sm75_backend()
+    with mock.patch.object(sm75, "availability", return_value=(False, "missing VSA export")):
+        try:
+            chunk_nodes._require_vsa_producer(
+                sparse, (7, 5), chunk_nodes.VSA_SM75_BACKEND_NAME
+            )
+        except RuntimeError as exc:
+            message = str(exc)
+            assert "missing VSA export" in message
+            assert "precompiled Star7 SM75 VSA binary" in message
+            assert "No dense fallback was used" in message
+        else:
+            raise AssertionError("SM75 VSA accepted a missing native producer")
+
+    configured = chunk_nodes._CONFIG.get("attention_backend")
+    try:
+        chunk_nodes._CONFIG["attention_backend"] = chunk_nodes.VSA_SM75_BACKEND_NAME
+        assert chunk_nodes._step_backend_label({})[1] == "Dense"
+        assert chunk_nodes._step_backend_label(
+            {"_star7_vsa_step_active": True}
+        )[1] == "VSA"
+    finally:
+        chunk_nodes._CONFIG["attention_backend"] = configured
+
+
+def test_sparse_segment_wrapper_forwards_attention_override():
+    seen = {}
+
+    class Attention:
+        pass
+
+    class Block:
+        attn = Attention()
+
+    def upstream(
+        x, t_emb, mod_segments, rope_freqs, transformer_options={},
+        attention=None,
+    ):
+        seen["attention"] = attention
+        return x
+
+    override = lambda *_args, **_kwargs: None
+    wrapped = chunk_nodes._sla_segment_passthrough(upstream, block_index=0)
+    value = torch.ones((2, 3))
+    assert torch.equal(
+        wrapped(
+            Block(), value, torch.zeros(1), [], None,
+            transformer_options={}, attention=override,
+        ),
+        value,
+    )
+    assert seen["attention"] is override
+
+
+def test_upstream_core_vsa_replacements_are_upgraded_for_star7_blocks():
+    import comfy_extras.nodes_sparse_attention as sparse
+
+    patch = sparse.SparseAttnPatch(
+        tau=1.3, topk_ratio=0.1, vsa=True,
+        sigma_start=1.0, sigma_end=0.0, min_tokens=1,
+        dense_blocks=set(), sink_conditioning="off",
+        extra_tokens=0, verbose=False,
+    )
+
+    class Attention:
+        head_dim = sparse.HEAD_DIM
+
+    class Block:
+        attn = Attention()
+
+    blocks = [Block(), Block()]
+
+    class Model:
+        def __init__(self):
+            self.model_options = {"transformer_options": {"patches_replace": {"dit": {}}}}
+            for index, block in enumerate(blocks):
+                self.model_options["transformer_options"]["patches_replace"]["dit"][
+                    ("double_block", index)
+                ] = sparse.make_h3_block_patch(block, index, patch)
+
+        def set_model_patch_replace(self, replacement, name, block_name, index):
+            self.model_options["transformer_options"]["patches_replace"][name][
+                (block_name, index)
+            ] = replacement
+
+    model = Model()
+    diffusion = SimpleNamespace(blocks=blocks)
+    with mock.patch.object(chunk_nodes, "_require_vsa_producer") as preflight:
+        assert chunk_nodes._upgrade_upstream_core_vsa(model, diffusion)
+        preflight.assert_called_once()
+    replacements = model.model_options["transformer_options"]["patches_replace"]["dit"]
+    assert all(
+        getattr(replacements[("double_block", index)], "_star7_vsa_patch", None)
+        is patch
+        for index in range(2)
+    )
+
+
+def test_star7_vsa_cache_key_includes_spatial_tile_marker():
+    captured = {}
+
+    class Sparse:
+        @staticmethod
+        def h3_sparse_attention(_attn, h, _rope, options, _patch, _index):
+            captured["uuids"] = tuple(options["uuids"])
+            return h
+
+    block = SimpleNamespace(attn=object())
+    replacement = chunk_nodes._star7_vsa_block_patch(
+        Sparse, block, 0, object()
+    )
+    closure = dict(zip(
+        replacement.__code__.co_freevars,
+        replacement.__closure__ or (),
+    ))
+    attention = closure["attention"].cell_contents
+    value = torch.ones((2, 3))
+    assert torch.equal(
+        attention(
+            value,
+            transformer_options={
+                "uuids": ["condition"],
+                "star7_spatial_tile_id": 3,
+            },
+        ),
+        value,
+    )
+    assert captured["uuids"] == (
+        "condition", ("star7-spatial-tile", 3),
+    )
 
 
 def test_sol_q64k64_routing_has_variable_row_counts():
@@ -2094,6 +2327,7 @@ if __name__ == "__main__":
     test_out_proj_off_does_not_install_any_block_wrapper()
     test_sm75_out_proj_candidate_accepts_current_weight_only_dispatch()
     test_ck_attention_probe_supports_versions_without_availability_helper()
+    test_ck_selection_never_silently_falls_back_when_kernel_is_unavailable()
     test_legacy_node_alias_is_deprecated()
     test_new_activation_chunk_defaults_are_architecture_safe()
     test_sm75_qkv_resident_reuse_supports_configured_tiles()
@@ -2114,6 +2348,11 @@ if __name__ == "__main__":
     test_comfy_kitchen_int8_attention_forward_cuda()
     test_sm80_h3_rejects_upstream_fp16_compute()
     test_sla_backend_is_strict_and_architecture_checked()
+    test_integrated_vsa_paths_validate_architecture_and_apply_core_patch()
+    test_vsa_rejects_missing_producer_and_reports_actual_step_backend()
+    test_sparse_segment_wrapper_forwards_attention_override()
+    test_upstream_core_vsa_replacements_are_upgraded_for_star7_blocks()
+    test_star7_vsa_cache_key_includes_spatial_tile_marker()
     test_sol_q64k64_routing_has_variable_row_counts()
     test_bundled_official_sol_dispatch_is_self_contained()
     test_sol_all_int8_kernel_offline_compiles_for_sm89()

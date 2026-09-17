@@ -43,6 +43,7 @@ _CACHE_LOCK = threading.RLock()
 _VERIFIED_MODELS: dict[str, tuple[int, int]] = {}
 _PIXEL_STRIDE = 16
 _PIXEL_ALIGN = 32
+_BASE_NATIVE_FLOW_STEPS = 8
 _TURBO_PRESETS = {
     # These are paired step/strength recipes, not claims that one sigma ladder is
     # universal. BasicScheduler derives the real ladder from the connected model's
@@ -53,9 +54,9 @@ _TURBO_PRESETS = {
     "高速运动": {"target_megapixels": 1.0, "refine_steps": 2, "refine_strength": 0.18},
 }
 _BASE_PRESETS = {
-    # Base H3 has no few-step distillation. Public H3 repaint recipes commonly
-    # start around four partial-denoise evaluations; give it smaller intervals
-    # instead of silently reusing the Turbo-oriented two/three-step recipes.
+    # Base H3 reuses the tail of its native eight-step schedule. Strength is
+    # selected by the step count. Keep the familiar UI strength recipes for
+    # workflow compatibility; runtime derives the exact retained fraction.
     "平衡高清": {"target_megapixels": 1.0, "refine_steps": 4, "refine_strength": 0.20},
     "高质量": {"target_megapixels": 1.0, "refine_steps": 6, "refine_strength": 0.25},
     "远景小脸": {"target_megapixels": 1.0, "refine_steps": 5, "refine_strength": 0.30},
@@ -321,6 +322,17 @@ def _pdd_tail_sigmas(partition, keep_steps: int, shift: float, audio_shift: floa
     return torch.tensor(bounds[-(keep + 1):], dtype=torch.float32)
 
 
+def _native_flow_tail_sigmas(keep_steps: int, shift: float, total_steps: int = 8):
+    """Return the final transitions from H3's shifted native-flow schedule."""
+    if shift is None or not math.isfinite(float(shift)) or float(shift) <= 0.0:
+        raise RuntimeError("Base H3 native-flow refinement requires a valid model Shift")
+    total = max(1, int(total_steps))
+    keep = max(1, min(int(keep_steps), total))
+    base = torch.linspace(1.0, 0.0, total + 1, dtype=torch.float32)
+    shifted = float(shift) * base / (1.0 + (float(shift) - 1.0) * base)
+    return shifted[-(keep + 1):].clone()
+
+
 def _crop_spatial(tensor, axis: int, start: int, end: int):
     if tensor is None:
         return None
@@ -336,54 +348,15 @@ def _crop_tile(tensor, tile):
     return tensor[..., top:bottom, left:right].contiguous()
 
 
-def _has_compact_factor_pair(count: int):
-    """Return whether count has a useful 2-D factor pair for ordinary video."""
-    if count == 2:
-        return True
-    for rows in range(2, int(math.sqrt(count)) + 1):
-        if count % rows == 0 and (count // rows) / rows <= 2.0:
-            return True
-    return False
-
-
-_VALID_TILE_COUNTS = tuple(
-    count for count in range(2, 65) if _has_compact_factor_pair(count)
-)
-
-
 def _normalize_tile_count(value: int):
-    """Repair legacy/API values to the nearest selectable exact tile count."""
-    requested = max(2, min(int(value), 64))
-    return min(_VALID_TILE_COUNTS, key=lambda count: (abs(count - requested), -count))
+    """Clamp API and legacy values without changing an explicitly chosen count."""
+    return max(2, min(int(value), 64))
 
 
 def _smart_tile_grid(height: int, width: int, requested_count: int):
-    """Keep an exact tile count and choose its most square aspect-aware grid."""
+    """Use long-edge strips while retaining full short-axis context."""
     count = _normalize_tile_count(requested_count)
-    frame_aspect = max(float(width), 1.0) / max(float(height), 1.0)
-    candidates = []
-    for rows in range(1, int(math.sqrt(count)) + 1):
-        if count % rows:
-            continue
-        columns = count // rows
-        for candidate_rows, candidate_columns in {
-            (rows, columns), (columns, rows)
-        }:
-            tile_aspect = frame_aspect * candidate_rows / candidate_columns
-            shape_cost = abs(math.log(max(tile_aspect, 1e-6)))
-            orientation_cost = 0.0
-            if frame_aspect > 1.0 and candidate_columns < candidate_rows:
-                orientation_cost = 1e-6
-            elif frame_aspect < 1.0 and candidate_rows < candidate_columns:
-                orientation_cost = 1e-6
-            candidates.append((
-                shape_cost + orientation_cost,
-                max(candidate_rows, candidate_columns),
-                candidate_rows,
-                candidate_columns,
-            ))
-    _, _, rows, columns = min(candidates)
-    return rows, columns
+    return (1, count) if width >= height else (count, 1)
 
 
 def _axis_tile_regions(total: int, divisions: int, overlap_pixels: int):
@@ -397,15 +370,14 @@ def _axis_tile_regions(total: int, divisions: int, overlap_pixels: int):
         boundaries.append(boundary)
     boundaries.append(total)
 
-    shared = max(0, int(math.ceil(int(overlap_pixels) / _PIXEL_STRIDE)))
-    # H3 uses a 2x2 latent patch. Keep both the shared band and every crop edge
-    # aligned so no tile silently gains a padded token row/column.
-    shared = int(math.ceil(shared / 2.0) * 2) if shared else 0
-    half = shared // 2
+    halo = max(0, int(math.ceil(int(overlap_pixels) / _PIXEL_STRIDE)))
+    # The overlap is a halo on each side of a strip, so adjacent internal strips
+    # share about twice this value. H3 crop edges stay 2x2-token aligned.
+    halo = int(math.ceil(halo / 2.0) * 2) if halo else 0
     regions = []
     for index in range(divisions):
-        start = boundaries[index] - (half if index else 0)
-        end = boundaries[index + 1] + (half if index + 1 < divisions else 0)
+        start = boundaries[index] - (halo if index else 0)
+        end = boundaries[index + 1] + (halo if index + 1 < divisions else 0)
         start = max(0, start - start % 2)
         end = min(total, end + (-end % 2))
         regions.append((start, end))
@@ -413,7 +385,7 @@ def _axis_tile_regions(total: int, divisions: int, overlap_pixels: int):
 
 
 def _spatial_tile_plan(video: torch.Tensor, tile_count: int, overlap_pixels: int):
-    """Build an aspect-aware 2D grid of even-aligned overlapping H3 latent tiles."""
+    """Build even-aligned overlapping strips along the video's long edge."""
     height, width = int(video.shape[-2]), int(video.shape[-1])
     rows, columns = _smart_tile_grid(height, width, tile_count)
     rows = min(rows, max(1, height // 2))
@@ -634,7 +606,7 @@ class _SpatialTileModel:
         original_noise = getattr(self._model, "noise", None)
         groups = _condition_groups(self._model)
         try:
-            for tile, window in zip(self._tiles, windows):
+            for tile_index, (tile, window) in enumerate(zip(self._tiles, windows)):
                 top, bottom, left, right = tile
                 tile_streams = [_crop_tile(video, tile)]
                 if audio is not None:
@@ -659,6 +631,18 @@ class _SpatialTileModel:
                             )
 
                 tile_args = dict(extra_args)
+                tile_transformer_options = None
+                tile_marker = "star7_spatial_tile_id"
+                saved_tile_marker = None
+                had_tile_marker = False
+                model_options = tile_args.get("model_options")
+                if isinstance(model_options, dict):
+                    candidate = model_options.get("transformer_options")
+                    if isinstance(candidate, dict):
+                        tile_transformer_options = candidate
+                        had_tile_marker = tile_marker in candidate
+                        saved_tile_marker = candidate.get(tile_marker)
+                        candidate[tile_marker] = tile_index
                 if mask_streams is not None:
                     parts = [_crop_tile(mask_streams[0], tile)]
                     if len(mask_streams) > 1:
@@ -675,7 +659,14 @@ class _SpatialTileModel:
                         parts.append(noise_streams[1])
                     self._model.noise, _ = comfy.utils.pack_latents(parts)
 
-                tile_result = self._model(tile_x, sigma, **tile_args)
+                try:
+                    tile_result = self._model(tile_x, sigma, **tile_args)
+                finally:
+                    if tile_transformer_options is not None:
+                        if had_tile_marker:
+                            tile_transformer_options[tile_marker] = saved_tile_marker
+                        else:
+                            tile_transformer_options.pop(tile_marker, None)
                 predicted = comfy.utils.unpack_latents(tile_result, tile_shapes)
                 slices = [slice(None)] * 5
                 slices[-2] = slice(top, bottom)
@@ -1064,7 +1055,8 @@ class MiniMaxH3OneClickHDStar7:
     CATEGORY = "Star7/MiniMax H3"
     DESCRIPTION = (
         "One-node H3 learned latent upscale plus an optional short low-noise refinement. "
-        "Optional aspect-aware 2D prediction tiles reduce peak refinement VRAM. "
+        "Optional long-edge prediction strips reduce peak refinement VRAM while retaining "
+        "full short-axis context. "
         "Video is enhanced; native H3 audio is preserved exactly. Connect after the main "
         "sampler and before H3 VAE Decode or Star7 Face Repair."
     )
@@ -1119,7 +1111,8 @@ class MiniMaxH3OneClickHDStar7:
         target_megapixels = float(target_megapixels)
         # Keep API submissions and legacy workflows inside the same range as
         # the widget.  Older graphs may still carry the former zero value.
-        refine_steps = max(1, min(50, int(refine_steps)))
+        max_refine_steps = _BASE_NATIVE_FLOW_STEPS if profile_key == "base" else 50
+        refine_steps = max(1, min(max_refine_steps, int(refine_steps)))
         refine_strength = float(refine_strength)
         if preset == "自定义":
             # A positive step count with a zero strength is most commonly an
@@ -1127,6 +1120,10 @@ class MiniMaxH3OneClickHDStar7:
             # low-strength repair instead of silently skipping the second pass.
             if refine_steps > 0 and refine_strength <= 0.0:
                 refine_strength = 0.18
+        if profile_key == "base":
+            # SplitSigmas uses a cut index. Keeping N transitions from an
+            # eight-step schedule is equivalent to split index 8-N.
+            refine_strength = refine_steps / _BASE_NATIVE_FLOW_STEPS
 
         _LOG.info(
             "Star7 H3 HD | profile=%s preset=%s target=%.2fMP refine=%d strength=%.2f",
@@ -1158,6 +1155,7 @@ class MiniMaxH3OneClickHDStar7:
 
         refine_seconds = 0.0
         sigma_summary = "off"
+        scheduler_name = "off"
         keyframe_summary = "none"
         if refine_steps > 0 and refine_strength > 0.0:
             from comfy_extras.nodes_custom_sampler import (
@@ -1175,6 +1173,18 @@ class MiniMaxH3OneClickHDStar7:
                 refine_steps = len(sigmas) - 1
                 refine_strength = refine_steps / len(pdd_partition)
                 scheduler_name = "PDD trained tail"
+                sampler_name = "euler"
+            elif profile_key == "base":
+                sigmas = _native_flow_tail_sigmas(
+                    refine_steps, video_shift, _BASE_NATIVE_FLOW_STEPS
+                )
+                refine_steps = len(sigmas) - 1
+                refine_strength = refine_steps / _BASE_NATIVE_FLOW_STEPS
+                split_index = _BASE_NATIVE_FLOW_STEPS - refine_steps
+                scheduler_name = (
+                    f"native_flow tail (split={split_index}, "
+                    f"run={refine_steps}/{_BASE_NATIVE_FLOW_STEPS})"
+                )
                 sampler_name = "euler"
             else:
                 sigmas = _unpack(BasicScheduler.execute(
@@ -1241,7 +1251,10 @@ class MiniMaxH3OneClickHDStar7:
                     )
                     tiling_summary = (
                         f"requested={int(tile_count)} actual={len(tiles)} "
-                        f"grid={grid[0]}x{grid[1]} overlap={int(tile_overlap)}px"
+                        f"strips={'width' if grid[1] > 1 else 'height'} "
+                        f"grid={grid[0]}x{grid[1]} halo={int(tile_overlap)}px/side "
+                        f"shared~{int(tile_overlap) * 2}px "
+                        f"max_tile={max((bottom - top) * (right - left) for top, bottom, left, right in tiles) * (_PIXEL_STRIDE ** 2) / 1_000_000.0:.2f}MP"
                     )
                     _LOG.info("Star7 H3 HD | spatial tiling enabled | %s", tiling_summary)
             refine_started = time.perf_counter()
@@ -1287,6 +1300,7 @@ class MiniMaxH3OneClickHDStar7:
             f"refine={refine_steps} step(s) strength={refine_strength:.2f} | "
             f"profile={profile_name} | "
             f"HD keyframes={keyframe_summary} | "
+            f"schedule={scheduler_name} | "
             f"sigmas=[{sigma_summary}] | "
             f"second-pass attention={attention_summary} | "
             f"tiling={tiling_summary} | "

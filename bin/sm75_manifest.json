@@ -6,8 +6,8 @@
   "linux_cuda_toolkit": "12.6.3 (Ubuntu 20.04 / glibc 2.31)",
   "windows_x64": {
     "file": "win_amd64/star7_sla_sm75_v7_sol_nativepreprocess.dll",
-    "sha256": "555f0adb0e93be129d72c53b36eec19eaf52a32012da4170684fd3ef1c44aab5",
-    "size": 1174016
+    "sha256": "cb9876952b6e5f969bbee12a1f2a725e38960129e6b08abe036adccf38759574",
+    "size": 1217536
   },
   "linux_x86_64": {
     "file": "linux_x86_64/star7_sla_sm75_v7.so",
@@ -36,6 +36,7 @@
     "sla_preprocess": "native CUDA mean pooling and per-block FP16-to-INT8 quantization; no Triton dependency on SM75",
     "sol_preprocess": "native CUDA Q/K/V centroid reduction, diagonal threshold routing, LUT packing, and FP16-to-INT8 quantization",
     "sol_fp16_pv_math": "selected K64 blocks exact; unselected K64 blocks contribute through K/V centroids in the same FP32 online softmax",
-    "sol_all_int8_math": "same exact-plus-centroid Sol softmax as FP16-PV; only the exact and centroid PV products use INT8 Tensor Cores"
+    "sol_all_int8_math": "same exact-plus-centroid Sol softmax as FP16-PV; only the exact and centroid PV products use INT8 Tensor Cores",
+    "vsa_sm75": "Q64/K64 exact fine attention with per-tile block_len masking, variable Top-K LUT rows, and All-INT8 Tensor Core PV; coarse gate remains FP32"
   }
 }

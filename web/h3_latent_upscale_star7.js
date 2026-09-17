@@ -18,10 +18,6 @@ const BALANCED = { ...PRESETS["平衡高清"] };
 const PARAMS = Object.keys(BALANCED);
 const HD_CONTROLS = ["upscale_model", "preset", "target_megapixels", "refine_steps", "refine_strength", "seed", "second_pass_attention"];
 const TILE_CONTROLS = ["tile_count", "tile_overlap"];
-const VALID_TILE_COUNTS = [
-    2, 4, 6, 8, 9, 12, 15, 16, 18, 20, 24, 25, 28, 30, 32, 35, 36,
-    40, 42, 45, 48, 49, 50, 54, 56, 60, 63, 64,
-];
 const SAVED_DEFAULTS = {
     enable_hd: true, upscale_model: "minimax_h3_latent_upscaler_3d_fp16.safetensors",
     preset: "平衡高清", target_megapixels: 1.0,
@@ -102,24 +98,14 @@ function validSavedValue(name, value) {
     if (name === "refine_steps") {
         return Number.isInteger(value) && value >= 1 && value <= 50;
     }
-    if (name === "tile_count") return VALID_TILE_COUNTS.includes(value);
+    if (name === "tile_count") {
+        return Number.isInteger(value) && value >= 2 && value <= 64;
+    }
     return typeof value === "number" && Number.isFinite(value);
 }
 
-function nearestTileCount(value, previous = null) {
-    const numeric = Math.max(2, Math.min(64, Math.round(Number(value) || 2)));
-    if (VALID_TILE_COUNTS.includes(numeric)) return numeric;
-    if (Number.isFinite(previous) && numeric > previous) {
-        return VALID_TILE_COUNTS.find((candidate) => candidate > numeric)
-            ?? VALID_TILE_COUNTS.at(-1);
-    }
-    if (Number.isFinite(previous) && numeric < previous) {
-        return [...VALID_TILE_COUNTS].reverse().find((candidate) => candidate < numeric)
-            ?? VALID_TILE_COUNTS[0];
-    }
-    return VALID_TILE_COUNTS.reduce((best, candidate) =>
-        Math.abs(candidate - numeric) < Math.abs(best - numeric) ? candidate : best
-    );
+function nearestTileCount(value) {
+    return Math.max(2, Math.min(64, Math.round(Number(value) || 2)));
 }
 
 function snapshotInputs(node) {
