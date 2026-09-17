@@ -1668,6 +1668,7 @@ def test_sla_backend_is_strict_and_architecture_checked():
         chunk_nodes.VSA_SM75_BACKEND_NAME,
         chunk_nodes.HYBRID_ALL_INT8_BACKEND_NAME,
         chunk_nodes.HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
+        chunk_nodes.HYBRID_SM75_CK_VSA_BACKEND_NAME,
     ]
     expected_sm80plus = [
         backend.SM86PLUS_BACKEND_NAME,
@@ -1679,6 +1680,7 @@ def test_sla_backend_is_strict_and_architecture_checked():
         chunk_nodes.HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
         chunk_nodes.HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME,
         chunk_nodes.HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
+        chunk_nodes.HYBRID_SM80PLUS_CK_VSA_BACKEND_NAME,
     ]
     assert choices == [
         "existing", "comfy_kitchen_int8", *expected_sm75, *expected_sm80plus,
@@ -1810,6 +1812,20 @@ def test_integrated_vsa_paths_validate_architecture_and_apply_core_patch():
             "star7_integrated_vsa_backend"
         ] == chunk_nodes.VSA_SM75_BACKEND_NAME
 
+        hybrid_model, capability = chunk_nodes._install_integrated_vsa(
+            Model(), chunk_nodes.HYBRID_SM75_CK_VSA_BACKEND_NAME, False
+        )
+        assert capability == (7, 5)
+        assert hybrid_model.model_options["transformer_options"][
+            "star7_integrated_vsa_backend"
+        ] == chunk_nodes.HYBRID_SM75_CK_VSA_BACKEND_NAME
+        assert chunk_nodes._vsa_backend_for_attention(
+            chunk_nodes.HYBRID_SM75_CK_VSA_BACKEND_NAME
+        ) == chunk_nodes.VSA_SM75_BACKEND_NAME
+        assert chunk_nodes._vsa_backend_for_attention(
+            chunk_nodes.HYBRID_SM80PLUS_CK_VSA_BACKEND_NAME
+        ) == chunk_nodes.VSA_SM80PLUS_BACKEND_NAME
+
         try:
             chunk_nodes._install_integrated_vsa(
                 Model(), chunk_nodes.VSA_SM80PLUS_BACKEND_NAME, False
@@ -1836,6 +1852,76 @@ def test_integrated_vsa_paths_validate_architecture_and_apply_core_patch():
         chunk_nodes._require_vsa_producer = original_require
         torch.cuda.is_available = original_available
         torch.cuda.get_device_capability = original_capability
+
+
+def test_hybrid_vsa_switches_complete_steps_between_ck_and_vsa():
+    class FakeCudaTensor:
+        shape = (10, 128)
+        device = SimpleNamespace(type="cuda")
+
+    class Patch:
+        topk_ratio = 0.1
+
+        def dense_reason(self, *_args):
+            return None
+
+        def log_once(self, *_args):
+            pass
+
+    block = SimpleNamespace(attn=SimpleNamespace(head_dim=128))
+    sparse = SimpleNamespace(
+        HEAD_DIM=128,
+        ck=SimpleNamespace(sol_attn_is_available=lambda _device: True),
+        h3_sparse_attention=lambda *_args: "sm80-vsa",
+    )
+    block_patch = chunk_nodes._star7_vsa_block_patch(sparse, block, 0, Patch())
+    original_backend = chunk_nodes._CONFIG.get("attention_backend")
+    schedule = torch.tensor([1.0, 0.7, 0.3, 0.1, 0.0])
+    try:
+        chunk_nodes._CONFIG["attention_backend"] = (
+            chunk_nodes.HYBRID_SM75_CK_VSA_BACKEND_NAME
+        )
+        with mock.patch.object(
+            chunk_nodes, "_minimax_ck_int8_attention_forward",
+            return_value="ck",
+        ) as ck, mock.patch.object(
+            chunk_nodes, "_minimax_vsa_sm75_forward",
+            return_value="sm75-vsa",
+        ) as vsa, mock.patch.object(
+            chunk_nodes, "_load_vsa_sm75_backend",
+            return_value=SimpleNamespace(availability=lambda: (True, "test")),
+        ):
+            def run(sigma):
+                options = {
+                    "sample_sigmas": schedule,
+                    "sigmas": torch.tensor([sigma]),
+                    "minimax_h3_layout": SimpleNamespace(seq_len=10),
+                }
+                args = {
+                    "img": FakeCudaTensor(),
+                    "rope_freqs": object(),
+                    "transformer_options": options,
+                }
+                return block_patch(
+                    args,
+                    {"original_block": lambda values: values["attention"](
+                        values["img"], values["rope_freqs"],
+                        values["transformer_options"],
+                    )},
+                )
+
+            assert run(1.0) == "ck"
+            assert run(0.7) == "sm75-vsa"
+            assert run(0.1) == "ck"
+            assert ck.call_count == 2
+            assert vsa.call_count == 1
+            chunk_nodes._CONFIG["attention_backend"] = (
+                chunk_nodes.HYBRID_SM80PLUS_CK_VSA_BACKEND_NAME
+            )
+            assert run(0.7) == "sm80-vsa"
+            assert vsa.call_count == 1
+    finally:
+        chunk_nodes._CONFIG["attention_backend"] = original_backend
 
 
 def test_vsa_rejects_missing_producer_and_reports_actual_step_backend():
@@ -1877,6 +1963,70 @@ def test_vsa_rejects_missing_producer_and_reports_actual_step_backend():
         )[1] == "VSA"
     finally:
         chunk_nodes._CONFIG["attention_backend"] = configured
+
+
+def test_sm75_vsa_accepts_plain_h3_without_coarse_gate():
+    sequence, heads, head_dim = 64, 1, 128
+    value = torch.ones((sequence, heads * head_dim), dtype=torch.float16)
+    qkv = tuple(
+        torch.ones((1, heads, sequence, head_dim), dtype=torch.float16)
+        for _ in range(3)
+    )
+    means = torch.ones((1, heads, 1, head_dim), dtype=torch.float32)
+    fine = torch.zeros_like(qkv[0])
+    logs = []
+
+    class Patch:
+        topk_ratio = 0.10
+
+        def vsa_plan(self, _layout, _device):
+            return {
+                "n": sequence,
+                "n_prefix": 0,
+                "inv": torch.arange(sequence),
+                "block_len": torch.tensor([sequence], dtype=torch.int32),
+            }
+
+        def vsa_rope_freqs(self, rope, _plan):
+            return rope
+
+        def log_once(self, _key, message):
+            logs.append(message)
+
+    backend = SimpleNamespace(
+        block_means=mock.Mock(return_value=means),
+        build_topk_routing=mock.Mock(return_value=(
+            torch.ones((1, heads, 1), dtype=torch.int32),
+            torch.zeros((1, heads, 1, 1), dtype=torch.int32),
+            0.10,
+        )),
+        quantize_qk=mock.Mock(return_value=(
+            torch.empty(0), torch.empty(0), torch.empty(0), torch.empty(0),
+        )),
+        run_fine=mock.Mock(return_value=fine),
+        add_coarse_=mock.Mock(),
+    )
+    attention = SimpleNamespace(
+        heads=heads,
+        head_dim=head_dim,
+        to_gate_compress=None,
+        out_proj=lambda result: result,
+    )
+    layout = SimpleNamespace(seq_len=sequence)
+
+    with mock.patch.object(
+        chunk_nodes, "_prepare_h3_qkv_chunked", return_value=qkv,
+    ), mock.patch.object(
+        chunk_nodes, "_load_vsa_sm75_backend", return_value=backend,
+    ):
+        result = chunk_nodes._minimax_vsa_sm75_forward(
+            attention, value, object(), {"minimax_h3_layout": layout}, Patch(), 0,
+        )
+
+    assert result.shape == value.shape
+    assert backend.block_means.call_count == 2
+    backend.add_coarse_.assert_not_called()
+    assert any("fine-only" in message for message in logs)
 
 
 def test_sparse_segment_wrapper_forwards_attention_override():
@@ -2349,7 +2499,9 @@ if __name__ == "__main__":
     test_sm80_h3_rejects_upstream_fp16_compute()
     test_sla_backend_is_strict_and_architecture_checked()
     test_integrated_vsa_paths_validate_architecture_and_apply_core_patch()
+    test_hybrid_vsa_switches_complete_steps_between_ck_and_vsa()
     test_vsa_rejects_missing_producer_and_reports_actual_step_backend()
+    test_sm75_vsa_accepts_plain_h3_without_coarse_gate()
     test_sparse_segment_wrapper_forwards_attention_override()
     test_upstream_core_vsa_replacements_are_upgraded_for_star7_blocks()
     test_star7_vsa_cache_key_includes_spatial_tile_marker()

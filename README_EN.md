@@ -28,7 +28,7 @@ The dropdown intentionally uses stable backend IDs so workflows remain portable 
 | `existing` | Keep the incoming model's current attention implementation, including an upstream Sage or other patch |
 | `comfy_kitchen_int8` | Use ComfyUI / Comfy Kitchen INT8 attention |
 
-When an enhanced upstream loader has already installed VSA, select `existing` to add only QKV, RoPE, and MLP chunking. Alternatively, select the direct `vsa_sm75` or `vsa_sm80+` path: SM75 uses Star7's precompiled CUDA producer, while SM80+ uses Comfy Kitchen Sol-Attn. Both direct paths require a gated FastH3/VSA checkpoint and stop before sampling if their producer is unavailable instead of silently running dense attention.
+When an enhanced upstream loader has already installed VSA, select `existing` to add only QKV, RoPE, and MLP chunking. Alternatively, select the direct `vsa_sm75` or `vsa_sm80+` path: SM75 uses Star7's precompiled CUDA producer, while SM80+ uses Comfy Kitchen Sol-Attn. Ordinary H3 checkpoints run the fine sparse branch; gated FastH3/VSA checkpoints additionally run the learned coarse correction, which generally preserves quality better. Ordinary H3 emits an explicit warning instead of being rejected. Both paths still stop before sampling if their producer is unavailable instead of silently running dense attention.
 
 ### SM75 / RTX 20 series
 
@@ -37,9 +37,10 @@ When an enhanced upstream loader has already installed VSA, select `existing` to
 | `sla_sm75_qk_int8_pv_fp16` | SLA with INT8 QK, FP16 PV, and FP32 softmax/accumulation |
 | `sla_sm75_all_int8` | SLA with INT8 QK/PV and protected full attention for target-audio queries |
 | `sol_sm75_all_int8` | Sol Q64/K64 exact selected blocks plus centroid approximation, with INT8 PV |
-| `vsa_sm75` | FastH3 VSA with 10% keep over the full 0%–100% sampling interval; requires a gated VSA checkpoint |
+| `vsa_sm75` | H3 VSA with 10% keep over the full 0%–100% interval; ordinary H3 is fine-only, while gated FastH3 adds coarse correction |
 | `hybrid_sm75_ck_sla_all_int8` | CK / SLA All-INT8 / CK across sampling steps |
 | `hybrid_sm75_ck_sol_all_int8` | CK / Sol All-INT8 / CK across sampling steps |
+| `hybrid_sm75_ck_vsa` | CK / SM75 VSA / CK across sampling steps |
 
 ### SM80+ / RTX 30–50 series and newer
 
@@ -49,13 +50,14 @@ When an enhanced upstream loader has already installed VSA, select `existing` to
 | `sla_sm80+_all_int8` | SLA INT8 QK/PV comparison mode with full-attention audio queries |
 | `sol_sm80+_bf16_official` | Official NVIDIA BF16 exact+approx Sol-Attn with audio KV sinks and full-attention audio queries |
 | `sol_sm80+_all_int8` | Star7 exact+centroid Sol with INT8 PV, audio KV sinks, and full-attention audio queries |
-| `vsa_sm80+` | FastH3 VSA with 10% keep over the full 0%–100% sampling interval; requires a gated VSA checkpoint |
+| `vsa_sm80+` | H3 VSA with 10% keep over the full 0%–100% interval; ordinary H3 is fine-only, while gated FastH3 adds coarse correction |
 | `hybrid_sm80+_ck_sla_qk_int8_pv_bf16` | CK / SLA BF16-PV / CK |
 | `hybrid_sm80+_ck_sol_bf16_official` | CK / official NVIDIA BF16 Sol / CK |
 | `hybrid_sm80+_ck_sla_all_int8` | CK / SLA All-INT8 / CK |
 | `hybrid_sm80+_ck_sol_all_int8` | CK / Star7 Sol All-INT8 / CK |
+| `hybrid_sm80+_ck_vsa` | CK / SM80+ VSA / CK |
 
-SLA uses dynamic Top-K block routing. Sol combines exact selected-block contributions with centroid approximations for non-selected blocks. Hybrid switches the backend between complete denoising steps; it does not mix two kernels inside one attention call. The BF16 Hybrid IDs remain available for existing workflows; the All-INT8 Hybrid IDs are separate opt-in modes and are not silent migrations.
+SLA uses dynamic Top-K block routing. Sol combines exact selected-block contributions with centroid approximations for non-selected blocks. Hybrid switches the backend between complete denoising steps; it does not mix two kernels inside one attention call. CK/VSA Hybrid uses CK for the protected first and last steps and VSA for the middle steps. The BF16 Hybrid IDs remain available for existing workflows; the All-INT8 Hybrid IDs are separate opt-in modes and are not silent migrations.
 
 On SM80+, every SLA and Sol mode replaces sparse results for reference- and generated-audio query ranges with full attention computed from the pre-quantization Q/K/V tensors. Video queries remain sparse. Hybrid inherits the same protection during its sparse steps.
 
@@ -65,6 +67,7 @@ Sparse attention is not guaranteed to outperform CK at every resolution, duratio
 
 | Node | Purpose |
 |---|---|
+| `MiniMax H3 Enhanced Loader - Star7` | Independent H3 model loader bundled with this project; selects protected FP16 or native BF16 by GPU architecture, preserves quantized dispatch, and uses a distinct class ID to avoid conflicts with the standalone FP16 project |
 | `MiniMax H3 VRAM Chunk Acceleration - Star7` | QKV/RoPE/MLP chunking, targeted OOM reduction, and attention selection |
 | `Reference Video Load - Star7` | Drag-and-drop video loading, time-range trimming, long-edge limiting, synchronized video/audio output |
 | `Reference Image Load - Star7` | Drag-and-drop loading, long-edge limiting, optional upscale, and maximum-area centered cropping for common landscape/portrait ratios |
@@ -74,21 +77,30 @@ Sparse attention is not guaranteed to outperform CK at every resolution, duratio
 | `MiniMax H3 All-in-one Conditioning - Star7` | Builds text, keyframe, reference image/video, and audio conditioning in one node and emits reusable sampling context |
 | `MiniMax H3 One-click HD Upscale - Star7` | Upscales the sampled H3 latent to a target megapixel count with optional short refinement; VAE decoding remains external |
 | `MiniMax H3 Chunked Decode - Star7` | Independently decodes a complete H3 audio-video latent using the current H3 VAE's native temporal streaming and spatial tiling |
-| `MiniMax H3 One-click Face Repair - Star7` | Accepts the sampled packed H3 latent and performs face detection, tracking, local second-pass sampling, and seamless compositing internally |
+| `MiniMax H3 One-click Face Repair - Star7` | Performs face detection, tracking, local second-pass sampling, and compositing, then returns a standard packed H3 latent for chaining with HD upscale and one final external decode |
 
 Chinese ComfyUI environments display Chinese node and control labels; other locales display English. Attention backend IDs remain unchanged.
 
 ### H3 One-click Face Repair
 
-Replace the original conditioning node with All-in-one Conditioning, then connect Sampled result and Sampling context to One-click Face Repair. It reuses the existing model chain, so no second loader, LoRA, or chunk chain is required. Disabling repair or detecting no face returns the original frames.
+Replace the original conditioning node with All-in-one Conditioning, then connect Sampled result and Sampling context to One-click Face Repair. It reuses the existing model chain, so no second loader, LoRA, or chunk chain is required. Disabling repair or detecting no face passes the input latent through unchanged without an extra VAE encode.
+
+The top rows are Enable repair, Face detector model, Face-repair LoRA, Face-repair LoRA strength, and Face-repair attention. The detector selector uses an installed model from `models/ultralytics/bbox`. LoRA and attention inherit the first pass by default. Selecting a LoRA adds it to the incoming first-pass model at the independent model strength for this face-repair run only; selecting an attention backend overrides only the internal face sampling and restores the first-pass configuration afterward. When Inherit first pass is selected, the face-repair LoRA strength does not reapply an upstream LoRA.
+
+Face detection and compositing still enter image space internally. After compositing, the new node re-encodes the repaired video, restores the original audio latent unchanged, and returns Sampled result plus Run report. It can therefore be chained before or after One-click HD and decoded once at the end with MiniMax H3 Chunked Decode. The old IMAGE-output class ID remains available for existing workflows, is labeled Legacy Workflow Compatibility, and is hidden from normal node search.
 
 The node supports 1–4 faces, Main, Center, and Reference Match selection, plus Balanced, Realistic, Distant Face, Anime, and Custom presets. If fewer faces are found, it processes the available count. Reference Match optionally uses InsightFace; other modes require no reference image.
 
 On first use, `face_yolov8m.pt` is downloaded, verified, and stored under `ComfyUI/models/ultralytics/bbox`. Connected sockets display prompt tags: `<Picture N>`, `<Video N>`, `<Audio N>`, and the dedicated driving-audio tag `<Audio D>`.
 
+```text
+Sampler Sampled result -> One-click HD -> One-click Face Repair -> H3 Chunked Decode
+All-in-one Sampling context --------------------^              Video/audio VAEs --^
+```
+
 ### H3 One-click HD Upscale
 
-The top-level Enable HD second pass switch returns the latent unchanged without loading the HD model when disabled. Second-pass attention inherits the first pass by default, or can independently select any CK/SLA/Sol/Hybrid path exposed by the chunk node. Enable tiling is a separate VRAM control that builds an overlapping, aspect-aware 2D grid; disabled tile controls are greyed out. Target tiles accepts 2–64 and is treated as a lower bound: the grid is chosen to keep tiles reasonably shaped and may round up slightly. For example, 16 requested tiles use 3×6 (18 actual) at 16:9, but 4×4 at 4:3, 3:4, and 1:1. Every boundary follows H3's 2×2 latent-patch alignment, and the report shows requested count, actual count, and grid. Tiling lowers second-pass peak VRAM but increases model calls and runtime; it does not change sigmas, sampler, or audio.
+The top-level Enable HD second pass switch returns the latent unchanged without loading the HD model when disabled. The next rows are Latent upscaler model, Second-pass LoRA, Second-pass LoRA strength, and Second-pass attention, followed by the preset and refinement controls. LoRA and attention inherit the first pass by default. A selected LoRA is added to the incoming model at the independent model strength for this HD refinement only; when Inherit first pass is selected, that strength does not reapply an upstream LoRA. Attention can independently select any CK/SLA/Sol/Hybrid path exposed by the chunk node. Every setting remains visible and editable; the switches only decide whether their features run. Enable tiling is a separate VRAM control that builds an overlapping, aspect-aware 2D grid. Target tiles accepts 2–64 and is treated as a lower bound: the grid is chosen to keep tiles reasonably shaped and may round up slightly. For example, 16 requested tiles use 3×6 (18 actual) at 16:9, but 4×4 at 4:3, 3:4, and 1:1. Every boundary follows H3's 2×2 latent-patch alignment, and the report shows requested count, actual count, and grid. Tiling lowers second-pass peak VRAM but increases model calls and runtime; it does not change sigmas, sampler, or audio.
 
 The HD node does not decode either VAE internally. Connect its output to the independent MiniMax H3 Chunked Decode node, then to Video Combine. The decoder reuses the H3 VAE's native temporal streaming and spatial tiling and is independent from the second-pass tile count. A normal IMAGE output still retains all decoded frames in system memory, so long 4K clips remain RAM-heavy.
 
@@ -96,7 +108,7 @@ The latent upscaler model is `minimax_h3_latent_upscaler_3d_fp16.safetensors`. O
 
 The second pass keeps the original prompt and reference conditioning. For first- or last-frame generation, All-in-one Conditioning retains the source endpoint pixels and the HD node VAE-encodes them again at the actual target resolution before refinement. Tiled refinement crops those rebuilt HD keyframes with each tile instead of reusing stale low-resolution keyframe latents.
 
-Each preset pairs its step count and denoise range. The node walks the current prompt ancestry for Turbo/PDD model names and combines that evidence with conservative model-patch inspection: Turbo uses the two/three-step scene recipes, while Base and ordinary LoRAs use four to six steps so an undistilled model is not treated as a few-step student. For an already-applied PDD model it reads the upstream 4/6/8-NFE or custom trained partition, selects the matching tail boundaries, and switches to Euler internally, so no separate PDD Scheduler connection is required. It errors only when the trained head bank, partition, or required Shift 12/3 contract is invalid. Distant Small Face expands the repaint range, Fast Motion narrows it, and Custom remains adjustable. A read-only row shows the exact Sigma sequence, video Shift, and detected model profile produced by the backend; the number of model evaluations is one fewer than the number of Sigma values.
+Each preset pairs its step count and denoise range. Refine strength only selects where refinement starts on the native denoising path: higher values start from a noisier latent and permit more repainting, while `0` disables refinement. Refine steps only subdivide that selected range down to `0`, so adding quality steps no longer silently raises the starting Sigma. The node walks the current prompt ancestry for Turbo/PDD model names and combines that evidence with conservative model-patch inspection: Turbo uses the two/three-step scene recipes, while Base and ordinary LoRAs use four to six steps. An already-applied PDD model must follow its trained discrete tail boundaries, so its effective strength is derived from the selected PDD tail. The node reads the upstream 4/6/8-NFE or custom trained partition and switches to Euler internally, with no separate PDD Scheduler connection required. Distant Small Face expands the repaint range, Fast Motion narrows it, and Custom remains adjustable. A read-only row shows the exact Sigma sequence, video Shift, and detected model profile produced by the backend; the number of model evaluations is one fewer than the number of Sigma values.
 
 ```text
 Sampler Sampled result -> One-click HD Sampled result -> H3 Chunked Decode -> Video Combine

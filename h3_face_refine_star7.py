@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import logging
@@ -24,6 +25,11 @@ from .vendor.h3facerefine.core import (
     _continuity_cost,
     _detector_list,
     _rank_boxes,
+)
+from .refine_model_options import (
+    INHERIT_FIRST_PASS,
+    apply_selected_lora,
+    lora_choices,
 )
 
 
@@ -303,6 +309,47 @@ def _decode_video_frames(vae, latent: torch.Tensor) -> torch.Tensor:
     return images[..., :3]
 
 
+def _encode_repaired_av_latent(
+    sampled_av_latent: dict, images: torch.Tensor, vae
+) -> dict:
+    """Encode the stitched video while preserving the original H3 audio member."""
+    samples = sampled_av_latent.get("samples")
+    if samples is None or not getattr(samples, "is_nested", False):
+        raise ValueError("Star7 H3 Face Repair requires a packed audio-video LATENT.")
+    members = list(samples.unbind())
+    if len(members) < 2:
+        raise ValueError("Invalid H3 latent: expected video and audio members.")
+
+    source_video = members[0]
+    encoded = vae.encode(images[..., :3])
+    if encoded.ndim == 4:  # [frames,C,H,W] -> [1,C,T,H,W]
+        encoded = encoded.unsqueeze(0).movedim(1, 2)
+    if encoded.ndim != 5 or int(encoded.shape[1]) != 24:
+        raise ValueError(
+            "Unexpected MiniMax H3 Video VAE encode shape: "
+            f"{tuple(encoded.shape)}"
+        )
+
+    target_t = int(source_video.shape[-3])
+    encoded_t = int(encoded.shape[-3])
+    if encoded_t > target_t:
+        encoded = encoded[..., :target_t, :, :]
+    elif encoded_t < target_t:
+        if encoded_t <= 0:
+            raise ValueError("MiniMax H3 Video VAE encoded an empty temporal latent.")
+        pad = encoded[..., -1:, :, :].expand(
+            *encoded.shape[:-3], target_t - encoded_t,
+            encoded.shape[-2], encoded.shape[-1],
+        )
+        encoded = torch.cat((encoded, pad), dim=-3)
+
+    members[0] = encoded.to(device=source_video.device, dtype=source_video.dtype)
+    output = dict(sampled_av_latent)
+    output.pop("noise_mask", None)
+    output["samples"] = comfy.nested_tensor.NestedTensor(tuple(members))
+    return output
+
+
 def _face_repair_output_size(
     width: int, height: int, preserve_detail: bool
 ) -> tuple[int, int]:
@@ -507,12 +554,23 @@ def _build_multiface_picks(
     return results
 
 
-def _ensure_face_detector() -> str:
+def _face_detector_choices() -> list[str]:
+    names = [_FACE_DETECTOR_NAME]
+    names.extend(name for name in _detector_list() if "face" in name.casefold())
+    return list(dict.fromkeys(names))
+
+
+def _ensure_face_detector(detector_name: str = _FACE_DETECTOR_NAME) -> str:
     """Use an installed face detector, or atomically fetch the small default model."""
+    selected = str(detector_name or _FACE_DETECTOR_NAME)
     names = _detector_list()
-    face_names = [name for name in names if "face" in name.lower()]
-    if face_names and face_names[0] != _FACE_DETECTOR_NAME:
-        return face_names[0]
+    if selected != _FACE_DETECTOR_NAME:
+        if selected not in names or "face" not in selected.casefold():
+            raise FileNotFoundError(
+                f"Selected face detector is unavailable: {selected!r}. "
+                "Place it in ComfyUI/models/ultralytics/bbox and refresh the node list."
+            )
+        return selected
 
     target_dir = os.path.join(folder_paths.models_dir, "ultralytics", "bbox")
     target = os.path.join(target_dir, _FACE_DETECTOR_NAME)
@@ -793,28 +851,61 @@ class MiniMaxH3MaterialPromptStar7(io.ComfyNode):
 
 
 _PRESETS = {
-    "自动平衡": dict(denoise=0.30, small=1.0, large=0.30, crop=2.6, canvas="auto", blend=0.90, feather=20),
-    "真人保真": dict(denoise=0.25, small=0.85, large=0.20, crop=2.8, canvas=512, blend=0.82, feather=24),
-    "远景小脸": dict(denoise=0.48, small=1.0, large=0.35, crop=2.4, canvas=768, blend=0.95, feather=18),
-    "动漫角色": dict(denoise=0.32, small=0.95, large=0.25, crop=2.7, canvas=512, blend=0.88, feather=20),
+    "自动平衡": dict(denoise=0.30, small=1.0, large=0.30, crop=2.2, canvas="auto", blend=0.90, feather=20),
+    "真人保真": dict(denoise=0.25, small=0.85, large=0.20, crop=2.3, canvas=512, blend=0.82, feather=24),
+    "远景小脸": dict(denoise=0.48, small=1.0, large=0.35, crop=1.8, canvas=768, blend=0.95, feather=18),
+    "动漫角色": dict(denoise=0.32, small=0.95, large=0.25, crop=2.1, canvas=512, blend=0.88, feather=20),
 }
 
 
 class MiniMaxH3FaceRefineStar7:
     @classmethod
     def INPUT_TYPES(cls):
+        from .nodes import _attention_backend_choices
+
         return {
             "required": {
                 "sampled_av_latent": ("LATENT",),
                 "refine_context": (_CONTEXT_TYPE,),
                 "enable_refine": ("BOOLEAN", {"default": True}),
+                "face_detector": (
+                    _face_detector_choices(),
+                    {
+                        "default": _FACE_DETECTOR_NAME,
+                        "tooltip": (
+                            "Face detector in models/ultralytics/bbox. The pinned default "
+                            "downloads automatically when missing."
+                        ),
+                    },
+                ),
+                "face_lora": (
+                    lora_choices(),
+                    {
+                        "default": INHERIT_FIRST_PASS,
+                        "tooltip": (
+                            "Inherit the first-pass model unchanged, or apply the selected "
+                            "model-only LoRA for face repair only."
+                        ),
+                    },
+                ),
+                "face_lora_strength": (
+                    "FLOAT",
+                    {
+                        "default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01,
+                        "tooltip": "Model strength for the selected face-repair LoRA.",
+                    },
+                ),
+                "face_attention": (
+                    [INHERIT_FIRST_PASS, *_attention_backend_choices()],
+                    {"default": INHERIT_FIRST_PASS},
+                ),
                 "face_count": ("INT", {"default": 1, "min": 1, "max": 4, "step": 1}),
                 "preset": (["自动平衡", "真人保真", "远景小脸", "动漫角色", "自定义"], {"default": "自动平衡"}),
                 "target_face": (["主人物", "画面中央", "参考图匹配"], {"default": "主人物"}),
                 "refine_steps": ("INT", {"default": 4, "min": 1, "max": 12, "step": 1}),
                 "custom_strength": ("FLOAT", {"default": 0.30, "min": 0.05, "max": 0.80, "step": 0.01}),
                 "custom_canvas": (["自动", "512", "768"], {"default": "自动"}),
-                "custom_crop_context": ("FLOAT", {"default": 2.6, "min": 1.8, "max": 4.0, "step": 0.1}),
+                "custom_crop_context": ("FLOAT", {"default": 2.2, "min": 1.4, "max": 4.0, "step": 0.1}),
                 "custom_blend": ("FLOAT", {"default": 0.90, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "custom_feather": ("INT", {"default": 20, "min": 0, "max": 64, "step": 2}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
@@ -828,19 +919,24 @@ class MiniMaxH3FaceRefineStar7:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("refined_images",)
     FUNCTION = "refine"
-    CATEGORY = "Star7/MiniMax H3"
+    CATEGORY = "Star7/MiniMax H3/Legacy"
+    DEPRECATED = True
     DESCRIPTION = (
-        "Decode, track, crop, H3-refine and GPU-stitch one face or up to four "
-        "stable shot-local face tracks in one node."
+        "Legacy image-output face repair retained only for existing workflows. "
+        "Use the current latent-output Star7 face repair for new workflows."
     )
 
     def refine(
         self, sampled_av_latent, refine_context, enable_refine=True, face_count=1,
+        face_detector=_FACE_DETECTOR_NAME, face_lora=INHERIT_FIRST_PASS,
+        face_lora_strength=1.0,
+        face_attention=INHERIT_FIRST_PASS,
         preset="自动平衡", target_face="主人物", refine_steps=4, custom_strength=0.30, custom_canvas="自动",
-        custom_crop_context=2.6, custom_blend=0.90, custom_feather=20, seed=0,
+        custom_crop_context=2.2, custom_blend=0.90, custom_feather=20, seed=0,
         preserve_repair_detail=True, unique_id=None,
         **legacy_options,
     ):
+        output_latent = bool(legacy_options.pop("_output_latent", False))
         context = dict(refine_context or {})
         vae = context.get("video_vae")
         model = context.get("model")
@@ -855,6 +951,14 @@ class MiniMaxH3FaceRefineStar7:
         if len(members) < 2 or members[0].ndim != 5 or members[0].shape[1] != 24:
             raise ValueError("Invalid H3 latent: expected video [B,24,T,H,W] plus audio latent.")
 
+        if not enable_refine and output_latent:
+            output_width = int(members[0].shape[-1]) * 16
+            output_height = int(members[0].shape[-2]) * 16
+            _send_face_repair_resolution(unique_id, output_width, output_height)
+            report = "Star7 H3 Face Repair bypassed | repair disabled | latent unchanged"
+            _LOG.info(report)
+            return sampled_av_latent, report
+
         refine_started = time.perf_counter()
         _LOG.debug("Star7 H3 face repair | phase=decode source video")
         decode_started = time.perf_counter()
@@ -866,6 +970,18 @@ class MiniMaxH3FaceRefineStar7:
         )
         if not enable_refine:
             _send_face_repair_resolution(unique_id, int(base_images.shape[2]), int(base_images.shape[1]))
+            return (base_images,)
+
+        def unchanged_result(reason: str):
+            _send_face_repair_resolution(
+                unique_id, int(base_images.shape[2]), int(base_images.shape[1])
+            )
+            if output_latent:
+                result_report = (
+                    f"Star7 H3 Face Repair skipped | {reason} | latent unchanged"
+                )
+                _LOG.info(result_report)
+                return sampled_av_latent, result_report
             return (base_images,)
 
         cfg = dict(_PRESETS.get(preset, {}))
@@ -898,7 +1014,7 @@ class MiniMaxH3FaceRefineStar7:
             identity_track = False
             select = "largest_face"
 
-        detector = _ensure_face_detector()
+        detector = _ensure_face_detector(face_detector)
         _LOG.debug("Star7 H3 face repair | phase=detect/track | preset=%s", preset)
         detect_started = time.perf_counter()
         try:
@@ -914,8 +1030,7 @@ class MiniMaxH3FaceRefineStar7:
             if "no face detected" not in str(exc).lower():
                 raise
             _LOG.warning("Star7 H3 face repair found no face; returning original frames | %s", exc)
-            _send_face_repair_resolution(unique_id, int(base_images.shape[2]), int(base_images.shape[1]))
-            return (base_images,)
+            return unchanged_result("no face detected")
         crops, transform, _preview, report, canvas_w, canvas_h, _frame_count = tracked
         _LOG.debug(
             "Star7 H3 face repair | phase=detect/track completed | %.2fs | frames=%d target=%s",
@@ -924,8 +1039,7 @@ class MiniMaxH3FaceRefineStar7:
         )
         if not transform.get("boxes"):
             _LOG.warning("Star7 H3 face repair found no usable face; returning original frames")
-            _send_face_repair_resolution(unique_id, int(base_images.shape[2]), int(base_images.shape[1]))
-            return (base_images,)
+            return unchanged_result("no usable face track")
 
         source_height, source_width = int(base_images.shape[1]), int(base_images.shape[2])
         output_width, output_height = _face_repair_output_size(
@@ -949,6 +1063,41 @@ class MiniMaxH3FaceRefineStar7:
             BasicGuider, BasicScheduler, KSamplerSelect, RandomNoise, SamplerCustomAdvanced,
         )
 
+        refine_source_model, lora_summary = apply_selected_lora(
+            self, model, face_lora, face_lora_strength
+        )
+        attention_summary = "inherit first pass"
+        attention_config_snapshot = None
+        attention_runtime_config = None
+        if str(face_attention) not in {"", INHERIT_FIRST_PASS, "inherit", "inherit first pass"}:
+            from . import nodes as chunk_nodes
+
+            requested_attention = str(face_attention)
+            attention_config_snapshot = copy.deepcopy(chunk_nodes._CONFIG)
+            try:
+                refine_source_model = chunk_nodes.install_model_patch(
+                    refine_source_model,
+                    int(chunk_nodes._CONFIG.get("chunk_tokens", 8192)),
+                    bool(chunk_nodes._CONFIG.get("auto_halve_on_oom", True)),
+                    bool(chunk_nodes._CONFIG.get("verbose", True)),
+                    int(chunk_nodes._CONFIG.get("mlp_chunk_tokens", 8192)),
+                    bool(chunk_nodes._CONFIG.get("out_proj_memory_protection", True)),
+                    bool(chunk_nodes._CONFIG.get("reuse_mlp_weights", True)),
+                    requested_attention,
+                    unique_id,
+                    qkv_chunk_tokens=int(chunk_nodes._CONFIG.get("qkv_chunk_tokens", 8192)),
+                    out_proj_chunk_tokens=int(chunk_nodes._CONFIG.get("out_proj_chunk_tokens", 4096)),
+                )
+                attention_runtime_config = copy.deepcopy(chunk_nodes._CONFIG)
+            finally:
+                chunk_nodes._CONFIG.clear()
+                chunk_nodes._CONFIG.update(attention_config_snapshot)
+            attention_summary = requested_attention
+            _LOG.info(
+                "Star7 H3 face repair | attention override | %s",
+                attention_summary,
+            )
+
         def sample_track(track_result, composite_images, pass_index):
             track_crops, track_transform, _track_preview, track_report, track_w, track_h, _ = track_result
             stitch_transform = _scale_face_transform(track_transform, output_width, output_height)
@@ -969,7 +1118,7 @@ class MiniMaxH3FaceRefineStar7:
                 int(pass_index) + 1, time.perf_counter() - encode_started,
             )
             refine_latent, _mask_report, refine_model = H3PerFrameDenoise().run(
-                model, refine_latent, track_transform, float(cfg["small"]), float(cfg["large"]),
+                refine_source_model, refine_latent, track_transform, float(cfg["small"]), float(cfg["large"]),
                 30.0, 120.0, 1.0, 9, "absolute_px", verbose=False,
             )
             sigmas = _unpack(BasicScheduler.execute(
@@ -984,9 +1133,17 @@ class MiniMaxH3FaceRefineStar7:
                 int(pass_index) + 1, track_w, track_h, cfg["denoise"], int(refine_steps), int(cfg["feather"]),
             )
             sample_started = time.perf_counter()
-            sampled = _unpack(SamplerCustomAdvanced.execute(
-                noise, guider, sampler, sigmas, refine_latent
-            ))[0]
+            if attention_runtime_config is not None:
+                chunk_nodes._CONFIG.clear()
+                chunk_nodes._CONFIG.update(attention_runtime_config)
+            try:
+                sampled = _unpack(SamplerCustomAdvanced.execute(
+                    noise, guider, sampler, sigmas, refine_latent
+                ))[0]
+            finally:
+                if attention_config_snapshot is not None:
+                    chunk_nodes._CONFIG.clear()
+                    chunk_nodes._CONFIG.update(attention_config_snapshot)
             _LOG.debug(
                 "Star7 H3 face repair | phase=sample completed | face=%d | %.2fs | steps=%d",
                 int(pass_index) + 1, time.perf_counter() - sample_started, int(refine_steps),
@@ -1043,8 +1200,7 @@ class MiniMaxH3FaceRefineStar7:
                 completed_faces += 1
             if not completed_faces:
                 _LOG.warning("Star7 H3 multi-face repair found no stable 5-frame face track; returning original frames")
-                _send_face_repair_resolution(unique_id, source_width, source_height)
-                return (base_images,)
+                return unchanged_result("no stable face track")
             report = f"multi-face tracks={completed_faces}"
             _LOG.debug(
                 "Star7 H3 multi-face repair | completed=%d requested=%d | detection reused",
@@ -1058,15 +1214,54 @@ class MiniMaxH3FaceRefineStar7:
             time.perf_counter() - refine_started, completed_faces, output_width, output_height,
         )
         _send_face_repair_resolution(unique_id, output_width, output_height)
+        if output_latent:
+            encode_started = time.perf_counter()
+            output = _encode_repaired_av_latent(sampled_av_latent, images, vae)
+            encode_seconds = time.perf_counter() - encode_started
+            result_report = (
+                f"Star7 H3 Face Repair completed | faces={completed_faces} | "
+                f"detector={detector} | LoRA={lora_summary} | "
+                f"attention={attention_summary} | "
+                f"output={output_width}x{output_height} | "
+                f"latent encode={encode_seconds:.2f}s | audio preserved exactly"
+            )
+            _LOG.info(result_report)
+            return output, result_report
         return (images,)
+
+
+class MiniMaxH3FaceRefineLatentStar7(MiniMaxH3FaceRefineStar7):
+    RETURN_TYPES = ("LATENT", "STRING")
+    RETURN_NAMES = ("refined_av_latent", "report")
+    CATEGORY = "Star7/MiniMax H3"
+    DEPRECATED = False
+    SEARCH_ALIASES = [
+        "MiniMax H3 一键人脸修复",
+        "MiniMax H3 人脸修复",
+        "MiniMax H3 One-click Face Repair",
+        "MiniMax H3 Face Repair",
+    ]
+    DESCRIPTION = (
+        "Track, crop, H3-refine and stitch up to four stable face tracks, then "
+        "return a packed H3 audio-video latent for downstream enhancement and "
+        "one final external VAE decode. The original audio latent is preserved."
+    )
+
+    def refine(self, *args, **kwargs):
+        kwargs["_output_latent"] = True
+        return super().refine(*args, **kwargs)
 
 
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3MaterialPromptStar7": MiniMaxH3MaterialPromptStar7,
     "MiniMaxH3FaceRefineStar7": MiniMaxH3FaceRefineStar7,
+    "MiniMaxH3FaceRefineLatentStar7": MiniMaxH3FaceRefineLatentStar7,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3MaterialPromptStar7": "MiniMax H3 All-in-one Conditioning - Star7",
-    "MiniMaxH3FaceRefineStar7": "MiniMax H3 One-click Face Repair - Star7",
+    "MiniMaxH3FaceRefineStar7": (
+        "MiniMax H3 One-click Face Repair (Legacy Workflow Compatibility) - Star7"
+    ),
+    "MiniMaxH3FaceRefineLatentStar7": "MiniMax H3 One-click Face Repair - Star7",
 }

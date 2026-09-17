@@ -54,6 +54,45 @@ def test_vsa_topk_routing_forces_prefix_and_neighbors():
                 assert selected == set(range(6))
 
 
+def test_vsa_topk_routing_forces_true_3d_video_neighbors():
+    backend = _module("star7_vsa_sm75_3d_routing_test", "vsa_sm75_backend.py")
+    q_mean = torch.randn((1, 1, 9, 128), dtype=torch.float32)
+    k_mean = torch.randn_like(q_mean)
+    row_count, lut, _density = backend.build_topk_routing(
+        q_mean, k_mean, topk_ratio=0.01, prefix_blocks=1,
+        video_grid=(2, 2, 2),
+    )
+    selected = set(lut[0, 0, 1, :row_count[0, 0, 1]].tolist())
+    # Prefix plus the origin cube and its +W, +H and +T neighbours.
+    assert {0, 1, 2, 3, 5}.issubset(selected)
+
+    selected = set(lut[0, 0, 8, :row_count[0, 0, 8]].tolist())
+    # Opposite corner and its -W, -H and -T neighbours.
+    assert {0, 8, 7, 6, 4}.issubset(selected)
+
+
+def test_vsa_topk_routing_rejects_a_mismatched_video_grid():
+    backend = _module("star7_vsa_sm75_bad_grid_test", "vsa_sm75_backend.py")
+    q_mean = torch.randn((1, 1, 9, 128), dtype=torch.float32)
+    try:
+        backend.build_topk_routing(
+            q_mean, torch.randn_like(q_mean), topk_ratio=0.1,
+            prefix_blocks=1, video_grid=(1, 2, 2),
+        )
+    except ValueError as exc:
+        assert "video_grid" in str(exc)
+    else:
+        raise AssertionError("mismatched VSA video_grid must be rejected")
+
+
+def test_vsa_3d_locality_mask_is_reused_for_every_transformer_block():
+    backend = _module("star7_vsa_sm75_3d_cache_test", "vsa_sm75_backend.py")
+    first = backend._local_3d_mask((2, 3, 4), torch.device("cpu"))
+    second = backend._local_3d_mask((2, 3, 4), torch.device("cpu"))
+    assert first is second
+    assert len(backend._LOCAL_3D_CACHE) == 1
+
+
 def test_vsa_sm75_fine_kernel_matches_selected_token_reference():
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 5):
         return
@@ -288,6 +327,9 @@ def benchmark_vsa_sm75_representative():
 
 if __name__ == "__main__":
     test_vsa_topk_routing_forces_prefix_and_neighbors()
+    test_vsa_topk_routing_forces_true_3d_video_neighbors()
+    test_vsa_topk_routing_rejects_a_mismatched_video_grid()
+    test_vsa_3d_locality_mask_is_reused_for_every_transformer_block()
     test_vsa_sm75_fine_kernel_matches_selected_token_reference()
     test_vsa_sm75_h3_attention_integration()
     if os.environ.get("STAR7_VSA_BENCHMARK") == "1":

@@ -22,6 +22,12 @@ import comfy.nested_tensor
 import comfy.utils
 import folder_paths
 
+from .refine_model_options import (
+    INHERIT_FIRST_PASS,
+    apply_selected_lora,
+    lora_choices,
+)
+
 
 _LOG = logging.getLogger("Star7H3LatentUpscale")
 _CONTEXT_TYPE = "STAR7_H3_REFINE_CONTEXT"
@@ -43,7 +49,6 @@ _CACHE_LOCK = threading.RLock()
 _VERIFIED_MODELS: dict[str, tuple[int, int]] = {}
 _PIXEL_STRIDE = 16
 _PIXEL_ALIGN = 32
-_BASE_NATIVE_FLOW_STEPS = 8
 _TURBO_PRESETS = {
     # These are paired step/strength recipes, not claims that one sigma ladder is
     # universal. BasicScheduler derives the real ladder from the connected model's
@@ -54,9 +59,9 @@ _TURBO_PRESETS = {
     "高速运动": {"target_megapixels": 1.0, "refine_steps": 2, "refine_strength": 0.18},
 }
 _BASE_PRESETS = {
-    # Base H3 reuses the tail of its native eight-step schedule. Strength is
-    # selected by the step count. Keep the familiar UI strength recipes for
-    # workflow compatibility; runtime derives the exact retained fraction.
+    # Strength selects the native-flow starting point; steps only subdivide the
+    # selected range. More quality steps therefore do not silently repaint from
+    # a higher-noise point.
     "平衡高清": {"target_megapixels": 1.0, "refine_steps": 4, "refine_strength": 0.20},
     "高质量": {"target_megapixels": 1.0, "refine_steps": 6, "refine_strength": 0.25},
     "远景小脸": {"target_megapixels": 1.0, "refine_steps": 5, "refine_strength": 0.30},
@@ -322,15 +327,23 @@ def _pdd_tail_sigmas(partition, keep_steps: int, shift: float, audio_shift: floa
     return torch.tensor(bounds[-(keep + 1):], dtype=torch.float32)
 
 
-def _native_flow_tail_sigmas(keep_steps: int, shift: float, total_steps: int = 8):
-    """Return the final transitions from H3's shifted native-flow schedule."""
+def _pdd_tail_strength(partition, keep_steps: int) -> float:
+    """Return the trained base-time fraction covered by the retained PDD tail."""
+    if not partition:
+        raise RuntimeError("PDD model has no recoverable trained partition")
+    keep = max(1, min(int(keep_steps), len(partition)))
+    return sum(int(size) for size in partition[-keep:]) / float(sum(partition))
+
+
+def _native_flow_refine_sigmas(steps: int, strength: float, shift: float):
+    """Subdivide a strength-selected tail of H3's shifted native-flow path."""
     if shift is None or not math.isfinite(float(shift)) or float(shift) <= 0.0:
         raise RuntimeError("Base H3 native-flow refinement requires a valid model Shift")
-    total = max(1, int(total_steps))
-    keep = max(1, min(int(keep_steps), total))
-    base = torch.linspace(1.0, 0.0, total + 1, dtype=torch.float32)
+    count = max(1, int(steps))
+    denoise = max(0.0, min(1.0, float(strength)))
+    base = torch.linspace(denoise, 0.0, count + 1, dtype=torch.float32)
     shifted = float(shift) * base / (1.0 + (float(shift) - 1.0) * base)
-    return shifted[-(keep + 1):].clone()
+    return shifted
 
 
 def _crop_spatial(tensor, axis: int, start: int, end: int):
@@ -745,7 +758,7 @@ def _add_hd_endpoint_guides(positive, latent, context):
     return positive, "+".join(applied)
 
 
-def _sampling_profile(model, prompt, node_id, video_shift):
+def _sampling_profile(model, prompt, node_id, video_shift, selected_lora=INHERIT_FIRST_PASS):
     """Classify only schedule families we can distinguish without touching weights."""
     ancestors = _prompt_ancestors(prompt, node_id)
     searchable = []
@@ -761,6 +774,8 @@ def _sampling_profile(model, prompt, node_id, video_shift):
         searchable.append(class_type)
         if isinstance(inputs, dict):
             searchable.extend(value for value in inputs.values() if isinstance(value, str))
+    if str(selected_lora or INHERIT_FIRST_PASS) != INHERIT_FIRST_PASS:
+        searchable.append(str(selected_lora))
     text = " ".join(searchable).casefold()
     partition = _pdd_partition(prompt, node_id, model)
     if partition:
@@ -1024,6 +1039,27 @@ class MiniMaxH3OneClickHDStar7:
                         ),
                     },
                 ),
+                "second_pass_lora": (
+                    lora_choices(),
+                    {
+                        "default": INHERIT_FIRST_PASS,
+                        "tooltip": (
+                            "Inherit the first-pass model unchanged, or apply the selected "
+                            "model-only LoRA for this HD refinement only."
+                        ),
+                    },
+                ),
+                "second_pass_lora_strength": (
+                    "FLOAT",
+                    {
+                        "default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01,
+                        "tooltip": "Model strength for the selected second-pass LoRA.",
+                    },
+                ),
+                "second_pass_attention": (
+                    [INHERIT_FIRST_PASS, *_attention_backend_choices()],
+                    {"default": INHERIT_FIRST_PASS},
+                ),
                 "preset": (
                     ["平衡高清", "高质量", "远景小脸", "高速运动", "自定义"],
                     {"default": "平衡高清"},
@@ -1033,13 +1069,17 @@ class MiniMaxH3OneClickHDStar7:
                 ),
                 "refine_steps": ("INT", {"default": 2, "min": 1, "max": 50, "step": 1}),
                 "refine_strength": (
-                    "FLOAT", {"default": 0.25, "min": 0.0, "max": 0.50, "step": 0.01}
+                    "FLOAT",
+                    {
+                        "default": 0.25, "min": 0.0, "max": 0.50, "step": 0.01,
+                        "tooltip": (
+                            "Fraction of the denoising path replayed by refinement. Higher "
+                            "values start from noisier latents and allow more repainting; 0 "
+                            "disables refinement. PDD uses its trained tail boundaries."
+                        ),
+                    },
                 ),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
-                "second_pass_attention": (
-                    ["继承一采", *_attention_backend_choices()],
-                    {"default": "继承一采"},
-                ),
                 "enable_tiling": ("BOOLEAN", {"default": False}),
                 "tile_count": ("INT", {"default": 2, "min": 2, "max": 64, "step": 1}),
                 "tile_overlap": (
@@ -1063,10 +1103,11 @@ class MiniMaxH3OneClickHDStar7:
 
     def upscale(
         self, sampled_av_latent, h3_context, enable_hd=True,
-        upscale_model=_MODEL_NAME, preset="平衡高清",
+        upscale_model=_MODEL_NAME, second_pass_lora=INHERIT_FIRST_PASS,
+        second_pass_lora_strength=1.0,
+        second_pass_attention=INHERIT_FIRST_PASS, preset="平衡高清",
         target_megapixels=1.0, refine_steps=2, refine_strength=0.25, seed=0,
         enable_tiling=False, tile_count=2, tile_overlap=128,
-        second_pass_attention="继承一采",
         unique_id=None, prompt=None,
     ):
         started = time.perf_counter()
@@ -1086,8 +1127,14 @@ class MiniMaxH3OneClickHDStar7:
         model_sampling = get_model_object("model_sampling") if callable(get_model_object) else None
         video_shift = getattr(model_sampling, "shift", None)
         audio_shift = getattr(model_sampling, "audio_shift", None)
+        second_pass_lora_strength = float(second_pass_lora_strength)
+        profile_lora = (
+            second_pass_lora
+            if second_pass_lora_strength != 0.0
+            else INHERIT_FIRST_PASS
+        )
         profile_key, profile_name = _sampling_profile(
-            model, prompt, unique_id, video_shift
+            model, prompt, unique_id, video_shift, profile_lora
         )
         if profile_key == "pdd_incomplete":
             raise RuntimeError(
@@ -1100,7 +1147,7 @@ class MiniMaxH3OneClickHDStar7:
         if profile_key == "pdd" and preset in _PDD_PRESET_STEPS:
             target_megapixels = 1.0
             refine_steps = min(_PDD_PRESET_STEPS[preset], len(pdd_partition))
-            refine_strength = refine_steps / len(pdd_partition)
+            refine_strength = _pdd_tail_strength(pdd_partition, refine_steps)
         elif preset in active_presets:
             values = active_presets[preset]
             target_megapixels = values["target_megapixels"]
@@ -1111,19 +1158,8 @@ class MiniMaxH3OneClickHDStar7:
         target_megapixels = float(target_megapixels)
         # Keep API submissions and legacy workflows inside the same range as
         # the widget.  Older graphs may still carry the former zero value.
-        max_refine_steps = _BASE_NATIVE_FLOW_STEPS if profile_key == "base" else 50
-        refine_steps = max(1, min(max_refine_steps, int(refine_steps)))
-        refine_strength = float(refine_strength)
-        if preset == "自定义":
-            # A positive step count with a zero strength is most commonly an
-            # accidental legacy combination, so retain the existing safe
-            # low-strength repair instead of silently skipping the second pass.
-            if refine_steps > 0 and refine_strength <= 0.0:
-                refine_strength = 0.18
-        if profile_key == "base":
-            # SplitSigmas uses a cut index. Keeping N transitions from an
-            # eight-step schedule is equivalent to split index 8-N.
-            refine_strength = refine_steps / _BASE_NATIVE_FLOW_STEPS
+        refine_steps = max(1, min(50, int(refine_steps)))
+        refine_strength = max(0.0, min(0.50, float(refine_strength)))
 
         _LOG.info(
             "Star7 H3 HD | profile=%s preset=%s target=%.2fMP refine=%d strength=%.2f",
@@ -1171,19 +1207,17 @@ class MiniMaxH3OneClickHDStar7:
                     pdd_partition, refine_steps, video_shift, audio_shift
                 )
                 refine_steps = len(sigmas) - 1
-                refine_strength = refine_steps / len(pdd_partition)
+                refine_strength = _pdd_tail_strength(pdd_partition, refine_steps)
                 scheduler_name = "PDD trained tail"
                 sampler_name = "euler"
             elif profile_key == "base":
-                sigmas = _native_flow_tail_sigmas(
-                    refine_steps, video_shift, _BASE_NATIVE_FLOW_STEPS
+                sigmas = _native_flow_refine_sigmas(
+                    refine_steps, refine_strength, video_shift
                 )
                 refine_steps = len(sigmas) - 1
-                refine_strength = refine_steps / _BASE_NATIVE_FLOW_STEPS
-                split_index = _BASE_NATIVE_FLOW_STEPS - refine_steps
                 scheduler_name = (
-                    f"native_flow tail (split={split_index}, "
-                    f"run={refine_steps}/{_BASE_NATIVE_FLOW_STEPS})"
+                    f"native_flow refine (strength={refine_strength:.2f}, "
+                    f"steps={refine_steps})"
                 )
                 sampler_name = "euler"
             else:
@@ -1210,27 +1244,35 @@ class MiniMaxH3OneClickHDStar7:
                     "Star7 H3 HD | endpoint guides re-encoded at %dx%d | %s",
                     output_w, output_h, keyframe_summary,
                 )
-            refine_model = model
+            refine_model, lora_summary = apply_selected_lora(
+                self, model, second_pass_lora, second_pass_lora_strength
+            )
             attention_summary = "inherit first pass"
             attention_config_snapshot = None
-            if str(second_pass_attention) not in {"", "继承一采", "inherit", "inherit first pass"}:
+            attention_runtime_config = None
+            if str(second_pass_attention) not in {"", INHERIT_FIRST_PASS, "inherit", "inherit first pass"}:
                 from . import nodes as chunk_nodes
 
                 requested_attention = str(second_pass_attention)
                 attention_config_snapshot = copy.deepcopy(chunk_nodes._CONFIG)
-                refine_model = chunk_nodes.install_model_patch(
-                    model,
-                    int(chunk_nodes._CONFIG.get("chunk_tokens", 8192)),
-                    bool(chunk_nodes._CONFIG.get("auto_halve_on_oom", True)),
-                    bool(chunk_nodes._CONFIG.get("verbose", True)),
-                    int(chunk_nodes._CONFIG.get("mlp_chunk_tokens", 8192)),
-                    bool(chunk_nodes._CONFIG.get("out_proj_memory_protection", True)),
-                    bool(chunk_nodes._CONFIG.get("reuse_mlp_weights", True)),
-                    requested_attention,
-                    unique_id,
-                    qkv_chunk_tokens=int(chunk_nodes._CONFIG.get("qkv_chunk_tokens", 8192)),
-                    out_proj_chunk_tokens=int(chunk_nodes._CONFIG.get("out_proj_chunk_tokens", 4096)),
-                )
+                try:
+                    refine_model = chunk_nodes.install_model_patch(
+                        refine_model,
+                        int(chunk_nodes._CONFIG.get("chunk_tokens", 8192)),
+                        bool(chunk_nodes._CONFIG.get("auto_halve_on_oom", True)),
+                        bool(chunk_nodes._CONFIG.get("verbose", True)),
+                        int(chunk_nodes._CONFIG.get("mlp_chunk_tokens", 8192)),
+                        bool(chunk_nodes._CONFIG.get("out_proj_memory_protection", True)),
+                        bool(chunk_nodes._CONFIG.get("reuse_mlp_weights", True)),
+                        requested_attention,
+                        unique_id,
+                        qkv_chunk_tokens=int(chunk_nodes._CONFIG.get("qkv_chunk_tokens", 8192)),
+                        out_proj_chunk_tokens=int(chunk_nodes._CONFIG.get("out_proj_chunk_tokens", 4096)),
+                    )
+                    attention_runtime_config = copy.deepcopy(chunk_nodes._CONFIG)
+                finally:
+                    chunk_nodes._CONFIG.clear()
+                    chunk_nodes._CONFIG.update(attention_config_snapshot)
                 attention_summary = requested_attention
                 _LOG.info(
                     "Star7 H3 HD | second-pass attention override | %s",
@@ -1258,6 +1300,9 @@ class MiniMaxH3OneClickHDStar7:
                     )
                     _LOG.info("Star7 H3 HD | spatial tiling enabled | %s", tiling_summary)
             refine_started = time.perf_counter()
+            if attention_runtime_config is not None:
+                chunk_nodes._CONFIG.clear()
+                chunk_nodes._CONFIG.update(attention_runtime_config)
             try:
                 sampled = _unpack(SamplerCustomAdvanced.execute(
                     noise, guider, sampler, sigmas, output
@@ -1285,6 +1330,7 @@ class MiniMaxH3OneClickHDStar7:
             )
         else:
             tiling_summary = "ignored (refine disabled)" if enable_tiling else "off"
+            lora_summary = "ignored (refine disabled)"
             attention_summary = "ignored (refine disabled)"
             if context.get("first_frame") is not None or context.get("last_frame") is not None:
                 keyframe_summary = "ignored (refine disabled)"
@@ -1302,6 +1348,7 @@ class MiniMaxH3OneClickHDStar7:
             f"HD keyframes={keyframe_summary} | "
             f"schedule={scheduler_name} | "
             f"sigmas=[{sigma_summary}] | "
+            f"second-pass LoRA={lora_summary} | "
             f"second-pass attention={attention_summary} | "
             f"tiling={tiling_summary} | "
             f"upscale={upscale_seconds:.2f}s refine={refine_seconds:.2f}s total={total:.2f}s | "

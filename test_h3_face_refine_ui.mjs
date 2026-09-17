@@ -27,17 +27,33 @@ vm.runInNewContext(source, {
 assert.ok(extension);
 
 class NodeType {}
-await extension.beforeRegisterNodeDef(NodeType, { name: "MiniMaxH3FaceRefineStar7" });
+const faceNodeData = {
+    name: "MiniMaxH3FaceRefineLatentStar7",
+    input: { required: {
+        sampled_av_latent: ["LATENT", {}], refine_context: ["STAR7_H3_REFINE_CONTEXT", {}],
+        face_lora: [["继承一采"], {}], face_lora_strength: ["FLOAT", {}],
+    } },
+    output_name: ["refined_av_latent", "report"],
+};
+await extension.beforeRegisterNodeDef(NodeType, faceNodeData);
+assert.equal(faceNodeData.display_name, "MiniMax H3 一键人脸修复 - Star7");
+assert.equal(faceNodeData.input.required.face_lora[1].display_name, "修脸 LoRA");
+assert.equal(faceNodeData.input.required.face_lora_strength[1].display_name, "修脸 LoRA 强度");
+assert.deepEqual(faceNodeData.output_name, ["采样结果", "运行报告"]);
 
 const values = {
     enable_refine: true,
+    face_detector: "face_yolov8m.pt",
+    face_lora: "继承一采",
+    face_lora_strength: 1.0,
+    face_attention: "继承一采",
     face_count: 1,
     preset: "自动平衡",
     target_face: "主人物",
     refine_steps: 4,
     custom_strength: 0.30,
     custom_canvas: "自动",
-    custom_crop_context: 2.6,
+    custom_crop_context: 2.2,
     custom_blend: 0.90,
     custom_feather: 20,
     seed: 0,
@@ -46,7 +62,7 @@ const values = {
 const node = Object.create(NodeType.prototype);
 node.widgets = Object.entries(values).map(([name, value]) => ({ name, value, type: "number", options: {} }));
 node.inputs = [{ name: "sampled_av_latent" }, { name: "refine_context" }];
-node.outputs = [{ name: "refined_images" }];
+node.outputs = [{ name: "refined_av_latent" }, { name: "report" }];
 node.properties = {};
 node.size = [420, 700];
 node.computeSize = () => [390, 500];
@@ -63,16 +79,27 @@ const widgets = Object.fromEntries(node.widgets.map((item) => [item.name, item])
 assert.equal(node.title, "MiniMax H3 一键人脸修复 - Star7");
 assert.equal(node.inputs[0].label, "采样结果");
 assert.equal(node.inputs[1].label, "采样上下文");
-assert.equal(node.outputs[0].label, "图像");
+assert.equal(node.outputs[0].label, "采样结果");
+assert.equal(node.outputs[1].label, "运行报告");
 assert.equal(widgets.target_face.options.hidden, false);
 assert.equal(node.size[0], 420);
 assert.equal(node.size[1], 700);
 assert.equal(widgets.preserve_repair_detail.value, true);
+assert.equal(widgets.face_detector.label, "人脸检测模型");
+assert.equal(widgets.face_lora.label, "修脸 LoRA");
+assert.equal(widgets.face_lora_strength.label, "修脸 LoRA 强度");
+assert.equal(widgets.face_attention.label, "修脸注意力");
+widgets.preset.value = "远景小脸";
+widgets.preset.callback();
+assert.equal(widgets.custom_crop_context.value, 1.8);
+widgets.preset.value = "自动平衡";
+widgets.preset.callback();
+assert.equal(widgets.custom_crop_context.value, 2.2);
 assert.ok(node.widgets.some((item) => item.__star7FaceResolutionStatus));
 const resolutionIndex = node.widgets.findIndex((item) => item.__star7FaceResolutionStatus);
 const resetIndex = node.widgets.indexOf(node.__star7ResetButton);
 assert.equal(resolutionIndex, resetIndex - 1);
-node.comfyClass = "MiniMaxH3FaceRefineStar7";
+node.comfyClass = "MiniMaxH3FaceRefineLatentStar7";
 app.graph = { getNodeById(id) { return String(id) === "124" ? node : null; } };
 api.listeners["star7-h3-face-repair-resolution"]({
     detail: { node_id: "124", width: 768, height: 1376, megapixels: 1.01 },
@@ -105,6 +132,9 @@ node.onConfigure({ widgets_values: [
     true, 3, "自动平衡", "画面中央", 4, 0.30, "自动", 2.6, 0.90, 20, 0,
 ] });
 assert.equal(widgets.face_count.value, 3);
+assert.equal(widgets.face_lora.value, "继承一采");
+assert.equal(widgets.face_attention.value, "继承一采");
+assert.equal(widgets.face_lora_strength.value, 1.0);
 assert.equal(widgets.target_face.options.hidden, false);
 assert.equal(widgets.target_face.type, "number");
 widgets.face_count.value = 1;
@@ -127,6 +157,45 @@ assert.equal(widgets.target_face.options.hidden, false);
 assert.equal(widgets.refine_steps.value, 4); // preset applies its own saved values
 assert.equal(node.size[0], 420);
 assert.equal(node.size[1], 700);
+
+// The previous layout already had detector, LoRA and attention rows, but no
+// strength row. Restore values by meaning so face count and presets do not shift.
+node.onConfigure({ widgets_values: [
+    true, "face_yolov8n.pt", "portrait.safetensors", "vsa_sm75", 2,
+    "自定义", "画面中央", 5, 0.38, "768", 2.4, 0.91, 18, 456,
+    "randomize", false,
+] });
+assert.equal(widgets.face_detector.value, "face_yolov8n.pt");
+assert.equal(widgets.face_lora.value, "portrait.safetensors");
+assert.equal(widgets.face_lora_strength.value, 1.0);
+assert.equal(widgets.face_attention.value, "vsa_sm75");
+assert.equal(widgets.face_count.value, 2);
+assert.equal(widgets.preset.value, "自定义");
+assert.equal(widgets.target_face.value, "画面中央");
+assert.equal(widgets.preserve_repair_detail.value, false);
+
+class LegacyFaceNodeType {}
+await extension.beforeRegisterNodeDef(LegacyFaceNodeType, { name: "MiniMaxH3FaceRefineStar7" });
+const legacyFace = Object.create(LegacyFaceNodeType.prototype);
+legacyFace.widgets = Object.entries(values).map(([name, value]) => ({ name, value, type: "number", options: {} }));
+legacyFace.inputs = [{ name: "sampled_av_latent" }, { name: "refine_context" }];
+legacyFace.outputs = [{ name: "refined_images" }];
+legacyFace.properties = {};
+legacyFace.size = [420, 700];
+legacyFace.computeSize = () => [390, 500];
+legacyFace.setSize = (size) => { legacyFace.size = size; };
+legacyFace.setDirtyCanvas = () => {};
+legacyFace.addWidget = (type, name, value, callback, options) => {
+    const item = { type, name, value, callback, options };
+    legacyFace.widgets.push(item);
+    return item;
+};
+legacyFace.onNodeCreated();
+assert.equal(
+    legacyFace.title,
+    "MiniMax H3 一键人脸修复（旧工作流兼容）- Star7",
+);
+assert.equal(legacyFace.outputs[0].label, "图像");
 
 console.log("H3 face repair UI tests: PASS");
 

@@ -1,5 +1,52 @@
 # Changelog
 
+## 2.16.0 - 2026-09-18
+
+- Added the independent `MiniMax H3 Enhanced Loader - Star7` directly to this
+  project. It provides the same protected FP16/BF16 hardware policy as the
+  standalone FP16 loader under a distinct class ID, so this project does not
+  depend on or conflict with the standalone loader installation.
+- Tightened every face-repair crop preset so the detected face occupies more of
+  the 512/768 repair canvas; the distant-small-face preset now uses a 1.8x
+  face-height crop instead of 2.4x.
+- Corrected native SM75 VSA locality protection to follow the real 3D video
+  cube grid. Each query cube now retains its temporal, vertical, and horizontal
+  neighbours instead of protecting only adjacent flattened tile numbers.
+- Added per-node LoRA and attention selection to One-click HD and One-click
+  Face Repair. Both inherit the first-pass model by default; a selected LoRA is
+  applied only for that node's internal refinement, with an independent model
+  strength control directly below each LoRA selector.
+- Added an explicit face-detector model selector and aligned both refinement
+  node layouts as Enable, Model, LoRA, LoRA Strength, Attention, then task
+  parameters. Existing positional workflow values are migrated without shifting
+  saved settings.
+- Localized refinement node titles, inputs, and outputs in registration metadata
+  so current Vue and legacy LiteGraph renderers show the same labels.
+- Added architecture-specific `hybrid_sm75_ck_vsa` and
+  `hybrid_sm80+_ck_vsa` modes. They use CK on the protected first and last
+  sampling steps and VSA on the middle steps.
+- Preserve direct and Hybrid VSA selections when workflows are saved and
+  reopened instead of replacing them with the CK default.
+- Apply each installed Comfy Kitchen version's eager RoPE primitive inside the
+  token chunks, preserving chunked VRAM use while matching its CUDA result bit
+  for bit across both old and new operation orders.
+- Added a latent-output One-click Face Repair node for chaining with HD upscale
+  and one final external chunked VAE decode. It re-encodes only the repaired
+  video result and preserves the original audio latent exactly; disabled or
+  skipped repairs pass the input latent through unchanged.
+- Retained the former IMAGE-output face-repair class ID as a deprecated,
+  search-hidden Legacy Workflow Compatibility node for existing workflows.
+- Keep all One-click HD controls visible and editable when HD refinement or
+  tiling is disabled; the switches now affect execution only.
+- Allow direct and Hybrid VSA modes to run ordinary H3 checkpoints through the
+  fine sparse branch. Gated FastH3/VSA checkpoints retain their learned coarse
+  correction, and fine-only operation is reported explicitly instead of being
+  rejected.
+- Give Base-H3 refine strength and refine steps independent meanings: strength
+  now selects the native-flow starting range, while steps subdivide that range.
+  Extra quality steps no longer raise the starting sigma, and zero strength now
+  genuinely skips second-pass refinement.
+
 ## 2.15.0 - 2026-09-17
 
 - Aligned base-H3 second-pass refinement with the tail of its native eight-step

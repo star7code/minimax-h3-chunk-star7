@@ -62,7 +62,7 @@ SM80+ Sol 保留音频范围的 KV sink，并对参考音频和生成音频查�
 
 ### Hybrid
 
-Hybrid 在完整采样 step 之间切换注意力，而不是在一次 Attention 内混合两套内核。默认前后保护区使用 CK，中间采样阶段使用对应的 SLA 或 Sol。
+Hybrid 在完整采样 step 之间切换注意力，而不是在一次 Attention 内混合两套内核。默认前后保护区使用 CK，中间采样阶段使用对应的 SLA、Sol 或 VSA。
 
 以常见 4-step 工作流为例：第 1、4 步使用 CK，第 2、3 步使用所选稀疏模式。Hybrid 需要 ComfyUI 提供真实 sigma 调度上下文；无法可靠确定采样步时将终止任务并报告错误。
 
@@ -84,9 +84,10 @@ RTX 20 系建议配合 [MiniMax H3 FP16 Exact Fix - Star7](https://github.com/st
 | `sla_sm75_qk_int8_pv_fp16` | QK INT8、PV FP16、FP32 softmax/累积 | SLA 精度优先 |
 | `sla_sm75_all_int8` | QK/PV INT8、FP32 softmax/累积、完整音频查询保护 | SLA 性能优先；建议按提示词验证画质与语音 |
 | `sol_sm75_all_int8` | Q64/K64，精确块 + 质心近似，PV INT8 | SM75 Sol 标准可见模式 |
-| `vsa_sm75` | FastH3 VSA、10% 保留、0%–100% 全采样区间、SM75 专用路径 | 需要带完整压缩门的 FastH3/VSA 模型 |
+| `vsa_sm75` | H3 VSA、10% 保留、0%–100% 全采样区间、SM75 专用路径 | 普通 H3 运行 fine-only；FastH3/VSA 额外使用学习型 coarse 补偿 |
 | `hybrid_sm75_ck_sla_all_int8` | CK / SLA All-INT8 / CK | 采样步级质量与速度折中 |
 | `hybrid_sm75_ck_sol_all_int8` | CK / Sol All-INT8 / CK | 采样步级质量与速度折中 |
+| `hybrid_sm75_ck_vsa` | CK / SM75 VSA / CK | 首尾 CK、中间使用 SM75 预编译 VSA |
 
 ### SM80+ / RTX 30–50 系及更新架构
 
@@ -96,11 +97,12 @@ RTX 20 系建议配合 [MiniMax H3 FP16 Exact Fix - Star7](https://github.com/st
 | `sla_sm80+_all_int8` | QK/PV INT8、FP32 softmax/累积、完整音频查询保护 | 性能/质量对照模式，需实机验证 |
 | `sol_sm80+_bf16_official` | NVIDIA 官方 BF16 exact+approx Sol-Attn、音频 KV sink 与完整音频查询保护 | SM80+ Sol 标准模式 |
 | `sol_sm80+_all_int8` | Star7 exact+centroid Sol、PV INT8、音频 KV sink 与完整音频查询保护 | 性能/质量对照模式，需实机验证 |
-| `vsa_sm80+` | FastH3 VSA、10% 保留、0%–100% 全采样区间、SM80+ 路径 | 需要带完整压缩门的 FastH3/VSA 模型 |
+| `vsa_sm80+` | H3 VSA、10% 保留、0%–100% 全采样区间、SM80+ 路径 | 普通 H3 运行 fine-only；FastH3/VSA 额外使用学习型 coarse 补偿 |
 | `hybrid_sm80+_ck_sla_qk_int8_pv_bf16` | CK / SLA BF16-PV / CK | SM80+ Hybrid SLA 标准模式 |
 | `hybrid_sm80+_ck_sol_bf16_official` | CK / NVIDIA 官方 BF16 Sol / CK | SM80+ Hybrid Sol 标准模式 |
 | `hybrid_sm80+_ck_sla_all_int8` | CK / SLA All-INT8 / CK | SM80+ Hybrid SLA 性能模式 |
 | `hybrid_sm80+_ck_sol_all_int8` | CK / Star7 Sol All-INT8 / CK | SM80+ Hybrid Sol 性能模式，需实机验证 |
+| `hybrid_sm80+_ck_vsa` | CK / SM80+ VSA / CK | 首尾 CK、中间使用 Comfy Kitchen VSA |
 
 ### 如何选择
 
@@ -155,6 +157,7 @@ git clone https://github.com/star7code/minimax-h3-chunk-star7.git
 
 | 节点 | 用途 |
 |---|---|
+| `MiniMax H3 增强载入 - Star7` | 分块项目内置的独立 H3 模型载入节点；按 GPU 架构选择受保护 FP16 或原生 BF16，保留量化分发，并使用独立类 ID 避免与 FP16 项目冲突 |
 | `MiniMax H3 显存分块加速 - Star7` | QKV/RoPE/MLP 分块、注意力输出显存保护、自动降档和注意力加速选择 |
 | `MiniMax H3 实时预览 - Star7` | 每个采样步骤后用 TAEH3 显示覆盖完整时间轴的循环动画 |
 | `参考视频载入 - Star7` | 支持直接拖入视频，完成载入、时间范围裁切和最长边限制，输出同一时间窗的画面与音频 |
@@ -164,13 +167,17 @@ git clone https://github.com/star7code/minimax-h3-chunk-star7.git
 | `MiniMax H3 多合一条件载入 - Star7` | 在一个节点中组织提示词、首尾帧、参考图、参考视频和音频，并输出可供高清放大与人脸修复复用的采样上下文 |
 | `MiniMax H3 一键高清放大 - Star7` | 将采样结果直接放大至目标百万像素并可选短程高清修复；输出仍为标准 H3 采样结果，VAE 在节点外独立解码 |
 | `MiniMax H3 分块解码 - Star7` | 独立解码完整 H3 音视频 latent；视频使用当前 H3 VAE 自带的时序流式与空间分块路径 |
-| `MiniMax H3 一键人脸修复 - Star7` | 直接接收采样后的 H3 音视频 latent，自动完成人脸检测、跟踪、局部二采和无缝回贴 |
+| `MiniMax H3 一键人脸修复 - Star7` | 接收采样后的 H3 音视频 latent，完成人脸检测、跟踪、局部二采和无缝回贴后仍输出标准 H3 采样结果，方便继续串联高清放大并在最后统一解码 |
 
 三个载入节点均支持将对应文件直接拖到节点上完成载入；它们都是独立工具，不会向模型注入注意力或精度补丁。
 
 ### H3 一键人脸修复
 
-普通 H3 工作流只需用“多合一条件载入”替代原条件节点，再把“采样结果”和“采样上下文”接入“一键人脸修复”。节点复用现有模型链，无需重复连接模型、LoRA 或分块节点；关闭修复或未检测到人脸时直接返回原画面。
+普通 H3 工作流只需用“多合一条件载入”替代原条件节点，再把“采样结果”和“采样上下文”接入“一键人脸修复”。节点复用现有模型链，无需重复连接模型、LoRA 或分块节点；关闭修复或未检测到人脸时原样透传输入 latent，不执行额外 VAE 编码。
+
+节点顶部依次显示“启用修复、人脸检测模型、修脸 LoRA、修脸 LoRA 强度、修脸注意力”。检测模型下拉会实际选择 `models/ultralytics/bbox` 中的人脸模型；LoRA 与注意力默认继承一采。另选 LoRA 时会按独立强度追加到传入的一采模型，只作用于本次修脸采样；另选注意力时只覆盖修脸内部采样，运行后恢复一采配置。选择“继承一采”时，修脸 LoRA 强度不重复作用于一采已有 LoRA。
+
+人脸检测与贴回仍需在节点内部进入图像域，但贴回完成后会重新编码视频并装回原始音频 latent，输出 `采样结果 + 运行报告`。因此可以与“一键高清放大”前后串联，最后统一接“MiniMax H3 分块解码”。旧版直接输出 IMAGE 的节点保留原类 ID 供旧工作流加载，标记为“旧工作流兼容”并从普通节点搜索中隐藏。
 
 支持 1–4 人、主人物、画面中央和参考图匹配，以及自动平衡、真人保真、远景小脸、动漫角色和自定义预设。检测人数不足时自动按实际人数处理。参考图匹配需要可选的 InsightFace，其他模式不需要参考图。
 
@@ -178,9 +185,14 @@ git clone https://github.com/star7code/minimax-h3-chunk-star7.git
 
 首次使用会自动下载并校验 `face_yolov8m.pt`，保存到 `ComfyUI/models/ultralytics/bbox`。素材提示词标签会显示在已连接接口后：图片使用 `<Picture N>`，视频使用 `<Video N>`，参考音频使用 `<Audio N>`，驱动音频使用 `<Audio D>`。
 
+```text
+采样器“采样结果” -> 一键高清“采样结果” -> 一键人脸修复“采样结果” -> H3 分块解码
+多合一“采样上下文” --------------------------^                    视频/音频 VAE --^
+```
+
 ### H3 一键高清放大
 
-最上方“启用高清二采”关闭时原样透传 latent，不加载高清模型也不执行二采。二采注意力默认继承一采，也可单独改用分块节点已有的 CK/SLA/Sol/Hybrid 路径。“启用分格”是独立的显存选项：开启后把每次高分辨率模型预测拆成重叠二维网格，关闭时相关参数变灰。“分格数量”会跳过无法形成紧凑二维网格的数字；选定数量就是实际数量，不会在后台偷偷增加。程序会枚举该数量的全部因数组合，并按实际画幅自动选择使单格最接近正方形的行列方向，例如 9 格固定为 3×3，12 格在横屏使用 3×4、竖屏使用 4×3。所有边界对齐 H3 的 2×2 latent patch，运行报告会显示实际网格。分格可降低二采峰值显存，但会增加模型调用和耗时，不改变 Sigma、采样器或音频。
+最上方“启用高清二采”关闭时原样透传 latent，不加载高清模型也不执行二采。顶部依次显示“高清放大模型、二采 LoRA、二采 LoRA 强度、二采注意力”，然后才是预设与其他参数。LoRA 与注意力默认继承一采；另选 LoRA 时按独立强度追加到传入模型并仅用于本次高清修复，选择“继承一采”时该强度不重复作用于一采已有 LoRA；另选注意力时可单独使用分块节点已有的 CK/SLA/Sol/Hybrid 路径。所有参数始终保持可见和可编辑，开关只决定运行时是否使用对应功能。“启用分格”是独立的显存选项：开启后把每次高分辨率模型预测拆成重叠二维网格。“分格数量”会跳过无法形成紧凑二维网格的数字；选定数量就是实际数量，不会在后台偷偷增加。程序会枚举该数量的全部因数组合，并按实际画幅自动选择使单格最接近正方形的行列方向，例如 9 格固定为 3×3，12 格在横屏使用 3×4、竖屏使用 4×3。所有边界对齐 H3 的 2×2 latent patch，运行报告会显示实际网格。分格可降低二采峰值显存，但会增加模型调用和耗时，不改变 Sigma、采样器或音频。
 
 高清节点只处理 H3 音视频 latent，不在内部解码 VAE。其输出接独立“MiniMax H3 分块解码”，再连接视频合成；解码节点直接复用 H3 VAE 内建的时序流式和空间分块实现，且与高清二采的分格数量无关。普通 IMAGE 输出仍需在内存中保存全部解码帧，因此 4K 长视频还会占用较多系统内存。
 
@@ -188,7 +200,7 @@ git clone https://github.com/star7code/minimax-h3-chunk-star7.git
 
 二采继续使用原提示词和普通参考素材。使用首帧或尾帧生成时，条件节点会保留原始端点画面，高清节点按实际目标分辨率重新 VAE 编码后再注入二采，避免复用低清关键帧 latent；分格开启时关键帧也会随每格同步裁切。
 
-预设会把步数与强度成套设置：“平衡高清”为中等强度，“高质量”增加细化步数，“远景小脸”提高重绘范围，“高速运动”降低重绘范围以保护动作连续性；“自定义”可自行设置。节点会沿当前工作流上游识别 Turbo/PDD 名称并结合模型补丁作保守判断：Turbo 使用 2～3 步场景预设；Base/普通 LoRA 使用 4～6 步，避免把无蒸馏模型当成少步模型；PDD 会读取上游已应用的 4/6/8 NFE 或自定义 4/8-row 分区，自动截取对应训练尾段 Sigma 并切换 Euler，不需要额外连接 PDD Scheduler。只有 PDD 模型未正确应用训练头、分区非法或不是训练用 Shift 12/3 时才报错。节点底部会只读显示后端实际使用的 Sigma 序列、视频 Shift 和识别出的模型类型；Sigma 数量减一才是实际二采步数。该显示来自连接模型的真实调度结果，不使用固定 Shift 猜测。
+预设会把步数与强度成套设置：“平衡高清”为中等强度，“高质量”只增加所选范围内的细化步数，“远景小脸”提高重绘范围，“高速运动”降低重绘范围以保护动作连续性；“自定义”可自行设置。修复强度只决定从原生去噪轨迹的哪个位置开始：数值越高，起始 latent 噪声越强、允许重绘的范围越大；`0` 会关闭二采修复。修复步数只把该起点到 `0` 的区间细分为多少次模型执行，增加步数不会再偷偷提高起始 Sigma。节点会沿当前工作流上游识别 Turbo/PDD 名称并结合模型补丁作保守判断：Turbo 使用 2～3 步场景预设；Base/普通 LoRA 使用 4～6 步；PDD 必须使用训练好的离散尾段边界，因此其实际强度由所选 PDD 尾段决定。节点会读取上游已应用的 4/6/8 NFE 或自定义 4/8-row 分区并自动切换 Euler，不需要额外连接 PDD Scheduler。节点底部会只读显示后端实际使用的 Sigma 序列、视频 Shift 和识别出的模型类型；Sigma 数量减一才是实际二采步数。
 
 ```text
 采样器“采样结果” -> 一键高清“采样结果” -> H3 分块解码 -> 视频合成
@@ -326,7 +338,7 @@ Loader -> LoRA -> Sage Attention Patch -> Activation Chunk - Star7
 
 并选择 `attention_backend=existing`。本节点只安装 QKV/RoPE/MLP 分块并保留传入模型的注意力实现。
 
-上游增强载入节点已经安装 VSA 时，可以选择 `attention_backend=existing`，本节点只追加 QKV、RoPE 与 MLP 分块。也可以直接选择架构对应的 `vsa_sm75` 或 `vsa_sm80+`：SM75 使用 Star7 预编译 CUDA producer，SM80+ 使用 Comfy Kitchen Sol-Attn；两条直连路径都要求带完整压缩门的 FastH3/VSA 模型，producer 不可用时会在采样前终止，不会静默退回 dense。
+上游增强载入节点已经安装 VSA 时，可以选择 `attention_backend=existing`，本节点只追加 QKV、RoPE 与 MLP 分块。也可以直接选择架构对应的 `vsa_sm75` 或 `vsa_sm80+`：SM75 使用 Star7 预编译 CUDA producer，SM80+ 使用 Comfy Kitchen Sol-Attn。普通 H3 模型可以运行 VSA fine 稀疏分支；带压缩门的 FastH3/VSA 模型还会运行学习型 coarse 补偿，通常更有利于保持画质。普通 H3 启用时会给出一次明确警告而不会被拒绝。producer 不可用时仍会在采样前终止，不会静默退回 dense。
 
 外部 TE-Speed 等 block-loop 缓存可以接在本节点之前；完整步与缓存前缀仍会经过 Star7 block/attention 补丁。节点使用 model clone、弱绑定 forward 和可识别 wrapper 标记，避免重复包装与旧模型被闭包长期强引用。
 

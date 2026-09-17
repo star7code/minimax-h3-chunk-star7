@@ -964,6 +964,10 @@ function validSavedValue(name, value) {
     if (name === "attention_backend") {
         return value === "existing"
             || value === "comfy_kitchen_int8"
+            || value === "vsa_sm75"
+            || value === "vsa_sm80+"
+            || value === "hybrid_sm75_ck_vsa"
+            || value === "hybrid_sm80+_ck_vsa"
             || value === "sla_sm75_qk_int8_pv_fp16"
             || value === "sla_sm75_all_int8"
             || value === "sla_sm75_all_int8_experimental"

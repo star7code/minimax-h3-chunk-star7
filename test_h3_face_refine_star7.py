@@ -5,6 +5,7 @@ from comfy_api.latest._io import build_nested_inputs, get_finalized_class_inputs
 
 from .h3_face_refine_star7 import (
     H3FaceStitch,
+    MiniMaxH3FaceRefineLatentStar7,
     MiniMaxH3FaceRefineStar7,
     MiniMaxH3MaterialPromptStar7,
     _aligned_reference_frames,
@@ -12,13 +13,16 @@ from .h3_face_refine_star7 import (
     _collect_reference_images,
     _copy_conditioning_without_keyframes,
     _decode_video_frames,
+    _encode_repaired_av_latent,
     _execute_reference_to_video,
     _face_repair_output_size,
+    _face_detector_choices,
     _fit_audio_latent,
     _option_id,
     _prepare_prompt_tags,
     _prepare_reference_videos,
     _scale_face_transform,
+    _PRESETS,
     _TASK_IDS,
 )
 
@@ -61,6 +65,55 @@ def test_face_refine_bypass_decodes_only_video_member():
     )[0]
     assert images.shape == (5, 8, 8, 3)
     assert torch.all(images == 0.25)
+
+
+def test_latent_face_refine_bypass_is_an_exact_passthrough_without_vae_work():
+    class VAE:
+        def decode(self, _latent):
+            raise AssertionError("latent bypass must not decode")
+
+        def encode(self, _images):
+            raise AssertionError("latent bypass must not encode")
+
+    av = {
+        "samples": comfy.nested_tensor.NestedTensor((
+            torch.zeros((1, 24, 2, 2, 3)),
+            torch.zeros((1, 32, 2, 8)),
+        ))
+    }
+    context = {"video_vae": VAE(), "model": object(), "positive": [[torch.zeros(1), {}]]}
+    output, report = MiniMaxH3FaceRefineLatentStar7().refine(
+        av, context, enable_refine=False,
+    )
+    assert output is av
+    assert "latent unchanged" in report
+
+
+def test_repaired_video_is_repacked_without_changing_audio():
+    encoded = torch.full((1, 24, 2, 4, 6), 0.75, dtype=torch.float32)
+
+    class VAE:
+        def encode(self, images):
+            assert images.shape == (5, 64, 96, 3)
+            return encoded
+
+    original_video = torch.zeros((1, 24, 2, 2, 3), dtype=torch.float16)
+    original_audio = torch.randn((1, 32, 2, 8), dtype=torch.float16)
+    av = {
+        "samples": comfy.nested_tensor.NestedTensor((original_video, original_audio)),
+        "noise_mask": object(),
+        "keep": "metadata",
+    }
+    output = _encode_repaired_av_latent(
+        av, torch.zeros((5, 64, 96, 3)), VAE()
+    )
+    video, audio = output["samples"].unbind()
+    assert video.shape == encoded.shape
+    assert video.dtype == original_video.dtype
+    assert torch.all(video == torch.tensor(0.75, dtype=video.dtype))
+    assert torch.equal(audio, original_audio)
+    assert output["keep"] == "metadata"
+    assert "noise_mask" not in output
 
 
 def test_face_refine_flattens_real_h3_vae_batch_time_output():
@@ -295,7 +348,7 @@ def test_reference_matched_track_is_reserved_before_multiface_fill():
 
 def test_public_node_contract_is_two_wire_face_refine():
     material = MiniMaxH3MaterialPromptStar7.INPUT_TYPES()
-    face = MiniMaxH3FaceRefineStar7.INPUT_TYPES()
+    face = MiniMaxH3FaceRefineLatentStar7.INPUT_TYPES()
     assert material["required"]["model"][0] == "MODEL"
     autogrow_type, autogrow_options = material["optional"]["ref_images"]
     assert autogrow_type == "COMFY_AUTOGROW_V3"
@@ -306,9 +359,37 @@ def test_public_node_contract_is_two_wire_face_refine():
     assert face["required"]["sampled_av_latent"] == ("LATENT",)
     assert face["required"]["refine_context"] == ("STAR7_H3_REFINE_CONTEXT",)
     names = list(face["required"])
-    assert names.index("face_count") == names.index("enable_refine") + 1
+    assert names.index("face_detector") == names.index("enable_refine") + 1
+    assert names.index("face_lora") == names.index("face_detector") + 1
+    assert names.index("face_lora_strength") == names.index("face_lora") + 1
+    assert names.index("face_attention") == names.index("face_lora_strength") + 1
+    assert names.index("face_count") == names.index("face_attention") + 1
+    assert face["required"]["face_detector"][1]["default"] == "face_yolov8m.pt"
+    assert _face_detector_choices()[0] == "face_yolov8m.pt"
+    assert face["required"]["face_lora"][1]["default"] == "继承一采"
+    assert face["required"]["face_lora_strength"][1]["default"] == 1.0
+    assert face["required"]["face_lora_strength"][1]["step"] == 0.01
+    assert face["required"]["face_attention"][1]["default"] == "继承一采"
+    assert face["required"]["custom_crop_context"][1]["default"] == 2.2
+    assert face["required"]["custom_crop_context"][1]["min"] == 1.4
     assert face["required"]["face_count"][1]["default"] == 1
     assert face["required"]["face_count"][1]["max"] == 4
     assert face["required"]["target_face"][0] == ["主人物", "画面中央", "参考图匹配"]
     assert face["required"]["preserve_repair_detail"][1]["default"] is True
     assert face["hidden"]["unique_id"] == "UNIQUE_ID"
+    assert MiniMaxH3FaceRefineLatentStar7.RETURN_TYPES == ("LATENT", "STRING")
+    assert MiniMaxH3FaceRefineLatentStar7.RETURN_NAMES == (
+        "refined_av_latent", "report"
+    )
+    assert MiniMaxH3FaceRefineLatentStar7.DEPRECATED is False
+    assert MiniMaxH3FaceRefineStar7.RETURN_TYPES == ("IMAGE",)
+    assert MiniMaxH3FaceRefineStar7.DEPRECATED is True
+
+
+def test_face_crop_presets_keep_the_face_larger_in_the_repair_canvas():
+    assert {name: values["crop"] for name, values in _PRESETS.items()} == {
+        "自动平衡": 2.2,
+        "真人保真": 2.3,
+        "远景小脸": 1.8,
+        "动漫角色": 2.1,
+    }

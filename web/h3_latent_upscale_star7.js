@@ -16,14 +16,13 @@ const BASE_PRESETS = {
 };
 const BALANCED = { ...PRESETS["平衡高清"] };
 const PARAMS = Object.keys(BALANCED);
-const HD_CONTROLS = ["upscale_model", "preset", "target_megapixels", "refine_steps", "refine_strength", "seed", "second_pass_attention"];
-const TILE_CONTROLS = ["tile_count", "tile_overlap"];
 const SAVED_DEFAULTS = {
     enable_hd: true, upscale_model: "minimax_h3_latent_upscaler_3d_fp16.safetensors",
+    second_pass_lora: "继承一采", second_pass_lora_strength: 1.0,
+    second_pass_attention: "继承一采",
     preset: "平衡高清", target_megapixels: 1.0,
     refine_steps: 2, refine_strength: 0.25, seed: 0,
     enable_tiling: false, tile_count: 2, tile_overlap: 128,
-    second_pass_attention: "继承一采",
 };
 
 function widget(node, name) {
@@ -82,6 +81,36 @@ function language() {
     return String(locale).toLowerCase().startsWith("zh") ? "zh" : "en";
 }
 
+function localizedTitle(lang) {
+    return lang === "zh"
+        ? "MiniMax H3 一键高清放大 - Star7"
+        : "MiniMax H3 One-click HD Upscale - Star7";
+}
+
+function localizedLabels(lang) {
+    return lang === "zh" ? {
+        enable_hd: "启用高清二采",
+        sampled_av_latent: "采样结果", h3_context: "采样上下文",
+        upscale_model: "高清放大模型", preset: "高清预设",
+        second_pass_lora: "二采 LoRA", second_pass_lora_strength: "二采 LoRA 强度",
+        second_pass_attention: "二采注意力",
+        target_megapixels: "目标像素（MP）", refine_steps: "高清修复步数",
+        refine_strength: "高清修复强度", seed: "高清种子",
+        enable_tiling: "启用分格", tile_count: "分格数量", tile_overlap: "分格重叠（像素）",
+        hd_av_latent: "采样结果", report: "运行报告",
+    } : {
+        enable_hd: "Enable HD second pass",
+        sampled_av_latent: "Sampled result", h3_context: "Sampling context",
+        upscale_model: "Latent upscaler model", preset: "HD preset",
+        second_pass_lora: "Second-pass LoRA", second_pass_lora_strength: "Second-pass LoRA strength",
+        second_pass_attention: "Second-pass attention",
+        target_megapixels: "Target megapixels", refine_steps: "HD refine steps",
+        refine_strength: "HD refine strength", seed: "HD seed",
+        enable_tiling: "Enable tiling", tile_count: "Tile count", tile_overlap: "Tile overlap (pixels)",
+        hd_av_latent: "Sampled result", report: "Run report",
+    };
+}
+
 function readParams(node) {
     return Object.fromEntries(PARAMS.map((name) => {
         const value = widget(node, name)?.value;
@@ -92,7 +121,7 @@ function readParams(node) {
 function validSavedValue(name, value) {
     if (name === "enable_hd" || name === "enable_tiling") return typeof value === "boolean";
     if (name === "preset") return Object.hasOwn(PRESETS, value) || value === "自定义";
-    if (name === "second_pass_attention" || name === "upscale_model") {
+    if (["second_pass_lora", "second_pass_attention", "upscale_model"].includes(name)) {
         return typeof value === "string" && value.length > 0;
     }
     if (name === "refine_steps") {
@@ -102,6 +131,41 @@ function validSavedValue(name, value) {
         return Number.isInteger(value) && value >= 2 && value <= 64;
     }
     return typeof value === "number" && Number.isFinite(value);
+}
+
+function migrateLegacyHDValues(node, values) {
+    if (!Array.isArray(values)) return;
+    let mapping;
+    let controlIndex;
+    if (Object.hasOwn(PRESETS, values[2]) || values[2] === "自定义") {
+        mapping = {
+            enable_hd: 0, upscale_model: 1, preset: 2, target_megapixels: 3,
+            refine_steps: 4, refine_strength: 5, seed: 6,
+            second_pass_attention: 8, enable_tiling: 9, tile_count: 10, tile_overlap: 11,
+        };
+        controlIndex = 7;
+        const lora = widget(node, "second_pass_lora");
+        if (lora) lora.value = "继承一采";
+    } else if (Object.hasOwn(PRESETS, values[4]) || values[4] === "自定义") {
+        // Layout immediately before the LoRA-strength row was added.
+        mapping = {
+            enable_hd: 0, upscale_model: 1, second_pass_lora: 2,
+            second_pass_attention: 3, preset: 4, target_megapixels: 5,
+            refine_steps: 6, refine_strength: 7, seed: 8,
+            enable_tiling: 10, tile_count: 11, tile_overlap: 12,
+        };
+        controlIndex = 9;
+    } else {
+        return;
+    }
+    for (const [name, index] of Object.entries(mapping)) {
+        const item = widget(node, name);
+        if (item && values[index] !== undefined) item.value = values[index];
+    }
+    const strength = widget(node, "second_pass_lora_strength");
+    if (strength) strength.value = 1.0;
+    const control = widget(node, "control_after_generate");
+    if (control && values[controlIndex] !== undefined) control.value = values[controlIndex];
 }
 
 function nearestTileCount(value) {
@@ -186,19 +250,8 @@ function invalidateSigmaStatus(node) {
     node.setDirtyCanvas?.(true, true);
 }
 
-function setWidgetDisabled(item, disabled) {
-    if (!item) return;
-    item.disabled = Boolean(disabled);
-    item.options ??= {};
-    item.options.disabled = Boolean(disabled);
-}
-
 function refreshEnabledState(node) {
     const enabled = Boolean(widget(node, "enable_hd")?.value);
-    const tiling = enabled && Boolean(widget(node, "enable_tiling")?.value);
-    for (const name of HD_CONTROLS) setWidgetDisabled(widget(node, name), !enabled);
-    setWidgetDisabled(widget(node, "enable_tiling"), !enabled);
-    for (const name of TILE_CONTROLS) setWidgetDisabled(widget(node, name), !tiling);
     if (!enabled) {
         const lang = language();
         const status = ensureSigmaStatus(node, lang);
@@ -248,28 +301,8 @@ function placeDynamicWidgets(node) {
 
 function install(node) {
     const lang = language();
-    node.title = lang === "zh"
-        ? "MiniMax H3 一键高清放大 - Star7"
-        : "MiniMax H3 One-click HD Upscale - Star7";
-    const labels = lang === "zh" ? {
-        enable_hd: "启用高清二采",
-        sampled_av_latent: "采样结果", h3_context: "采样上下文",
-        upscale_model: "高清放大模型", preset: "高清预设",
-        target_megapixels: "目标像素（MP）", refine_steps: "高清修复步数",
-        refine_strength: "高清修复强度", seed: "高清种子",
-        enable_tiling: "启用分格", tile_count: "分格数量", tile_overlap: "分格重叠（像素）",
-        second_pass_attention: "二采注意力",
-        hd_av_latent: "采样结果", report: "运行报告",
-    } : {
-        enable_hd: "Enable HD second pass",
-        sampled_av_latent: "Sampled result", h3_context: "Sampling context",
-        upscale_model: "Latent upscaler model", preset: "HD preset",
-        target_megapixels: "Target megapixels", refine_steps: "HD refine steps",
-        refine_strength: "HD refine strength", seed: "HD seed",
-        enable_tiling: "Enable tiling", tile_count: "Tile count", tile_overlap: "Tile overlap (pixels)",
-        second_pass_attention: "Second-pass attention",
-        hd_av_latent: "Sampled result", report: "Run report",
-    };
+    node.title = localizedTitle(lang);
+    const labels = localizedLabels(lang);
     for (const item of [...(node.inputs ?? []), ...(node.outputs ?? []), ...(node.widgets ?? [])]) {
         if (labels[item.name]) item.label = item.localized_name = labels[item.name];
     }
@@ -286,6 +319,7 @@ function install(node) {
         const originalConfigure = node.onConfigure;
         node.onConfigure = function (...args) {
             const result = originalConfigure?.apply(this, args);
+            migrateLegacyHDValues(this, args[0]?.widgets_values);
             repairInvalidInputs(this);
             this.__star7LastHDPreset = String(widget(this, "preset")?.value || "平衡高清");
             this.__star7LastTileCount = nearestTileCount(widget(this, "tile_count")?.value);
@@ -359,7 +393,6 @@ function install(node) {
             const strength = widget(node, "refine_strength");
             if (name === "refine_steps") {
                 item.value = Math.max(1, Math.min(50, Math.round(Number(item.value) || 1)));
-                if (Number(strength?.value) <= 0) strength.value = 0.18;
             } else if (name === "refine_strength") {
                 if (Number(item.value) > 0 && Number(steps?.value) <= 0) steps.value = 1;
             }
@@ -406,6 +439,19 @@ app.registerExtension({
     name: "Star7.H3OneClickHD",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== NODE) return;
+        const lang = language();
+        const labels = localizedLabels(lang);
+        nodeData.display_name = localizedTitle(lang);
+        for (const specs of [nodeData.input?.required, nodeData.input?.optional]) {
+            for (const [name, spec] of Object.entries(specs ?? {})) {
+                if (!labels[name] || !Array.isArray(spec)) continue;
+                spec[1] ??= {};
+                spec[1].display_name = labels[name];
+            }
+        }
+        nodeData.output_name = (nodeData.output_name ?? []).map(
+            (name) => labels[name] ?? name
+        );
         const original = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function (...args) {
             const result = original?.apply(this, args);

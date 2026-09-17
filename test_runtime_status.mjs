@@ -234,6 +234,58 @@ assert.equal(
     }),
 );
 
+const vsaNode = new MockNode();
+vsaNode.onNodeCreated();
+vsaNode.configure({
+    widgets_values: [8192, true, true, 4096, 4096, 4096, "auto", true, "vsa_sm75"],
+    widgets_values_named: {
+        chunk_tokens: 8192,
+        auto_halve_on_oom: true,
+        verbose: true,
+        mlp_chunk_tokens: 4096,
+        qkv_chunk_tokens: 4096,
+        out_proj_chunk_tokens: 4096,
+        disable_dynamic_prefetch: "auto",
+        reuse_mlp_weights: true,
+        attention_backend: "vsa_sm75",
+    },
+});
+assert.equal(
+    vsaNode.widgets.find((widget) => widget.name === "attention_backend")?.value,
+    "vsa_sm75",
+);
+const serializedVsa = {};
+vsaNode.onSerialize(serializedVsa);
+assert.equal(serializedVsa.widgets_values.at(-1), "vsa_sm75");
+assert.equal(serializedVsa.widgets_values_named.attention_backend, "vsa_sm75");
+
+for (const backend of ["hybrid_sm75_ck_vsa", "hybrid_sm80+_ck_vsa"]) {
+    const hybridVsaNode = new MockNode();
+    hybridVsaNode.onNodeCreated();
+    hybridVsaNode.configure({
+        widgets_values: [8192, true, true, 4096, 4096, 4096, "auto", true, backend],
+        widgets_values_named: {
+            chunk_tokens: 8192,
+            auto_halve_on_oom: true,
+            verbose: true,
+            mlp_chunk_tokens: 4096,
+            qkv_chunk_tokens: 4096,
+            out_proj_chunk_tokens: 4096,
+            disable_dynamic_prefetch: "auto",
+            reuse_mlp_weights: true,
+            attention_backend: backend,
+        },
+    });
+    assert.equal(
+        hybridVsaNode.widgets.find((widget) => widget.name === "attention_backend")?.value,
+        backend,
+    );
+    const serializedHybridVsa = {};
+    hybridVsaNode.onSerialize(serializedHybridVsa);
+    assert.equal(serializedHybridVsa.widgets_values.at(-1), backend);
+    assert.equal(serializedHybridVsa.widgets_values_named.attention_backend, backend);
+}
+
 const customTitleNode = new MockNode();
 customTitleNode.title = "我的自定义标题";
 customTitleNode.onNodeCreated();

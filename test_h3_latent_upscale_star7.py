@@ -10,7 +10,8 @@ from .h3_latent_upscale_star7 import (
     _sampling_profile,
     _pdd_partition,
     _pdd_tail_sigmas,
-    _native_flow_tail_sigmas,
+    _pdd_tail_strength,
+    _native_flow_refine_sigmas,
     _smart_tile_grid,
     _spatial_tile_plan,
     _tile_windows,
@@ -104,7 +105,15 @@ def test_schema_has_scene_presets_and_latent_output():
     assert schema["required"]["enable_tiling"][1]["default"] is False
     assert schema["required"]["tile_count"][1]["default"] == 2
     assert schema["required"]["tile_count"][1]["max"] == 64
+    assert schema["required"]["second_pass_lora"][1]["default"] == "继承一采"
+    assert schema["required"]["second_pass_lora_strength"][1]["default"] == 1.0
+    assert schema["required"]["second_pass_lora_strength"][1]["step"] == 0.01
     assert schema["required"]["second_pass_attention"][1]["default"] == "继承一采"
+    names = list(schema["required"])
+    assert names.index("second_pass_lora") == names.index("upscale_model") + 1
+    assert names.index("second_pass_lora_strength") == names.index("second_pass_lora") + 1
+    assert names.index("second_pass_attention") == names.index("second_pass_lora_strength") + 1
+    assert names.index("preset") == names.index("second_pass_attention") + 1
     assert schema["required"]["upscale_model"][0][0] == (
         "minimax_h3_latent_upscaler_3d_fp16.safetensors"
     )
@@ -157,18 +166,23 @@ def test_portrait_strips_span_full_width_and_keep_exact_prime_count():
     assert all((left, right) == (0, 40) for _, _, left, right in tiles)
 
 
-def test_base_native_flow_tail_matches_expected_split_sigmas():
+def test_base_native_flow_strength_sets_range_independently_from_step_count():
     assert torch.allclose(
-        _native_flow_tail_sigmas(4, 12),
+        _native_flow_refine_sigmas(4, 0.20, 12),
+        torch.tensor([0.75, 0.6792453, 0.5714286, 0.3870968, 0.0]),
+        atol=1e-6,
+    )
+    more_steps = _native_flow_refine_sigmas(6, 0.20, 12)
+    assert len(more_steps) == 7
+    assert torch.isclose(more_steps[0], torch.tensor(0.75), atol=1e-6)
+    assert more_steps[-1] == 0
+    stronger = _native_flow_refine_sigmas(4, 0.50, 12)
+    assert torch.allclose(
+        stronger,
         torch.tensor([0.9230769, 0.8780488, 0.8, 0.6315789, 0.0]),
         atol=1e-6,
     )
-    assert torch.allclose(
-        _native_flow_tail_sigmas(6, 12),
-        torch.tensor([0.9729730, 0.9523810, 0.9230769, 0.8780488, 0.8, 0.6315789, 0.0]),
-        atol=1e-6,
-    )
-    assert len(_native_flow_tail_sigmas(99, 12)) == 9
+    assert torch.count_nonzero(_native_flow_refine_sigmas(4, 0.0, 12)) == 0
 
 
 def test_tiled_model_proxy_merges_video_and_averages_audio_predictions():
@@ -302,6 +316,9 @@ def test_sampling_profile_distinguishes_base_turbo_and_pdd_prompt_paths():
     assert _sampling_profile(base, prompt, "1", 6)[0] == "turbo"
     prompt["3"]["class_type"] = "MiniMaxH3PDDAccApply"
     assert _sampling_profile(base, prompt, "1", 12)[0] == "pdd"
+    assert _sampling_profile(
+        base, {}, "1", 6, "minimax_h3_turbo_v4.safetensors"
+    )[0] == "turbo"
 
 
 def test_pdd_partition_and_trained_tail_sigmas_are_resolved_from_prompt():
@@ -331,6 +348,7 @@ def test_pdd_six_step_partition_and_shift_guard():
         torch.tensor([0.8, 0.6315789, 0.0]),
         atol=1e-6,
     )
+    assert _pdd_tail_strength(partition, 2) == 0.25
     try:
         _pdd_tail_sigmas(partition, 2, 6)
     except RuntimeError as exc:

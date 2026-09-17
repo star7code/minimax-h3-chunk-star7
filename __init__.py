@@ -27,6 +27,19 @@ from .h3_stream_decode_star7 import (
     NODE_CLASS_MAPPINGS as H3_STREAM_DECODE_NODE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS as H3_STREAM_DECODE_NODE_DISPLAY_NAME_MAPPINGS,
 )
+from .adaptive_loader import MiniMaxH3FP16LoaderStar7
+
+
+class MiniMaxH3ChunkEnhancedLoaderStar7(MiniMaxH3FP16LoaderStar7):
+    SEARCH_ALIASES = [
+        "MiniMax H3 增强载入",
+        "MiniMax H3 增强加载",
+        "H3 增强载入",
+        "H3 增强加载",
+        "MiniMax H3 Enhanced Loader",
+        "H3 Enhanced Loader",
+        "enhanced loader",
+    ]
 
 NODE_CLASS_MAPPINGS.update(PROMPT_NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(PROMPT_NODE_DISPLAY_NAME_MAPPINGS)
@@ -42,6 +55,12 @@ NODE_CLASS_MAPPINGS.update(H3_LATENT_UPSCALE_NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(H3_LATENT_UPSCALE_NODE_DISPLAY_NAME_MAPPINGS)
 NODE_CLASS_MAPPINGS.update(H3_STREAM_DECODE_NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(H3_STREAM_DECODE_NODE_DISPLAY_NAME_MAPPINGS)
+NODE_CLASS_MAPPINGS["MiniMaxH3ChunkEnhancedLoaderStar7"] = (
+    MiniMaxH3ChunkEnhancedLoaderStar7
+)
+NODE_DISPLAY_NAME_MAPPINGS["MiniMaxH3ChunkEnhancedLoaderStar7"] = (
+    "MiniMax H3 增强载入 - Star7"
+)
 
 WEB_DIRECTORY = "./web"
 

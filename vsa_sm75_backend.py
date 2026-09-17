@@ -9,6 +9,29 @@ import torch
 
 BLOCK = 64
 HEAD_DIM = 128
+_LOCAL_3D_CACHE: dict[tuple[str, tuple[int, int, int]], torch.Tensor] = {}
+_LOCAL_3D_CACHE_LIMIT = 4
+
+
+def _local_3d_mask(
+    video_grid: tuple[int, int, int], device: torch.device,
+) -> torch.Tensor:
+    key = (str(device), video_grid)
+    cached = _LOCAL_3D_CACHE.get(key)
+    if cached is not None:
+        return cached
+    nt, nh, nw = video_grid
+    coords = torch.stack(torch.meshgrid(
+        torch.arange(nt, device=device),
+        torch.arange(nh, device=device),
+        torch.arange(nw, device=device),
+        indexing="ij",
+    ), dim=-1).reshape(nt * nh * nw, 3)
+    local = (coords[:, None] - coords[None, :]).abs().sum(dim=-1).le(1)
+    while len(_LOCAL_3D_CACHE) >= _LOCAL_3D_CACHE_LIMIT:
+        del _LOCAL_3D_CACHE[next(iter(_LOCAL_3D_CACHE))]
+    _LOCAL_3D_CACHE[key] = local
+    return local
 
 
 def _load_sm75_backend():
@@ -89,6 +112,7 @@ def build_topk_routing(
     *,
     topk_ratio: float,
     prefix_blocks: int,
+    video_grid: tuple[int, int, int] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, float]:
     if q_mean.shape != k_mean.shape or q_mean.ndim != 4:
         raise ValueError("SM75 VSA routing requires equal [B,H,N,128] means")
@@ -110,6 +134,21 @@ def build_topk_routing(
     exact |= (index[:, None] - index[None, :]).abs().le(1).view(
         1, 1, blocks, blocks,
     )
+    if video_grid is not None:
+        nt, nh, nw = (int(value) for value in video_grid)
+        video_blocks = blocks - prefix_blocks
+        if min(nt, nh, nw) <= 0 or nt * nh * nw != video_blocks:
+            raise ValueError(
+                "SM75 VSA video_grid must match the number of non-prefix blocks"
+            )
+        # The old flattened +/-1 guard only represented width neighbours and
+        # even crossed row boundaries. Preserve all six true 3D neighbours so
+        # fine attention cannot drop the same local feature in the next time,
+        # height, or width cube.
+        local = _local_3d_mask((nt, nh, nw), q_mean.device)
+        exact[
+            ..., prefix_blocks:, prefix_blocks:
+        ] |= local.view(1, 1, video_blocks, video_blocks)
     if prefix_blocks:
         exact[..., :prefix_blocks] = True
         exact[..., :prefix_blocks, :] = True

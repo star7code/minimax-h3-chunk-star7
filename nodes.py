@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 _LOG = logging.getLogger("MiniMaxH3ActivationChunkStar7")
-NODE_VERSION = "2.15.0"
+NODE_VERSION = "2.16.0"
 FP16_EXACT_PATCH_FLAG = "star7_minimax_h3_fp16_exact_fix"
 HYBRID_ALL_INT8_BACKEND_NAME = "hybrid_sm75_ck_sla_all_int8"
 SM86PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_bf16"
@@ -40,6 +40,13 @@ HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME = "hybrid_sm80+_ck_sol_bf16_official"
 VSA_SM75_BACKEND_NAME = "vsa_sm75"
 VSA_SM80PLUS_BACKEND_NAME = "vsa_sm80+"
 VSA_BACKEND_NAMES = {VSA_SM75_BACKEND_NAME, VSA_SM80PLUS_BACKEND_NAME}
+HYBRID_SM75_CK_VSA_BACKEND_NAME = "hybrid_sm75_ck_vsa"
+HYBRID_SM80PLUS_CK_VSA_BACKEND_NAME = "hybrid_sm80+_ck_vsa"
+VSA_HYBRID_BACKEND_NAMES = {
+    HYBRID_SM75_CK_VSA_BACKEND_NAME,
+    HYBRID_SM80PLUS_CK_VSA_BACKEND_NAME,
+}
+_WARNED_VSA_FINE_ONLY_MODELS = weakref.WeakSet()
 VSA_START_PERCENT = 0.0
 LEGACY_SM80PLUS_BACKEND_NAME = "sla_sm80+_qk_int8_pv_fp16"
 HYBRID_BACKEND_NAMES = {
@@ -50,6 +57,7 @@ HYBRID_BACKEND_NAMES = {
     HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
     HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
     HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
+    *VSA_HYBRID_BACKEND_NAMES,
 }
 HYBRID_GUARD_RATIO = Fraction(1, 6)
 
@@ -146,6 +154,7 @@ def _attention_backend_choices():
         VSA_SM75_BACKEND_NAME,
         HYBRID_ALL_INT8_BACKEND_NAME,
         HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
+        HYBRID_SM75_CK_VSA_BACKEND_NAME,
     ]
     sm80plus = [
         SM86PLUS_BACKEND_NAME,
@@ -157,6 +166,7 @@ def _attention_backend_choices():
         HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
         HYBRID_SM86PLUS_CK_SLA_BF16_BACKEND_NAME,
         HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
+        HYBRID_SM80PLUS_CK_VSA_BACKEND_NAME,
     ]
     return common + sm75 + sm80plus
 
@@ -169,6 +179,15 @@ def _canonical_attention_backend(attention_backend: str) -> str:
         LEGACY_SM86PLUS_ALL_INT8_BACKEND_NAME: SM86PLUS_ALL_INT8_BACKEND_NAME,
         LEGACY_SOL_SM86PLUS_ALL_INT8_BACKEND_NAME: SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
     }.get(attention_backend, attention_backend)
+
+
+def _vsa_backend_for_attention(attention_backend: str) -> Optional[str]:
+    return {
+        VSA_SM75_BACKEND_NAME: VSA_SM75_BACKEND_NAME,
+        VSA_SM80PLUS_BACKEND_NAME: VSA_SM80PLUS_BACKEND_NAME,
+        HYBRID_SM75_CK_VSA_BACKEND_NAME: VSA_SM75_BACKEND_NAME,
+        HYBRID_SM80PLUS_CK_VSA_BACKEND_NAME: VSA_SM80PLUS_BACKEND_NAME,
+    }.get(attention_backend)
 
 _ORIGINAL_RMS_ROPE_SPLIT_HALF_INPLACE = None
 _PATCHED_CK = None
@@ -823,12 +842,12 @@ def _slice_freqs_for_tokens(freqs_cis: torch.Tensor, start: int, end: int, seq_l
 
 
 def _apply_split_half_rope(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
-    # Algebra intentionally mirrors comfy-kitchen eager apply_rope_split_half1.
-    t = x.reshape(*x.shape[:-1], 2, -1).movedim(-2, -1).unsqueeze(-2)
-    if t.dtype != freqs_cis.dtype:
-        t = t.to(freqs_cis.dtype)
-    out = freqs_cis[..., 0] * t[..., 0] + freqs_cis[..., 1] * t[..., 1]
-    return out.movedim(-1, -2).reshape(*x.shape).type_as(x)
+    # Comfy Kitchen changed this CUDA operation order between releases. Apply
+    # its eager primitive to each small token chunk so both old and new builds
+    # remain bit-identical to their own unchunked reference implementation.
+    from comfy_kitchen.backends.eager.rope import apply_rope_split_half1
+
+    return apply_rope_split_half1(x, freqs_cis)
 
 
 def _rms_rope_one_chunk_inplace(
@@ -1691,6 +1710,8 @@ def _step_backend_label(transformer_options: dict):
                 HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
             }:
                 backend = "Sol"
+            elif backend == "SLA" and configured in VSA_HYBRID_BACKEND_NAMES:
+                backend = "VSA"
         except (RuntimeError, ValueError):
             backend = "Hybrid"
     elif configured == "comfy_kitchen_int8":
@@ -2565,7 +2586,7 @@ def _sla_segment_passthrough(
 def _minimax_vsa_sm75_forward(
     attn, x, rope_freqs, transformer_options, patch, block_index,
 ):
-    """Run FastH3 VSA with the native SM75 fine-attention kernel."""
+    """Run H3 VSA with the native SM75 fine-attention kernel."""
     import comfy.model_management as mm
     import comfy.quant_ops
 
@@ -2575,9 +2596,12 @@ def _minimax_vsa_sm75_forward(
     upstream_dtype = x.dtype
     padded = x.new_zeros((sequence, x.shape[1]))
     padded[plan["inv"]] = x
-    gate = attn.to_gate_compress(padded).view(
-        1, sequence, attn.heads, attn.head_dim,
-    ).to(torch.float16)
+    gate_layer = getattr(attn, "to_gate_compress", None)
+    gate = None
+    if gate_layer is not None:
+        gate = gate_layer(padded).view(
+            1, sequence, attn.heads, attn.head_dim,
+        ).to(torch.float16)
     padded_rope = patch.vsa_rope_freqs(rope_freqs, plan)
     q, k, v = _prepare_h3_qkv_chunked(
         attn, padded, padded_rope, mm, comfy.quant_ops,
@@ -2588,10 +2612,23 @@ def _minimax_vsa_sm75_forward(
     backend = _load_vsa_sm75_backend()
     q_mean = backend.block_means(q, plan["block_len"])
     k_mean = backend.block_means(k, plan["block_len"])
-    v_mean = backend.block_means(v, plan["block_len"])
+    v_mean = (
+        backend.block_means(v, plan["block_len"])
+        if gate is not None else None
+    )
+    video_grid = None
+    signature = getattr(layout, "signature", None)
+    if signature is not None and len(signature) >= 4:
+        _text_len, latent_t, latent_h, latent_w = signature[:4]
+        video_grid = (
+            (int(latent_t) + 3) // 4,
+            (int(latent_h) // 2 + 3) // 4,
+            (int(latent_w) // 2 + 3) // 4,
+        )
     row_count, lut, density = backend.build_topk_routing(
         q_mean, k_mean, topk_ratio=patch.topk_ratio,
         prefix_blocks=plan["n_prefix"],
+        video_grid=video_grid,
     )
     q_int8, k_int8, q_scale, k_scale = backend.quantize_qk(q, k, k_mean)
     del q, k
@@ -2602,7 +2639,8 @@ def _minimax_vsa_sm75_forward(
         plan["block_len"],
     )
     del q_int8, k_int8, q_scale, k_scale, row_count, lut
-    backend.add_coarse_(output, q_mean, k_mean, v_mean, gate)
+    if gate is not None:
+        backend.add_coarse_(output, q_mean, k_mean, v_mean, gate)
     out = output.transpose(1, 2).reshape(
         sequence, attn.heads * attn.head_dim,
     )[plan["inv"]]
@@ -2612,7 +2650,9 @@ def _minimax_vsa_sm75_forward(
         ("star7-sm75-vsa", sequence),
         f"native SM75 VSA: {layout.seq_len} tokens, {sequence} padded rows, "
         f"{plan['n_prefix']} prefix tiles, first-block fine density "
-        f"{density * 100.0:.2f}%",
+        f"{density * 100.0:.2f}%, 3D local guard "
+        f"{'enabled' if video_grid is not None else 'unavailable'}, coarse branch "
+        f"{'enabled' if gate is not None else 'unavailable (fine-only)'}",
     )
     return attn.out_proj(out)
 
@@ -2620,7 +2660,9 @@ def _minimax_vsa_sm75_forward(
 def _star7_vsa_block_patch(sparse, block, block_index, patch):
     """Run core VSA after Star7's FP16/BF16 block-local normalization."""
     def attention(h, rope_freqs=None, transformer_options={}):
-        if _CONFIG.get("attention_backend") == VSA_SM75_BACKEND_NAME:
+        if _vsa_backend_for_attention(
+            _CONFIG.get("attention_backend")
+        ) == VSA_SM75_BACKEND_NAME:
             return _minimax_vsa_sm75_forward(
                 block.attn, h, rope_freqs, transformer_options, patch,
                 block_index,
@@ -2636,12 +2678,24 @@ def _star7_vsa_block_patch(sparse, block, block_index, patch):
             block.attn, h, rope_freqs, transformer_options, patch, block_index
         )
 
+    def ck_attention(h, rope_freqs=None, transformer_options={}):
+        return _minimax_ck_int8_attention_forward(
+            block.attn, h, rope_freqs=rope_freqs,
+            transformer_options=transformer_options,
+        )
+
     def block_patch(args, extra):
         x = args["img"]
         rope_freqs = args["rope_freqs"]
         transformer_options = args["transformer_options"]
         if block_index == 0:
             transformer_options["_star7_vsa_step_active"] = False
+        configured = _CONFIG.get("attention_backend")
+        if configured in VSA_HYBRID_BACKEND_NAMES:
+            _, _, hybrid_backend = _hybrid_sampling_context(transformer_options)
+            if hybrid_backend == "CK":
+                args = {**args, "attention": ck_attention}
+                return extra["original_block"](args)
         reason = None
         if rope_freqs is None or x.device.type != "cuda":
             reason = "missing RoPE or not on CUDA"
@@ -2652,7 +2706,7 @@ def _star7_vsa_block_patch(sparse, block, block_index, patch):
                 transformer_options, int(x.shape[0]), block_index
             )
         if reason is None:
-            if _CONFIG.get("attention_backend") == VSA_SM75_BACKEND_NAME:
+            if _vsa_backend_for_attention(configured) == VSA_SM75_BACKEND_NAME:
                 available, unavailable_reason = _load_vsa_sm75_backend().availability()
             else:
                 available = bool(sparse.ck.sol_attn_is_available(x.device))
@@ -2733,10 +2787,18 @@ def _apply_integrated_vsa_patch(model, verbose: bool):
         index for index, block in enumerate(diffusion_model.blocks)
         if getattr(block.attn, "to_gate_compress", None) is None
     ]
-    if missing_gates:
-        raise ValueError(
-            "Star7 VSA requires a FastH3/VSA checkpoint with compression gates; "
-            f"missing gates on block(s) {missing_gates[:6]}"
+    if (
+        missing_gates
+        and diffusion_model not in _WARNED_VSA_FINE_ONLY_MODELS
+    ):
+        _WARNED_VSA_FINE_ONLY_MODELS.add(diffusion_model)
+        _LOG.warning(
+            "[Star7 H3 Chunk] VSA checkpoint has no compression gate on %d/%d "
+            "blocks (first: %s). Running the fine sparse branch without the "
+            "learned coarse correction; ordinary H3 is supported, but a gated "
+            "FastH3/VSA checkpoint may preserve quality better.",
+            len(missing_gates), len(diffusion_model.blocks),
+            missing_gates[:6],
         )
 
     model_sampling = model.get_model_object("model_sampling")
@@ -2821,12 +2883,15 @@ def _upgrade_upstream_core_vsa(model, diffusion_model) -> bool:
 
 def _install_integrated_vsa(model, attention_backend: str, verbose: bool):
     """Install H3 VSA with an explicit GPU-family contract."""
+    vsa_backend = _vsa_backend_for_attention(attention_backend)
+    if vsa_backend is None:
+        raise ValueError(f"unknown VSA attention backend: {attention_backend}")
     capability = (
         torch.cuda.get_device_capability() if torch.cuda.is_available() else None
     )
     if capability is None:
         raise RuntimeError("Star7 VSA requires an available CUDA device")
-    if attention_backend == VSA_SM75_BACKEND_NAME:
+    if vsa_backend == VSA_SM75_BACKEND_NAME:
         if capability != (7, 5):
             raise RuntimeError(
                 f"{VSA_SM75_BACKEND_NAME} requires SM75, but the active GPU is "
@@ -2844,7 +2909,7 @@ def _install_integrated_vsa(model, attention_backend: str, verbose: bool):
         raise RuntimeError(
             "Star7 VSA requires ComfyUI 0.36 or newer with Model Sparse Attention"
         ) from exc
-    _require_vsa_producer(sparse, capability, attention_backend)
+    _require_vsa_producer(sparse, capability, vsa_backend)
 
     options = model.model_options.setdefault("transformer_options", {})
     if options.get("star7_integrated_vsa_backend") == attention_backend:
@@ -2855,8 +2920,10 @@ def _install_integrated_vsa(model, attention_backend: str, verbose: bool):
     ] = attention_backend
     _LOG.info(
         "[Star7 H3 Chunk] Integrated VSA enabled | path=%s | SM%d%d | "
-        "keep=10%% | active=0%%..100%% | min_tokens=12288",
+        "keep=10%% | schedule=%s | min_tokens=12288",
         attention_backend, capability[0], capability[1],
+        "CK/VSA/CK" if attention_backend in VSA_HYBRID_BACKEND_NAMES
+        else "VSA 0%%..100%%",
     )
     return patched, capability
 
@@ -3200,7 +3267,7 @@ def install_model_patch(
             requested_attention_backend,
             attention_backend,
         )
-    integrated_vsa = attention_backend in VSA_BACKEND_NAMES
+    integrated_vsa = _vsa_backend_for_attention(attention_backend) is not None
     vsa_capability = None
     if integrated_vsa:
         model, vsa_capability = _install_integrated_vsa(
@@ -3293,12 +3360,16 @@ def install_model_patch(
         SOL_SM86PLUS_ALL_INT8_BACKEND_NAME,
     }
     hybrid_attention = attention_backend in HYBRID_BACKEND_NAMES
+    hybrid_vsa_attention = attention_backend in VSA_HYBRID_BACKEND_NAMES
     hybrid_sol_attention = attention_backend in {
         HYBRID_SM75_CK_SOL_ALL_INT8_BACKEND_NAME,
         HYBRID_SM86PLUS_CK_SOL_ALL_INT8_BACKEND_NAME,
         HYBRID_SM86PLUS_CK_SOL_BF16_BACKEND_NAME,
     }
-    sparse_backends = strict_sla_backends | strict_sol_backends | HYBRID_BACKEND_NAMES
+    sparse_backends = (
+        strict_sla_backends | strict_sol_backends
+        | (HYBRID_BACKEND_NAMES - VSA_HYBRID_BACKEND_NAMES)
+    )
     sla_backend = None
     sol_backend = None
     _CONFIG["hybrid_sla_backend"] = None
@@ -3316,7 +3387,7 @@ def install_model_patch(
     # FP16 model before backend-dependent NaN/Inf can appear.
     _validate_sm80_h3_compute_dtype(patched, capability)
     if attention_backend in strict_sla_backends or (
-        hybrid_attention and not hybrid_sol_attention
+        hybrid_attention and not hybrid_sol_attention and not hybrid_vsa_attention
     ):
         sla_backend = _load_sla_backend()
         if attention_backend in {
@@ -3688,13 +3759,16 @@ class MiniMaxH3ActivationChunkStar7:
                             "exact+approx Sol-Attn. SM75 exposes the native All-INT8 Sol path; "
                             "it keeps exact selected blocks and centroid contributions for "
                             "unselected blocks while quantizing PV. "
-                            "vsa_sm75 and vsa_sm80+ install FastH3 VSA directly and require "
-                            "a VSA checkpoint with compression gates. SM75 uses Star7's "
+                            "vsa_sm75 and vsa_sm80+ install H3 VSA directly. Gated FastH3 "
+                            "weights use both fine and learned coarse branches; ordinary H3 "
+                            "weights run the fine sparse branch only. SM75 uses Star7's "
                             "precompiled Q64/K64 CUDA producer; SM80+ uses Comfy Kitchen "
                             "Sol-Attn. Unavailable architectures stop before sampling instead "
                             "of running dense. "
-                            "Hybrid modes schedule "
-                            "CK/SLA/CK or CK/Sol/CK by complete sampling step. Strict sparse "
+                            "CK/VSA Hybrid modes keep CK on the first and last protected "
+                            "sampling steps and use VSA for the middle steps. "
+                            "Hybrid modes schedule CK/SLA/CK, CK/Sol/CK, or CK/VSA/CK "
+                            "by complete sampling step. Strict sparse "
                             "modes never silently fall back."
                         ),
                     },

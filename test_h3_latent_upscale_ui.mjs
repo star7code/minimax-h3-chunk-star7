@@ -24,14 +24,28 @@ vm.runInNewContext(source, {
 assert.ok(extension);
 
 class NodeType {}
-await extension.beforeRegisterNodeDef(NodeType, { name: "MiniMaxH3OneClickHDStar7" });
+const nodeData = {
+    name: "MiniMaxH3OneClickHDStar7",
+    input: { required: {
+        sampled_av_latent: ["LATENT", {}], h3_context: ["STAR7_H3_REFINE_CONTEXT", {}],
+        second_pass_lora: [["继承一采"], {}], second_pass_lora_strength: ["FLOAT", {}],
+    } },
+    output_name: ["hd_av_latent", "report"],
+};
+await extension.beforeRegisterNodeDef(NodeType, nodeData);
+assert.equal(nodeData.display_name, "MiniMax H3 一键高清放大 - Star7");
+assert.equal(nodeData.input.required.second_pass_lora[1].display_name, "二采 LoRA");
+assert.equal(nodeData.input.required.second_pass_lora_strength[1].display_name, "二采 LoRA 强度");
+assert.deepEqual(nodeData.output_name, ["采样结果", "运行报告"]);
 const node = Object.create(NodeType.prototype);
 node.widgets = [
     ["enable_hd", true],
     ["upscale_model", "minimax_h3_latent_upscaler_3d_fp16.safetensors"],
+    ["second_pass_lora", "继承一采"], ["second_pass_lora_strength", 1.0],
+    ["second_pass_attention", "继承一采"],
     ["preset", "平衡高清"], ["target_megapixels", 1.0], ["refine_steps", 2],
     ["refine_strength", 0.25], ["seed", 0], ["enable_tiling", false],
-    ["tile_count", 2], ["tile_overlap", 128], ["second_pass_attention", "继承一采"],
+    ["tile_count", 2], ["tile_overlap", 128],
 ].map(([name, value]) => ({ name, value }));
 node.inputs = [{ name: "sampled_av_latent" }, { name: "h3_context" }];
 node.outputs = [{ name: "hd_av_latent" }, { name: "report" }];
@@ -59,7 +73,11 @@ const upscaleModel = node.widgets.find((item) => item.name === "upscale_model");
 const preset = node.widgets.find((item) => item.name === "preset");
 const steps = node.widgets.find((item) => item.name === "refine_steps");
 const strength = node.widgets.find((item) => item.name === "refine_strength");
+const secondPassLora = node.widgets.find((item) => item.name === "second_pass_lora");
+const secondPassLoraStrength = node.widgets.find((item) => item.name === "second_pass_lora_strength");
 const secondPassAttention = node.widgets.find((item) => item.name === "second_pass_attention");
+assert.equal(secondPassLora.label, "二采 LoRA");
+assert.equal(secondPassLoraStrength.label, "二采 LoRA 强度");
 assert.equal(secondPassAttention.label, "二采注意力");
 assert.equal(tileCount.label, "分格数量");
 tileCount.value = 5;
@@ -103,20 +121,23 @@ assert.equal(strength.value, 0.30);
 strength.value = 0.0;
 strength.callback();
 assert.equal(steps.value, 3);
-assert.equal(tileCount.disabled, true);
+steps.value = 4;
+steps.callback();
+assert.equal(strength.value, 0.0);
+assert.equal(Boolean(tileCount.disabled), false);
 enableTiling.value = true;
 enableTiling.callback();
-assert.equal(tileCount.disabled, false);
+assert.equal(Boolean(tileCount.disabled), false);
 enableHD.value = false;
 enableHD.callback();
-assert.equal(preset.disabled, true);
-assert.equal(enableTiling.disabled, true);
-assert.equal(tileCount.disabled, true);
+assert.equal(Boolean(preset.disabled), false);
+assert.equal(Boolean(enableTiling.disabled), false);
+assert.equal(Boolean(tileCount.disabled), false);
 enableHD.value = true;
 enableHD.callback();
-assert.equal(preset.disabled, false);
-assert.equal(enableTiling.disabled, false);
-assert.equal(tileCount.disabled, false);
+assert.equal(Boolean(preset.disabled), false);
+assert.equal(Boolean(enableTiling.disabled), false);
+assert.equal(Boolean(tileCount.disabled), false);
 assert.ok(node.widgets.some((item) => item.name === "重置参数"));
 const sigmaStatus = node.widgets.find((item) => item.__star7HDSigmaStatus);
 assert.ok(sigmaStatus);
@@ -166,6 +187,8 @@ assert.equal(strength.value, 0.25);
 // widget. Invalid values are repaired, while valid saved user values persist.
 node.properties.star7HDSavedValues = {
     enable_hd: true, upscale_model: "custom_3d.safetensors",
+    second_pass_lora: "custom_lora.safetensors",
+    second_pass_lora_strength: 0.72,
     preset: "自定义", target_megapixels: 1.35,
     refine_steps: 3, refine_strength: 0.22, seed: 42,
     enable_tiling: true, tile_count: 16, tile_overlap: 160,
@@ -175,12 +198,41 @@ steps.value = 0;
 tileCount.value = null;
 upscaleModel.value = null;
 secondPassAttention.value = null;
+secondPassLora.value = null;
+secondPassLoraStrength.value = null;
 node.onConfigure({});
 assert.equal(steps.value, 1);
 assert.equal(tileCount.value, 16);
 assert.equal(upscaleModel.value, "custom_3d.safetensors");
+assert.equal(secondPassLora.value, "custom_lora.safetensors");
+assert.equal(secondPassLoraStrength.value, 0.72);
 assert.equal(secondPassAttention.value, "comfy_kitchen_int8");
 node.onSerialize({});
 assert.equal(node.properties.star7HDSavedValues.tile_count, 16);
+
+// Current released workflows stored attention after the seed control and had
+// no per-pass LoRA row. Migrate them by meaning, not by shifted positions.
+node.onConfigure({ widgets_values: [
+    true, "legacy_3d.safetensors", "自定义", 2.0, 4, 0.28, 77,
+    "fixed", "vsa_sm75", true, 6, 192,
+] });
+assert.equal(upscaleModel.value, "legacy_3d.safetensors");
+assert.equal(secondPassLora.value, "继承一采");
+assert.equal(secondPassAttention.value, "vsa_sm75");
+assert.equal(preset.value, "自定义");
+assert.equal(tileCount.value, 6);
+
+// Workflows from the immediately preceding layout already had per-pass LoRA
+// and attention, but no strength row. Keep every following value aligned.
+node.onConfigure({ widgets_values: [
+    true, "current_3d.safetensors", "detail.safetensors", "ck_vsa_sm75",
+    "自定义", 4.0, 5, 0.31, 88, "increment", true, 9, 224,
+] });
+assert.equal(upscaleModel.value, "current_3d.safetensors");
+assert.equal(secondPassLora.value, "detail.safetensors");
+assert.equal(secondPassLoraStrength.value, 1.0);
+assert.equal(secondPassAttention.value, "ck_vsa_sm75");
+assert.equal(preset.value, "自定义");
+assert.equal(tileCount.value, 9);
 
 console.log("h3 latent upscale UI tests passed");

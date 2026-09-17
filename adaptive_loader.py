@@ -1,0 +1,541 @@
+import logging
+import sys
+import weakref
+from collections import Counter
+from contextvars import ContextVar
+from types import MethodType
+
+import folder_paths
+import torch
+import torch.nn.functional as F
+
+import comfy.model_detection
+import comfy.model_management
+import comfy.ops
+import comfy.patcher_extension
+import comfy.sd
+import comfy.supported_models
+import comfy.utils
+
+
+NODE_VERSION = "2.0.14"
+PATCH_FLAG = "star7_minimax_h3_fp16_exact_fix"
+PATCH_MODE = "star7_minimax_h3_fp16_mode"
+TE_RUNTIME_KEY = "te_speed_minimax_h3_runtime"
+TE_BOUNDARY_WRAPPER_KEY = "star7_minimax_h3_fp16_commercial_te_boundary"
+K_OUT_PROJ = 64.0
+K_FC2 = 256.0
+
+_te_logged_runtime = ContextVar("star7_h3_fp16_te_logged_runtime", default=None)
+
+_PROCESS_WIDE_CONFLICT_MARKERS = (
+    "comfyui-minimax-h3-turing",
+    "comfyui_minimax_h3_turing",
+)
+
+
+def _callable_source(value):
+    function = getattr(value, "__func__", value)
+    code = getattr(function, "__code__", None)
+    return str(getattr(code, "co_filename", "") or "").replace("\\", "/").lower()
+
+
+def _is_conflicting_callable(value):
+    source = _callable_source(value)
+    return any(marker in source for marker in _PROCESS_WIDE_CONFLICT_MARKERS)
+
+
+def _neutralize_process_wide_h3_conflicts():
+    """Restore H3 core methods saved by the foreign monkey patch and continue."""
+    conflicts = []
+    for module in tuple(sys.modules.values()):
+        source = str(getattr(module, "__file__", "") or "").replace("\\", "/").lower()
+        name = str(getattr(module, "__name__", "") or "").lower()
+        if any(marker in source or marker in name for marker in _PROCESS_WIDE_CONFLICT_MARKERS):
+            conflicts.append(module)
+    if not conflicts:
+        return False
+
+    import comfy.ldm.minimax.model as minimax_module
+    if getattr(minimax_module, "_star7_turing_plugin_neutralized", False):
+        return True
+
+    restore_map = (
+        (minimax_module.MiniMaxH3Model, "__init__", "_orig_model_init"),
+        (minimax_module.MLP, "forward", "_orig_mlp_forward"),
+        (minimax_module.DiTBlock, "forward", "_orig_block_forward"),
+        (minimax_module.Attention, "forward", "_orig_attention_forward"),
+        (minimax_module.Attention, "forward", "_orig_attn_forward"),
+    )
+    restored = 0
+    for owner, attribute, saved_name in restore_map:
+        candidates = [getattr(module, saved_name, None) for module in conflicts]
+        original = next(
+            (candidate for candidate in candidates if callable(candidate) and not _is_conflicting_callable(candidate)),
+            None,
+        )
+        if original is not None and _is_conflicting_callable(getattr(owner, attribute, None)):
+            setattr(owner, attribute, original)
+            restored += 1
+
+    logging.warning(
+        "[Star7 H3 Compatibility] Conflicting plugin detected: "
+        "comfyui-minimax-h3-turing. Its process-wide H3 patches were "
+        "neutralized for this run (%d core methods restored); the Star7 native "
+        "path remains active. Disable the Turing plugin and restart ComfyUI. "
+        "Bypassing its workflow nodes is not sufficient.",
+        restored,
+    )
+    minimax_module._star7_turing_plugin_neutralized = True
+    return True
+
+
+def _strip_conflicting_instance_forwards(diffusion_model):
+    """Unwrap direct instance forwards installed while the foreign patch was active."""
+    for module in diffusion_model.modules():
+        current = vars(module).get("forward")
+        if current is None or not _is_conflicting_callable(current):
+            continue
+        function = getattr(current, "__func__", current)
+        candidates = list(getattr(function, "__defaults__", ()) or ())
+        candidates.extend(
+            cell.cell_contents for cell in (getattr(function, "__closure__", ()) or ())
+        )
+        original = next(
+            (candidate for candidate in candidates if callable(candidate) and not _is_conflicting_callable(candidate)),
+            None,
+        )
+        if original is not None:
+            module.forward = original
+    for block in getattr(diffusion_model, "blocks", ()):
+        if hasattr(block, "_h3_fp16_fix"):
+            block._h3_fp16_fix = False
+
+
+def _weak_callable(value):
+    """Keep a bound model method callable without retaining its owner."""
+    owner = getattr(value, "__self__", None)
+    function = getattr(value, "__func__", value)
+    if owner is None or isinstance(owner, weakref.ProxyTypes):
+        return value
+
+    owner_ref = weakref.ref(owner)
+
+    def call(*args, **kwargs):
+        current = owner_ref()
+        if current is None:
+            raise ReferenceError("Star7 FP16 wrapper owner was released")
+        return function(current, *args, **kwargs)
+
+    return call
+
+
+def _weak_method(owner, function):
+    """Bind a patch function through a weak proxy instead of the model module."""
+    return MethodType(function, weakref.proxy(owner))
+
+
+def _condition_proj_forward(original_forward):
+    def forward(self, tensor):
+        return original_forward(tensor.to(torch.float32))
+
+    return forward
+
+
+def _out_proj_forward(original_forward):
+    def forward(self, tensor):
+        scaled = (tensor / K_OUT_PROJ).to(torch.float16)
+        return original_forward(scaled).to(torch.float32).mul_(K_OUT_PROJ)
+
+    return forward
+
+
+def _mlp_forward(original_forward):
+    def forward(self, tensor):
+        if tensor.dtype != torch.float16:
+            return original_forward(tensor)
+
+        projected = self.fc1(tensor)
+        gate, up = projected.chunk(2, dim=-1)
+        activated = F.silu(gate.to(torch.float32)).mul_(up.to(torch.float32))
+        scaled = (activated / K_FC2).to(torch.float16)
+        return self.fc2(scaled).to(torch.float32).mul_(K_FC2)
+
+    return forward
+
+
+def _block_forward(original_forward, minimax_module):
+    def forward(
+        self, x, t_emb, mod_segments, rope_freqs, transformer_options={},
+        attention=None, **_kwargs,
+    ):
+        if x.dtype != torch.float32:
+            x = x.to(torch.float32)
+
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(t_emb)
+
+        h = minimax_module._mod_scale_shift(
+            self.norm1(x), shift_msa, scale_msa, mod_segments
+        ).to(torch.float16)
+        attention_fn = self.attn if attention is None else attention
+        attention_output = attention_fn(
+            h,
+            rope_freqs=rope_freqs,
+            transformer_options=transformer_options,
+        )
+        x = minimax_module._mod_gate(
+            x, gate_msa, attention_output.to(torch.float32), mod_segments
+        )
+
+        h = minimax_module._mod_scale_shift(
+            self.norm2(x), shift_mlp, scale_mlp, mod_segments
+        ).to(torch.float16)
+        mlp = self.mlp(h)
+        return minimax_module._mod_gate(
+            x, gate_mlp, mlp.to(torch.float32), mod_segments
+        )
+
+    return forward
+
+
+def _commercial_te_runtime(transformer_options):
+    if not isinstance(transformer_options, dict):
+        return None
+    return transformer_options.get(TE_RUNTIME_KEY)
+
+
+def _commercial_te_boundary_wrapper(
+    executor, x, timestep, context, transformer_options={}, *args, **kwargs
+):
+    """Protect H3's TE-facing packed residual carrier without changing compute ops."""
+    runtime = _commercial_te_runtime(transformer_options)
+    if runtime is None or not isinstance(context, torch.Tensor):
+        return executor(x, timestep, context, transformer_options, *args, **kwargs)
+
+    protected_context = context.to(dtype=torch.float32)
+    runtime_id = id(runtime)
+    if _te_logged_runtime.get() != runtime_id:
+        logging.info(
+            "[Star7 H3 FP16] Commercial TE compatibility active | "
+            "cache/residual boundary=FP32 | inner compute=FP16/INT8"
+        )
+        _te_logged_runtime.set(runtime_id)
+
+    return executor(
+        x, timestep, protected_context, transformer_options, *args, **kwargs
+    )
+
+
+def _install_commercial_te_boundary(patched):
+    transformer_options = patched.model_options.setdefault("transformer_options", {})
+    wrapper_type = comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL
+    installed = (
+        transformer_options.get("wrappers", {})
+        .get(wrapper_type, {})
+        .get(TE_BOUNDARY_WRAPPER_KEY, [])
+    )
+    if installed:
+        return
+    patched.add_wrapper_with_key(
+        wrapper_type,
+        TE_BOUNDARY_WRAPPER_KEY,
+        _commercial_te_boundary_wrapper,
+    )
+
+
+def _quantization_summary(diffusion_model):
+    formats = Counter()
+    for module in diffusion_model.modules():
+        quant_format = getattr(module, "quant_format", None)
+        layout_type = getattr(module, "layout_type", None)
+        if quant_format is None or layout_type is None:
+            continue
+
+        weight = getattr(module, "weight", None)
+        params = getattr(weight, "_params", None)
+        label = quant_format
+        if getattr(params, "convrot", False):
+            label += "+convrot"
+        formats[label] += 1
+    return formats
+
+
+def _format_quantization(formats):
+    return ",".join(f"{name}:{count}" for name, count in sorted(formats.items()))
+
+
+def _supports_fp16_fix():
+    if not torch.cuda.is_available():
+        return False, "CUDA is unavailable"
+
+    if torch.version.hip is not None:
+        return True, "ROCm"
+
+    capability = torch.cuda.get_device_capability()
+    if capability[0] >= 8:
+        return False, f"sm{capability[0]}{capability[1]} uses native BF16"
+    if capability == (6, 1):
+        return False, "sm61 has very slow FP16 throughput"
+    return True, f"sm{capability[0]}{capability[1]}"
+
+
+def _patch_h3_model(model, loader_native=False):
+    _neutralize_process_wide_h3_conflicts()
+    import comfy.ldm.minimax.model as minimax_module
+
+    patched = model.clone()
+    diffusion_model = patched.get_model_object("diffusion_model")
+    _strip_conflicting_instance_forwards(diffusion_model)
+    if not isinstance(diffusion_model, minimax_module.MiniMaxH3Model):
+        raise TypeError("Connected model is not native ComfyUI MiniMax H3")
+
+    transformer_options = patched.model_options.setdefault("transformer_options", {})
+    _install_commercial_te_boundary(patched)
+    if transformer_options.get(PATCH_FLAG):
+        logging.info("[Star7 H3 FP16] Patch is already present; skipping duplicate.")
+        return patched
+
+    quant_formats = _quantization_summary(diffusion_model)
+    is_quantized = bool(quant_formats)
+
+    patched.set_model_compute_dtype(torch.float16)
+    if is_quantized or loader_native:
+        # Keep the UUID update from set_model_compute_dtype without forcing
+        # MixedPrecisionOps to dequantize its weights.
+        patched.force_cast_weights = False
+
+    if getattr(
+        minimax_module.MiniMaxH3Model,
+        "_star7_h3_global_fp16_patch",
+        False,
+    ) and getattr(diffusion_model.blocks[0], "_star7_h3_fp16_fix", False):
+        mode = "loader-native" if loader_native else "postload"
+        transformer_options[PATCH_FLAG] = NODE_VERSION
+        transformer_options[PATCH_MODE] = mode
+        logging.info("[Star7 H3 FP16] Global overflow fix already active | mode=%s", mode)
+        return patched
+
+    condition_proj = diffusion_model.condition_proj
+    patched.add_object_patch(
+        "diffusion_model.condition_proj.forward",
+        _weak_method(
+            condition_proj,
+            _condition_proj_forward(_weak_callable(condition_proj.forward)),
+        ),
+    )
+
+    for index, block in enumerate(diffusion_model.blocks):
+        out_proj = block.attn.out_proj
+        patched.add_object_patch(
+            f"diffusion_model.blocks.{index}.attn.out_proj.forward",
+            _weak_method(out_proj, _out_proj_forward(_weak_callable(out_proj.forward))),
+        )
+        patched.add_object_patch(
+            f"diffusion_model.blocks.{index}.mlp.forward",
+            _weak_method(block.mlp, _mlp_forward(_weak_callable(block.mlp.forward))),
+        )
+        patched.add_object_patch(
+            f"diffusion_model.blocks.{index}.forward",
+            _weak_method(
+                block,
+                _block_forward(_weak_callable(block.forward), minimax_module),
+            ),
+        )
+
+    if loader_native:
+        mode = "loader-quantized" if is_quantized else "loader-dense"
+    else:
+        mode = "postload-quantized" if is_quantized else "postload-dense"
+
+    transformer_options[PATCH_FLAG] = NODE_VERSION
+    transformer_options[PATCH_MODE] = mode
+    weight_patches = len(getattr(patched, "patches", {}))
+    backend = _format_quantization(quant_formats) if is_quantized else "dense-fp16"
+    logging.info(
+        "[Star7 H3 FP16] Enabled v%s | mode=%s | backend=%s | force-cast=%s | weight-patches=%d | blocks=%d",
+        NODE_VERSION,
+        mode,
+        backend,
+        bool(patched.force_cast_weights),
+        weight_patches,
+        len(diffusion_model.blocks),
+    )
+    if is_quantized and weight_patches:
+        logging.warning(
+            "[Star7 H3 FP16] Weight patches detected; dynamic low-VRAM LoRA may dequantize affected layers."
+        )
+    return patched
+
+
+def _detect_h3_config(state_dict, metadata):
+    prefix = comfy.model_detection.unet_prefix_from_state_dict(state_dict)
+    detection_state_dict = state_dict
+    if prefix:
+        stripped = comfy.utils.state_dict_prefix_replace(
+            state_dict, {prefix: ""}, filter_keys=True
+        )
+        if stripped:
+            detection_state_dict = stripped
+    model_config = comfy.model_detection.model_config_from_unet(
+        detection_state_dict, "", metadata=metadata
+    )
+    if not isinstance(model_config, comfy.supported_models.MiniMaxH3):
+        raise ValueError("Selected file is not a native ComfyUI MiniMax H3 diffusion model")
+    return model_config
+
+
+def _normalize_h3_state_dict(state_dict, metadata):
+    """Match ComfyUI's quant conversion around checkpoint prefix removal."""
+    state_dict, metadata = comfy.utils.convert_old_quants(
+        state_dict, "", metadata=metadata
+    )
+    prefix = comfy.model_detection.unet_prefix_from_state_dict(state_dict)
+    if prefix:
+        stripped = comfy.utils.state_dict_prefix_replace(
+            state_dict, {prefix: ""}, filter_keys=True
+        )
+        if stripped:
+            state_dict = stripped
+            if comfy.utils.detect_layer_quantization(state_dict, "") is None:
+                state_dict, metadata = comfy.utils.convert_old_quants(
+                    state_dict, "", metadata=metadata
+                )
+    return state_dict, metadata
+
+
+def _load_h3_native_fp16(unet_path, disable_dynamic=False):
+    _neutralize_process_wide_h3_conflicts()
+    state_dict, metadata = comfy.utils.load_torch_file(
+        unet_path, return_metadata=True
+    )
+    state_dict, metadata = _normalize_h3_state_dict(state_dict, metadata)
+    model_config = _detect_h3_config(state_dict, metadata)
+    load_device = comfy.model_management.get_torch_device()
+    operations = comfy.ops.pick_operations(
+        torch.float16,
+        torch.float16,
+        load_device=load_device,
+        model_config=model_config,
+    )
+    model = comfy.sd.load_diffusion_model_state_dict(
+        state_dict,
+        model_options={
+            "dtype": torch.float16,
+            "custom_operations": operations,
+        },
+        metadata=metadata,
+        disable_dynamic=disable_dynamic,
+    )
+    if model is None:
+        raise RuntimeError("ComfyUI could not load the selected MiniMax H3 model")
+
+    patched = _patch_h3_model(model, loader_native=True)
+    patched.cached_patcher_init = (_load_h3_native_fp16, (unet_path,))
+    return patched
+
+
+class MiniMaxH3FP16LoaderStar7:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "unet_name": (folder_paths.get_filename_list("diffusion_models"),),
+            }
+        }
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+    FUNCTION = "load_model"
+    CATEGORY = "Star7/MiniMax H3"
+    DESCRIPTION = (
+        "Explicit protected-FP16 MiniMax H3 loader for supported GPUs. Creates dense and "
+        "MixedPrecisionOps layers with FP16 compute from the start, preserves "
+        "INT8/ConvRot dispatch, and installs the exact overflow fix."
+    )
+
+    def load_model(self, unet_name):
+        # Run before model construction so the foreign process-wide __init__
+        # hook cannot modify the newly loaded H3 model.
+        _neutralize_process_wide_h3_conflicts()
+        unet_path = folder_paths.get_full_path_or_raise(
+            "diffusion_models", unet_name
+        )
+        supported, reason = _supports_fp16_fix()
+        if not supported:
+            native_bf16 = bool(
+                torch.cuda.is_available()
+                and torch.version.hip is None
+                and torch.cuda.get_device_capability()[0] >= 8
+            )
+            logging.info(
+                "[Star7 H3 FP16] Precision policy: %s. %s",
+                reason,
+                (
+                    "A global FP16 UNet setting is overridden for H3; loading "
+                    "explicit native BF16 with no FP16 repair wrappers."
+                    if native_bf16
+                    else "Using ComfyUI default precision with no Star7 precision patches."
+                ),
+            )
+            model_options = {"dtype": torch.bfloat16} if native_bf16 else {}
+            return (
+                comfy.sd.load_diffusion_model(
+                    unet_path, model_options=model_options
+                ),
+            )
+
+        logging.info("[Star7 H3 FP16] Loading at creation-time FP16 | device=%s", reason)
+        return (_load_h3_native_fp16(unet_path),)
+
+
+class MiniMaxH3FP16ExactFixStar7:
+    DEPRECATED = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "enabled": ("BOOLEAN", {"default": True}),
+            }
+        }
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+    FUNCTION = "patch"
+    CATEGORY = "Star7/MiniMax H3"
+    DESCRIPTION = (
+        "Backward-compatible MODEL patch. Automatically preserves MixedPrecisionOps "
+        "INT8/ConvRot kernels instead of forcing quantized weights to FP16. The "
+        "dedicated MiniMax H3 Native FP16 Loader - Star7 is preferred."
+    )
+
+    def patch(self, model, enabled=True):
+        if not enabled:
+            return (model,)
+
+        supported, reason = _supports_fp16_fix()
+        if not supported:
+            logging.info(
+                "[Star7 H3 FP16] No-op: %s; this architecture does not need "
+                "the pre-BF16 overflow repair. Model left unchanged.",
+                reason,
+            )
+            return (model,)
+
+        try:
+            return (_patch_h3_model(model),)
+        except (ImportError, TypeError) as exc:
+            logging.warning("[Star7 H3 FP16] Model left unchanged: %s.", exc)
+            return (model,)
+
+
+NODE_CLASS_MAPPINGS = {
+    "MiniMaxH3FP16LoaderStar7": MiniMaxH3FP16LoaderStar7,
+    "MiniMaxH3FP16ExactFixStar7": MiniMaxH3FP16ExactFixStar7,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "MiniMaxH3FP16LoaderStar7": "MiniMax H3 Native FP16 Loader - Star7",
+    "MiniMaxH3FP16ExactFixStar7": "MiniMax H3 FP16 Exact Fix (Legacy) - Star7",
+}
