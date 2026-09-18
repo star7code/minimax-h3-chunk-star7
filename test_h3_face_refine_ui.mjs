@@ -53,7 +53,7 @@ const values = {
     refine_steps: 4,
     custom_strength: 0.30,
     custom_canvas: "自动",
-    custom_crop_context: 2.2,
+    custom_crop_context: 3.0,
     custom_blend: 0.90,
     custom_feather: 20,
     seed: 0,
@@ -91,10 +91,13 @@ assert.equal(widgets.face_lora_strength.label, "修脸 LoRA 强度");
 assert.equal(widgets.face_attention.label, "修脸注意力");
 widgets.preset.value = "远景小脸";
 widgets.preset.callback();
-assert.equal(widgets.custom_crop_context.value, 1.8);
+assert.equal(widgets.custom_crop_context.value, 2.4);
+assert.equal(widgets.custom_strength.value, 0.48);
+assert.equal(widgets.custom_blend.value, 0.95);
 widgets.preset.value = "自动平衡";
 widgets.preset.callback();
-assert.equal(widgets.custom_crop_context.value, 2.2);
+assert.equal(widgets.custom_crop_context.value, 2.6);
+assert.equal(widgets.custom_strength.value, 0.30);
 assert.ok(node.widgets.some((item) => item.__star7FaceResolutionStatus));
 const resolutionIndex = node.widgets.findIndex((item) => item.__star7FaceResolutionStatus);
 const resetIndex = node.widgets.indexOf(node.__star7ResetButton);

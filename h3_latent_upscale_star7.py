@@ -1111,6 +1111,7 @@ class MiniMaxH3OneClickHDStar7:
         unique_id=None, prompt=None,
     ):
         started = time.perf_counter()
+        face_overlays = sampled_av_latent.get("star7_face_latent_overlays", ())
         if not bool(enable_hd):
             _send_sigma_status(unique_id, "off", 0, 0.0, None, "disabled")
             report = "Star7 H3 HD bypassed | HD second pass disabled | latent unchanged"
@@ -1338,6 +1339,19 @@ class MiniMaxH3OneClickHDStar7:
                 unique_id, sigma_summary, 0, 0.0, video_shift, profile_name
             )
 
+        forwarded_faces = 0
+        if face_overlays:
+            # Do not resize semantic latent channels as if they were RGB pixels. Keep
+            # the original 768px repair crops intact until final VAE decode, then let
+            # the chunked decoder perform the final RGB composite.
+            output = dict(output)
+            output["star7_face_latent_overlays"] = tuple(face_overlays)
+            forwarded_faces = len(face_overlays)
+            _LOG.info(
+                "Star7 H3 HD | forwarded %d face overlay(s) for final RGB stitch",
+                forwarded_faces,
+            )
+
         total = time.perf_counter() - started
         report = (
             f"Star7 H3 HD completed | preset={preset} | {source_w}x{source_h} -> "
@@ -1351,6 +1365,7 @@ class MiniMaxH3OneClickHDStar7:
             f"second-pass LoRA={lora_summary} | "
             f"second-pass attention={attention_summary} | "
             f"tiling={tiling_summary} | "
+            f"face overlays forwarded={forwarded_faces} | "
             f"upscale={upscale_seconds:.2f}s refine={refine_seconds:.2f}s total={total:.2f}s | "
             "audio preserved exactly"
         )

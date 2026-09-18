@@ -3,6 +3,8 @@ import torch
 import comfy.nested_tensor
 import comfy.utils
 
+from . import h3_latent_upscale_star7 as hd_module
+from .h3_face_refine_star7 import _compact_face_overlay
 from .h3_latent_upscale_star7 import (
     MiniMaxH3OneClickHDStar7,
     _H3Resizer3D,
@@ -127,6 +129,49 @@ def test_master_switch_bypasses_before_context_or_model_loading():
     )
     assert output is marker
     assert "disabled" in report
+
+
+def test_hd_forwards_deferred_face_overlay_after_upscale():
+    video = torch.zeros((1, 24, 5, 8, 8), dtype=torch.float32)
+    audio = torch.zeros((1, 8, 20, 4), dtype=torch.float32)
+    refined = torch.ones((1, 24, 5, 4, 4), dtype=torch.float32)
+    transform = {
+        "boxes": [(32.0, 32.0, 64.0, 64.0)] * 5,
+        "source": list(range(5)),
+        "face_rect": [(8.0, 8.0, 48.0, 48.0)] * 5,
+        "weights": [1.0] * 5,
+        "canvas": (64, 64),
+        "src_size": (128, 128),
+    }
+    overlay = _compact_face_overlay(refined, transform, feather=0, blend=1.0)
+    latent = {
+        "samples": comfy.nested_tensor.NestedTensor((video, audio)),
+        "star7_face_latent_overlays": (overlay,),
+    }
+    enlarged = torch.zeros((1, 24, 5, 16, 16), dtype=torch.float32)
+    original_upscale = hd_module._upscale_video
+    original_profile = hd_module._sampling_profile
+    original_status = hd_module._send_sigma_status
+    try:
+        hd_module._upscale_video = lambda *_args, **_kwargs: (
+            {**latent, "samples": comfy.nested_tensor.NestedTensor((enlarged, audio))},
+            enlarged, audio, 128, 128, 256, 256, True,
+        )
+        hd_module._sampling_profile = lambda *_args, **_kwargs: ("base", "base")
+        hd_module._send_sigma_status = lambda *_args, **_kwargs: None
+        output, report = MiniMaxH3OneClickHDStar7().upscale(
+            latent, {"model": object(), "positive": []}, preset="自定义",
+            target_megapixels=1.0, refine_steps=1, refine_strength=0.0,
+        )
+    finally:
+        hd_module._upscale_video = original_upscale
+        hd_module._sampling_profile = original_profile
+        hd_module._send_sigma_status = original_status
+    output_video, output_audio = output["samples"].unbind()
+    assert torch.equal(output_audio, audio)
+    assert torch.equal(output_video, enlarged)
+    assert output["star7_face_latent_overlays"] == (overlay,)
+    assert "face overlays forwarded=1" in report
 
 
 def test_spatial_tiles_are_even_aligned_and_weights_cover_the_canvas():

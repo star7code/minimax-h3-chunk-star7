@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.16.1 - 2026-09-18
+
+- Fix face-repair detail loss by decoding preserved repair crops and compositing them in RGB in Star7 Chunked Decode, without re-encoding the full video.
+- Restore established face-repair crop presets, including 2.4x context for distant faces, while retaining the independent decoder and legacy IMAGE-output node.
+- Apply the ~1 MP detail-preserving output floor before final face compositing; keep larger HD frames and original audio unchanged.
+- Preserve missing-face frames on the original timeline, reject mismatched repair frame counts, and report final RGB dimensions.
+- Use optional HD before Face Repair, then Star7 Chunked Decode. Ordinary latent decoders do not composite the attached repairs.
+
 ## 2.16.0 - 2026-09-18
 
 - Added the independent `MiniMax H3 Enhanced Loader - Star7` directly to this

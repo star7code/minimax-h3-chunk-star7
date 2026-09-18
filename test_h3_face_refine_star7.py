@@ -1,7 +1,12 @@
 import torch
+import cv2
+import numpy as np
+import pytest
+from types import SimpleNamespace
 
 import comfy.nested_tensor
 from comfy_api.latest._io import build_nested_inputs, get_finalized_class_inputs
+from .vendor.h3facerefine import core as face_core
 
 from .h3_face_refine_star7 import (
     H3FaceStitch,
@@ -13,7 +18,6 @@ from .h3_face_refine_star7 import (
     _collect_reference_images,
     _copy_conditioning_without_keyframes,
     _decode_video_frames,
-    _encode_repaired_av_latent,
     _execute_reference_to_video,
     _face_repair_output_size,
     _face_detector_choices,
@@ -24,6 +28,10 @@ from .h3_face_refine_star7 import (
     _scale_face_transform,
     _PRESETS,
     _TASK_IDS,
+)
+from .vendor.h3facerefine.core import (
+    H3FaceTrackCrop,
+    H3PerFrameDenoise,
 )
 
 
@@ -89,33 +97,6 @@ def test_latent_face_refine_bypass_is_an_exact_passthrough_without_vae_work():
     assert "latent unchanged" in report
 
 
-def test_repaired_video_is_repacked_without_changing_audio():
-    encoded = torch.full((1, 24, 2, 4, 6), 0.75, dtype=torch.float32)
-
-    class VAE:
-        def encode(self, images):
-            assert images.shape == (5, 64, 96, 3)
-            return encoded
-
-    original_video = torch.zeros((1, 24, 2, 2, 3), dtype=torch.float16)
-    original_audio = torch.randn((1, 32, 2, 8), dtype=torch.float16)
-    av = {
-        "samples": comfy.nested_tensor.NestedTensor((original_video, original_audio)),
-        "noise_mask": object(),
-        "keep": "metadata",
-    }
-    output = _encode_repaired_av_latent(
-        av, torch.zeros((5, 64, 96, 3)), VAE()
-    )
-    video, audio = output["samples"].unbind()
-    assert video.shape == encoded.shape
-    assert video.dtype == original_video.dtype
-    assert torch.all(video == torch.tensor(0.75, dtype=video.dtype))
-    assert torch.equal(audio, original_audio)
-    assert output["keep"] == "metadata"
-    assert "noise_mask" not in output
-
-
 def test_face_refine_flattens_real_h3_vae_batch_time_output():
     class VAE:
         def decode(self, latent):
@@ -162,6 +143,43 @@ def test_scaled_face_transform_stitches_into_enlarged_output(monkeypatch):
     assert output.shape == base.shape
     assert torch.isfinite(output).all()
     assert output.max() > 0
+
+
+def test_face_crop_expands_and_contracts_with_subject_distance(monkeypatch):
+    class Boxes:
+        def __init__(self, box):
+            self.xyxy = torch.tensor([box], dtype=torch.float32)
+            self.conf = torch.tensor([0.95], dtype=torch.float32)
+
+        def __len__(self):
+            return 1
+
+    class Detector:
+        def __init__(self, heights):
+            self.heights = iter(heights)
+
+        def predict(self, _image, **_kwargs):
+            height = float(next(self.heights))
+            width = height * 0.8
+            return [SimpleNamespace(boxes=Boxes((
+                256.0 - width / 2.0, 256.0 - height / 2.0,
+                256.0 + width / 2.0, 256.0 + height / 2.0,
+            )))]
+
+    def track(heights):
+        monkeypatch.setattr(face_core, "_load_detector", lambda _name: Detector(heights))
+        result = H3FaceTrackCrop().run(
+            torch.zeros((len(heights), 512, 512, 3)),
+            "fake.pt", 0.35, 3.0, 768, 768, "manual",
+            21, 21, "gaussian", "per_frame",
+            identity_track=False, cut_detection="none", verbose=False,
+        )
+        return [box[3] for box in result[1]["boxes"]]
+
+    approaching = track([32, 48, 72, 104, 144, 184, 224])
+    retreating = track([224, 184, 144, 104, 72, 48, 32])
+    assert approaching == sorted(approaching)
+    assert retreating == sorted(retreating, reverse=True)
 
 
 def test_reference_video_is_bounded_and_audio_is_cropped_without_mutating_input():
@@ -370,7 +388,7 @@ def test_public_node_contract_is_two_wire_face_refine():
     assert face["required"]["face_lora_strength"][1]["default"] == 1.0
     assert face["required"]["face_lora_strength"][1]["step"] == 0.01
     assert face["required"]["face_attention"][1]["default"] == "继承一采"
-    assert face["required"]["custom_crop_context"][1]["default"] == 2.2
+    assert face["required"]["custom_crop_context"][1]["default"] == 2.6
     assert face["required"]["custom_crop_context"][1]["min"] == 1.4
     assert face["required"]["face_count"][1]["default"] == 1
     assert face["required"]["face_count"][1]["max"] == 4
@@ -386,10 +404,119 @@ def test_public_node_contract_is_two_wire_face_refine():
     assert MiniMaxH3FaceRefineStar7.DEPRECATED is True
 
 
-def test_face_crop_presets_keep_the_face_larger_in_the_repair_canvas():
-    assert {name: values["crop"] for name, values in _PRESETS.items()} == {
-        "自动平衡": 2.2,
-        "真人保真": 2.3,
-        "远景小脸": 1.8,
-        "动漫角色": 2.1,
-    }
+def test_face_presets_restore_legacy_sampling_baseline():
+    assert _PRESETS["自动平衡"]["denoise"] == .30
+    assert _PRESETS["远景小脸"]["denoise"] == .48
+    assert _PRESETS["远景小脸"]["crop"] == 2.4
+
+
+def _draw_test_face():
+    image = np.full((128, 128, 3), .2, np.float32)
+    cv2.ellipse(image, (64, 64), (20, 28), 0, 0, 360, (.65, .5, .4), -1)
+    cv2.circle(image, (56, 58), 3, (.1, .1, .1), -1)
+    cv2.circle(image, (72, 58), 3, (.1, .1, .1), -1)
+    cv2.ellipse(image, (64, 75), (8, 3), 0, 0, 180, (.9, .15, .2), 2)
+    return image
+
+
+def test_absent_shots_keep_the_original_timeline_in_star7_repair():
+    cache = {"frames": 39, "src_size": (32, 32),
+             "boxes": [[[8, 8, 24, 24]]] * 5 + [[]] * 17 + [[[8, 8, 24, 24]]] * 17,
+             "confs": [[.95]] * 5 + [[]] * 17 + [[.95]] * 17,
+             "segments": [(0, 5), (5, 22), (22, 39)]}
+    pick = _build_multiface_picks(cache, 1)[0]
+    result = H3FaceTrackCrop().run(
+        torch.zeros(39, 32, 32, 3), "unused.pt", .35, 2.7, 32, 32, "manual", 9, 15,
+        "gaussian", "per_frame", identity_track=False, face_pick=pick,
+        keep_all_frames=True, verbose=False,
+    )
+    assert result[0].shape[0] == 39
+    assert result[1]["source"] == list(range(39))
+    assert all(result[1]["absent"][5:22])
+
+
+@pytest.mark.parametrize("scale", [1, 2])
+@pytest.mark.parametrize("preserve_detail", [False, True])
+def test_legacy_and_deferred_decode_match_pixels_without_full_frame_encode(monkeypatch, scale, preserve_detail):
+    from . import h3_face_refine_star7 as node_module
+    from .h3_stream_decode_star7 import _stitch_deferred_faces
+    from comfy_extras import nodes_custom_sampler as sampler_nodes
+    from comfy.model_sampling import ModelSamplingAV
+    import comfy.model_management as mm
+    monkeypatch.setattr(mm, "get_torch_device", lambda: torch.device("cpu"))
+    sampling = ModelSamplingAV()
+    sampling.set_parameters(shift=10, audio_shift=3)
+
+    class Model:
+        model = None
+        def clone(self):
+            return self
+        def get_model_object(self, _name):
+            return sampling
+
+    monkeypatch.setattr(node_module, "_FACE_REPAIR_OUTPUT_FLOOR_MP", 192 * 192 / (1024 * 1024))
+    encodes = []
+
+    class VAE:
+        def decode(self, latent):
+            face = torch.from_numpy(_draw_test_face())[None].movedim(-1, 1)
+            frames = torch.nn.functional.interpolate(face, size=(latent.shape[-2] * 16, latent.shape[-1] * 16),
+                                                     mode="bilinear", align_corners=False).movedim(1, -1).repeat(5, 1, 1, 1)
+            if bool(latent.any()):
+                frames[..., 0] = (frames[..., 0] + .12).clamp(0, 1)
+            return frames * torch.linspace(.8, 1., 5)[:, None, None, None]
+        def encode(self, images):
+            encodes.append(tuple(images.shape))
+            assert images.shape[1:3] == (64, 64), "Only face crops may be encoded"
+            return torch.zeros(1, 24, 2, images.shape[1] // 16, images.shape[2] // 16)
+
+    def track(_self, images, *args, **kwargs):
+        assert kwargs["keep_all_frames"] is True
+        width, height = images.shape[2], images.shape[1]
+        transform = {"boxes": [(width / 4, height / 4, width / 2, height / 2)] * 5, "canvas": (64, 64), "src_size": (width, height),
+                     "source": list(range(5)), "weights": [1.] * 5, "face_rect": [(21, 16, 22, 32)] * 5,
+                     "crop_factor": 2.7, "segments": [(0, 5)]}
+        centre = images[:, height // 4:height * 3 // 4, width // 4:width * 3 // 4]
+        crops = torch.nn.functional.interpolate(centre.movedim(-1, 1), size=(64, 64), mode="bilinear", align_corners=False).movedim(1, -1)
+        return crops, transform, None, "tracked", 64, 64, 5
+
+    monkeypatch.setattr(node_module, "_ensure_face_detector", lambda _name: "installed.pt")
+    monkeypatch.setattr(node_module.H3FaceTrackCrop, "run", track)
+    monkeypatch.setattr(sampler_nodes.BasicGuider, "execute", lambda *a: (object(),))
+    monkeypatch.setattr(sampler_nodes.KSamplerSelect, "execute", lambda *a: (object(),))
+    monkeypatch.setattr(sampler_nodes.RandomNoise, "execute", lambda *a: (object(),))
+
+    def sample(noise, guider, sampler, sigmas, latent):
+        assert len(sigmas) == 5
+        expected = node_module._unpack(sampler_nodes.BasicScheduler.execute(Model(), "simple", 4, .48))[0]
+        assert torch.equal(sigmas, expected)
+        assert torch.count_nonzero(list(latent["noise_mask"].unbind())[1]) == 0
+        result = dict(latent)
+        video, audio = latent["samples"].unbind()
+        result["samples"] = comfy.nested_tensor.NestedTensor((torch.ones_like(video), audio))
+        return (result,)
+
+    monkeypatch.setattr(sampler_nodes.SamplerCustomAdvanced, "execute", sample)
+    audio = torch.rand(1, 32, 2, 8)
+    av = {"samples": comfy.nested_tensor.NestedTensor((torch.zeros(1, 24, 2, 8 * scale, 8 * scale), audio))}
+    vae = VAE()
+    context = {"model": Model(), "video_vae": vae, "positive": [[torch.zeros(1), {}]]}
+    result, report = MiniMaxH3FaceRefineLatentStar7().refine(
+        av, context, preset="远景小脸", preserve_repair_detail=preserve_detail,
+    )
+    legacy = MiniMaxH3FaceRefineStar7().refine(
+        av, context, preset="远景小脸", preserve_repair_detail=preserve_detail,
+    )[0]
+    assert result["samples"] is av["samples"]
+    assert list(result["samples"].unbind())[1] is audio
+    assert "no full-frame re-encode" in report
+    frames = vae.decode(list(av["samples"].unbind())[0])
+    output, count = _stitch_deferred_faces(frames, result, vae)
+    size = max(128 * scale, 192) if preserve_detail else 128 * scale
+    assert count == 1 and output.shape == (5, size, size, 3)
+    assert torch.isfinite(output).all()
+    assert torch.equal(output, legacy)
+    assert len(encodes) == 2
+    base = node_module._resize_image_batch(frames, size, size)
+    assert torch.equal(output[:, 0, 0], base[:, 0, 0])
+    assert not torch.equal(output[:, size // 2, size // 2], base[:, size // 2, size // 2])

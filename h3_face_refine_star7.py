@@ -49,6 +49,7 @@ _MAX_REFERENCE_VIDEO_FRAMES = 15 * _FPS
 _MIN_RECOMMENDED_REFERENCE_VIDEO_FRAMES = 2 * _FPS
 _MEGAPIXEL = 1024 * 1024
 _FACE_REPAIR_OUTPUT_FLOOR_MP = 0.98
+_FACE_LATENT_OVERLAYS_KEY = "star7_face_latent_overlays"
 _MEDIA_TAG_RE = re.compile(
     r"<\s*(Image|Picture|Video|Audio)\s*(\d+)\s*>|"
     r"(?<![\w<])(Image|Picture|Video|Audio)\s*#?\s*(\d+)\b(?!\s*>)",
@@ -309,45 +310,39 @@ def _decode_video_frames(vae, latent: torch.Tensor) -> torch.Tensor:
     return images[..., :3]
 
 
-def _encode_repaired_av_latent(
-    sampled_av_latent: dict, images: torch.Tensor, vae
-) -> dict:
-    """Encode the stitched video while preserving the original H3 audio member."""
-    samples = sampled_av_latent.get("samples")
-    if samples is None or not getattr(samples, "is_nested", False):
-        raise ValueError("Star7 H3 Face Repair requires a packed audio-video LATENT.")
-    members = list(samples.unbind())
-    if len(members) < 2:
-        raise ValueError("Invalid H3 latent: expected video and audio members.")
-
-    source_video = members[0]
-    encoded = vae.encode(images[..., :3])
-    if encoded.ndim == 4:  # [frames,C,H,W] -> [1,C,T,H,W]
-        encoded = encoded.unsqueeze(0).movedim(1, 2)
-    if encoded.ndim != 5 or int(encoded.shape[1]) != 24:
-        raise ValueError(
-            "Unexpected MiniMax H3 Video VAE encode shape: "
-            f"{tuple(encoded.shape)}"
-        )
-
-    target_t = int(source_video.shape[-3])
-    encoded_t = int(encoded.shape[-3])
-    if encoded_t > target_t:
-        encoded = encoded[..., :target_t, :, :]
-    elif encoded_t < target_t:
-        if encoded_t <= 0:
-            raise ValueError("MiniMax H3 Video VAE encoded an empty temporal latent.")
-        pad = encoded[..., -1:, :, :].expand(
-            *encoded.shape[:-3], target_t - encoded_t,
-            encoded.shape[-2], encoded.shape[-1],
-        )
-        encoded = torch.cat((encoded, pad), dim=-3)
-
-    members[0] = encoded.to(device=source_video.device, dtype=source_video.dtype)
-    output = dict(sampled_av_latent)
-    output.pop("noise_mask", None)
-    output["samples"] = comfy.nested_tensor.NestedTensor(tuple(members))
-    return output
+def _compact_face_overlay(refined_video: torch.Tensor, transform: dict,
+                          feather: int, blend: float, preserve_detail: bool = True) -> dict | None:
+    """Keep only the tracking data required for final decoded-RGB compositing."""
+    boxes = list(transform.get("boxes") or [])
+    source = list(transform.get("source") or range(len(boxes)))
+    # Dropped/non-contiguous pixel frames do not have a one-to-one latent timeline.
+    # The normal one-click path keeps every frame, including detector gaps.
+    if not boxes or source != list(range(len(boxes))):
+        return None
+    face_rects = list(transform.get("face_rect") or [])
+    if len(face_rects) != len(boxes):
+        face_rects = [
+            (transform["canvas"][0] * 0.25, transform["canvas"][1] * 0.25,
+             transform["canvas"][0] * 0.5, transform["canvas"][1] * 0.5)
+            for _ in boxes
+        ]
+    weights = list(transform.get("weights") or [1.0] * len(boxes))
+    if len(weights) != len(boxes):
+        weights = [1.0] * len(boxes)
+    return {
+        "latent": refined_video.detach(),
+        "boxes": boxes,
+        "face_rects": face_rects,
+        "weights": weights,
+        "segments": list(transform.get("segments") or [(0, len(boxes))]),
+        "canvas": tuple(transform["canvas"]),
+        "src_size": tuple(transform["src_size"]),
+        "feather": int(feather),
+        "blend": float(blend),
+        "mask_dilation": 16,
+        "preserve_repair_detail": bool(preserve_detail),
+        "colour_match": 1.0,
+    }
 
 
 def _face_repair_output_size(
@@ -420,6 +415,36 @@ def _scale_face_transform(transform: dict, width: int, height: int) -> dict:
         for x, y, box_width, box_height in transform["boxes"]
     ]
     return scaled
+
+
+def _stitch_face_overlay(frames: torch.Tensor, repaired: torch.Tensor, overlay: dict) -> torch.Tensor:
+    """Shared RGB output path for the legacy node and deferred Star7 decoder."""
+    boxes = overlay["boxes"]
+    if int(frames.shape[0]) != len(boxes) or int(repaired.shape[0]) != len(boxes):
+        raise ValueError(
+            "Face repair timeline mismatch: "
+            f"video={frames.shape[0]}, repaired={repaired.shape[0]}, tracking={len(boxes)}. "
+            "Connect Face Repair directly to Star7 Chunked Decode; run HD before repair."
+        )
+    width, height = _face_repair_output_size(
+        int(frames.shape[2]), int(frames.shape[1]),
+        bool(overlay.get("preserve_repair_detail", True)),
+    )
+    frames = _resize_image_batch(frames, width, height)
+    transform = {
+        "boxes": boxes, "source": list(range(len(boxes))),
+        "weights": overlay["weights"], "face_rect": overlay["face_rects"],
+        "canvas": overlay["canvas"], "src_size": overlay["src_size"],
+        "segments": overlay.get("segments") or [(0, len(boxes))],
+    }
+    source_width, source_height = transform["src_size"]
+    scale = (width / source_width + height / source_height) * 0.5
+    return H3FaceStitch().run(
+        frames, repaired, _scale_face_transform(transform, width, height),
+        "face_only", int(overlay.get("mask_dilation", 16)),
+        max(1, int(round(float(overlay["feather"]) * scale))),
+        float(overlay.get("colour_match", 1.0)), float(overlay["blend"]), "fade_out",
+    )[0]
 
 
 def _send_face_repair_resolution(node_id, width: int, height: int) -> None:
@@ -851,10 +876,10 @@ class MiniMaxH3MaterialPromptStar7(io.ComfyNode):
 
 
 _PRESETS = {
-    "自动平衡": dict(denoise=0.30, small=1.0, large=0.30, crop=2.2, canvas="auto", blend=0.90, feather=20),
-    "真人保真": dict(denoise=0.25, small=0.85, large=0.20, crop=2.3, canvas=512, blend=0.82, feather=24),
-    "远景小脸": dict(denoise=0.48, small=1.0, large=0.35, crop=1.8, canvas=768, blend=0.95, feather=18),
-    "动漫角色": dict(denoise=0.32, small=0.95, large=0.25, crop=2.1, canvas=512, blend=0.88, feather=20),
+    "自动平衡": dict(denoise=0.30, small=1.0, large=0.30, crop=2.6, canvas="auto", blend=0.90, feather=20),
+    "真人保真": dict(denoise=0.25, small=0.85, large=0.20, crop=2.8, canvas=512, blend=0.82, feather=24),
+    "远景小脸": dict(denoise=0.48, small=1.0, large=0.35, crop=2.4, canvas=768, blend=0.95, feather=18),
+    "动漫角色": dict(denoise=0.32, small=0.95, large=0.25, crop=2.7, canvas=512, blend=0.88, feather=20),
 }
 
 
@@ -903,13 +928,14 @@ class MiniMaxH3FaceRefineStar7:
                 "preset": (["自动平衡", "真人保真", "远景小脸", "动漫角色", "自定义"], {"default": "自动平衡"}),
                 "target_face": (["主人物", "画面中央", "参考图匹配"], {"default": "主人物"}),
                 "refine_steps": ("INT", {"default": 4, "min": 1, "max": 12, "step": 1}),
-                "custom_strength": ("FLOAT", {"default": 0.30, "min": 0.05, "max": 0.80, "step": 0.01}),
+                "custom_strength": ("FLOAT", {"default": 0.30, "min": 0.01, "max": 0.80, "step": 0.01,
+                    "tooltip": "Legacy H3 simple-scheduler denoise strength. Higher values can change identity and motion. Actual Sigma is shown in the report."}),
                 "custom_canvas": (["自动", "512", "768"], {"default": "自动"}),
-                "custom_crop_context": ("FLOAT", {"default": 2.2, "min": 1.4, "max": 4.0, "step": 0.1}),
+                "custom_crop_context": ("FLOAT", {"default": 2.6, "min": 1.4, "max": 4.0, "step": 0.1}),
                 "custom_blend": ("FLOAT", {"default": 0.90, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "custom_feather": ("INT", {"default": 20, "min": 0, "max": 64, "step": 2}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                "preserve_repair_detail": ("BOOLEAN", {"default": True}),
+                "preserve_repair_detail": ("BOOLEAN", {"default": True, "tooltip": "Composite in RGB after Star7 decode. When enabled, enlarge outputs below about 1 MP before pasting faces; when disabled, keep source resolution. Neither mode re-encodes the full video."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -932,7 +958,7 @@ class MiniMaxH3FaceRefineStar7:
         face_lora_strength=1.0,
         face_attention=INHERIT_FIRST_PASS,
         preset="自动平衡", target_face="主人物", refine_steps=4, custom_strength=0.30, custom_canvas="自动",
-        custom_crop_context=2.2, custom_blend=0.90, custom_feather=20, seed=0,
+        custom_crop_context=2.6, custom_blend=0.90, custom_feather=20, seed=0,
         preserve_repair_detail=True, unique_id=None,
         **legacy_options,
     ):
@@ -1024,7 +1050,7 @@ class MiniMaxH3FaceRefineStar7:
                 identity_reference=identity_reference, identity_track=identity_track,
                 cut_detection="auto (pyscenedetect)", cut_threshold=3.0,
                 absent_shots="by_identity" if identity_track else "off",
-                verbose=False,
+                verbose=False, keep_all_frames=True,
             )
         except ValueError as exc:
             if "no face detected" not in str(exc).lower():
@@ -1045,7 +1071,9 @@ class MiniMaxH3FaceRefineStar7:
         output_width, output_height = _face_repair_output_size(
             source_width, source_height, bool(preserve_repair_detail)
         )
-        images = _resize_image_batch(base_images, output_width, output_height)
+        # Both node variants paste the same decoded crops onto the same RGB canvas.
+        # The latent-output variant allocates the larger canvas only in the decoder.
+        images = base_images
         output_scale = ((output_width / source_width) + (output_height / source_height)) * 0.5
         if (output_width, output_height) != (source_width, source_height):
             _LOG.debug(
@@ -1098,9 +1126,10 @@ class MiniMaxH3FaceRefineStar7:
                 attention_summary,
             )
 
+        sigma_starts = []
+
         def sample_track(track_result, composite_images, pass_index):
             track_crops, track_transform, _track_preview, track_report, track_w, track_h, _ = track_result
-            stitch_transform = _scale_face_transform(track_transform, output_width, output_height)
             target_video = torch.zeros(
                 (members[0].shape[0], 24, members[0].shape[2], int(track_h) // 16, int(track_w) // 16),
                 device=members[0].device, dtype=members[0].dtype,
@@ -1124,13 +1153,15 @@ class MiniMaxH3FaceRefineStar7:
             sigmas = _unpack(BasicScheduler.execute(
                 refine_model, "simple", int(refine_steps), float(cfg["denoise"])
             ))[0]
+            sigma_starts.append(float(sigmas[0]))
             guider = _unpack(BasicGuider.execute(refine_model, positive))[0]
             sampler = _unpack(KSamplerSelect.execute("res_multistep"))[0]
             pass_seed = (int(seed) + int(pass_index)) & 0xffffffffffffffff
             noise = _unpack(RandomNoise.execute(pass_seed))[0]
-            _LOG.debug(
-                "Star7 H3 face repair | phase=sample | face=%d | canvas=%sx%s denoise=%.2f steps=%d feather=%dpx",
-                int(pass_index) + 1, track_w, track_h, cfg["denoise"], int(refine_steps), int(cfg["feather"]),
+            _LOG.info(
+                "Star7 H3 face repair | face=%d | canvas=%sx%s strength=%.2f steps=%d sigmas=%s",
+                int(pass_index) + 1, track_w, track_h, cfg["denoise"], int(refine_steps),
+                ",".join(f"{float(s):.4f}" for s in sigmas),
             )
             sample_started = time.perf_counter()
             if attention_runtime_config is not None:
@@ -1151,19 +1182,28 @@ class MiniMaxH3FaceRefineStar7:
             _LOG.debug("Star7 H3 face repair | phase=decode/stitch | face=%d", int(pass_index) + 1)
             composite_started = time.perf_counter()
             refined_video = list(sampled["samples"].unbind())[0]
+            overlay = _compact_face_overlay(
+                refined_video, track_transform,
+                int(cfg["feather"]), float(cfg["blend"]), bool(preserve_repair_detail),
+            )
+            if overlay is None:
+                raise ValueError("Face repair requires a complete tracking timeline for RGB compositing")
+            if output_latent:
+                _LOG.debug(
+                    "Star7 H3 face repair | final RGB stitch prepared | face=%d",
+                    int(pass_index) + 1,
+                )
+                return composite_images, track_report, overlay
             refined_crops = _decode_video_frames(vae, refined_video)
-            stitched = H3FaceStitch().run(
-                composite_images, refined_crops, stitch_transform, "face_only", 16,
-                max(1, int(round(float(cfg["feather"]) * output_scale))),
-                1.0, float(cfg["blend"]), "fade_out",
-            )[0]
+            stitched = _stitch_face_overlay(composite_images, refined_crops, overlay)
             _LOG.debug(
                 "Star7 H3 face repair | phase=decode/stitch completed | face=%d | %.2fs",
                 int(pass_index) + 1, time.perf_counter() - composite_started,
             )
-            return stitched, track_report
+            return stitched, track_report, overlay
 
         completed_faces = 0
+        latent_overlays = []
         if multi_face:
             tracking_cache = transform.get("tracking_cache") or {}
             face_picks = _build_multiface_picks(
@@ -1192,11 +1232,13 @@ class MiniMaxH3FaceRefineStar7:
                     canvas_mode, 21, 51, "gaussian", "per_frame", select="largest_face",
                     identity_reference=None, identity_track=False,
                     cut_detection="auto (pyscenedetect)", cut_threshold=3.0,
-                    absent_shots="off", face_pick=face_pick, verbose=False,
+                    absent_shots="off", face_pick=face_pick, verbose=False, keep_all_frames=True,
                 )
                 if not lane_tracked[1].get("boxes"):
                     continue
-                images, _lane_report = sample_track(lane_tracked, images, lane)
+                images, _lane_report, lane_overlay = sample_track(lane_tracked, images, lane)
+                if lane_overlay is not None:
+                    latent_overlays.append(lane_overlay)
                 completed_faces += 1
             if not completed_faces:
                 _LOG.warning("Star7 H3 multi-face repair found no stable 5-frame face track; returning original frames")
@@ -1207,7 +1249,9 @@ class MiniMaxH3FaceRefineStar7:
                 completed_faces, requested_faces,
             )
         else:
-            images, report = sample_track(tracked, images, 0)
+            images, report, overlay = sample_track(tracked, images, 0)
+            if overlay is not None:
+                latent_overlays.append(overlay)
             completed_faces = 1
         _LOG.info(
             "Star7 H3 face repair completed | %.1fs | faces=%d | output=%dx%d",
@@ -1215,15 +1259,20 @@ class MiniMaxH3FaceRefineStar7:
         )
         _send_face_repair_resolution(unique_id, output_width, output_height)
         if output_latent:
-            encode_started = time.perf_counter()
-            output = _encode_repaired_av_latent(sampled_av_latent, images, vae)
-            encode_seconds = time.perf_counter() - encode_started
+            output = dict(sampled_av_latent)
+            output.pop("noise_mask", None)
+            output[_FACE_LATENT_OVERLAYS_KEY] = tuple(latent_overlays)
+            encode_summary = (
+                f"deferred RGB face stitch={len(latent_overlays)}; "
+                "base video latent preserved exactly; no full-frame re-encode"
+            )
             result_report = (
                 f"Star7 H3 Face Repair completed | faces={completed_faces} | "
                 f"detector={detector} | LoRA={lora_summary} | "
                 f"attention={attention_summary} | "
+                f"algorithm=0910 baseline | strength={float(cfg['denoise']):.2f} sigma_start={sigma_starts[0]:.4f} | "
                 f"output={output_width}x{output_height} | "
-                f"latent encode={encode_seconds:.2f}s | audio preserved exactly"
+                f"{encode_summary} | audio preserved exactly"
             )
             _LOG.info(result_report)
             return output, result_report
@@ -1243,8 +1292,10 @@ class MiniMaxH3FaceRefineLatentStar7(MiniMaxH3FaceRefineStar7):
     ]
     DESCRIPTION = (
         "Track, crop, H3-refine and stitch up to four stable face tracks, then "
-        "return a packed H3 audio-video latent for downstream enhancement and "
-        "one final external VAE decode. The original audio latent is preserved."
+        "return a packed H3 audio-video latent with separate repair crops. Connect "
+        "directly to Star7 Chunked Decode for final RGB compositing. "
+        "Run optional HD before this node. Detail preservation restores the legacy "
+        "~1 MP output floor without re-encoding the video. Audio is preserved."
     )
 
     def refine(self, *args, **kwargs):

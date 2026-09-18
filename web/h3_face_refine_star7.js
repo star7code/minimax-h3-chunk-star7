@@ -6,10 +6,10 @@ const LEGACY_FACE_NODE = "MiniMaxH3FaceRefineStar7";
 const MATERIAL_NODE = "MiniMaxH3MaterialPromptStar7";
 const MAX_REFERENCE_IMAGES = 9;
 const PRESETS = {
-    "自动平衡": { refine_steps: 4, custom_strength: 0.30, custom_canvas: "自动", custom_crop_context: 2.2, custom_blend: 0.90, custom_feather: 20 },
-    "真人保真": { refine_steps: 4, custom_strength: 0.25, custom_canvas: "512", custom_crop_context: 2.3, custom_blend: 0.82, custom_feather: 24 },
-    "远景小脸": { refine_steps: 4, custom_strength: 0.48, custom_canvas: "768", custom_crop_context: 1.8, custom_blend: 0.95, custom_feather: 18 },
-    "动漫角色": { refine_steps: 4, custom_strength: 0.32, custom_canvas: "512", custom_crop_context: 2.1, custom_blend: 0.88, custom_feather: 20 },
+    "自动平衡": { refine_steps: 4, custom_strength: 0.30, custom_canvas: "自动", custom_crop_context: 2.6, custom_blend: 0.90, custom_feather: 20 },
+    "真人保真": { refine_steps: 4, custom_strength: 0.25, custom_canvas: "512", custom_crop_context: 2.8, custom_blend: 0.82, custom_feather: 24 },
+    "远景小脸": { refine_steps: 4, custom_strength: 0.48, custom_canvas: "768", custom_crop_context: 2.4, custom_blend: 0.95, custom_feather: 18 },
+    "动漫角色": { refine_steps: 4, custom_strength: 0.32, custom_canvas: "512", custom_crop_context: 2.7, custom_blend: 0.88, custom_feather: 20 },
 };
 const BALANCED = { ...PRESETS["自动平衡"] };
 const PARAM_NAMES = Object.keys(BALANCED);

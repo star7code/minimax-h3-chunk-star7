@@ -35,6 +35,36 @@ def _frames_are_finite(frames, chunk_size: int = 8):
     return True
 
 
+def _decode_video_frames(video_vae, latent: torch.Tensor) -> torch.Tensor:
+    frames = video_vae.decode(latent)
+    if frames.ndim == 5:
+        frames = frames.reshape(-1, *frames.shape[-3:])
+    return frames
+
+
+def _stitch_deferred_faces(frames: torch.Tensor, av_latent: dict,
+                           video_vae) -> tuple[torch.Tensor, int]:
+    """Decode preserved repair crops and composite them once, in final RGB space."""
+    overlays = list(av_latent.get("star7_face_latent_overlays", ()))
+    if not overlays:
+        return frames, 0
+
+    from .h3_face_refine_star7 import _stitch_face_overlay
+
+    output = frames
+    applied = 0
+    for overlay in overlays:
+        latent = overlay.get("latent")
+        if not isinstance(latent, torch.Tensor) or not overlay.get("boxes"):
+            raise ValueError("Invalid deferred face repair data; rerun the face repair node")
+        repaired = _decode_video_frames(video_vae, latent)
+        if repaired.ndim != 4 or not _frames_are_finite(repaired):
+            raise RuntimeError("Face VAE decode returned invalid repair crops")
+        output = _stitch_face_overlay(output, repaired, overlay)
+        applied += 1
+    return output, applied
+
+
 class MiniMaxH3ChunkedDecodeStar7:
     @classmethod
     def INPUT_TYPES(cls):
@@ -52,7 +82,8 @@ class MiniMaxH3ChunkedDecodeStar7:
     CATEGORY = "Star7/MiniMax H3"
     DESCRIPTION = (
         "Decodes a complete MiniMax H3 audio-video latent with the current H3 VAE's native "
-        "temporal streaming and spatial tiling. This is independent from HD sampling tiles."
+        "temporal streaming and spatial tiling, then composites any preserved Star7 face "
+        "repairs once in final RGB space. This is independent from HD sampling tiles."
     )
 
     def decode(self, av_latent, video_vae, audio_vae):
@@ -82,18 +113,24 @@ class MiniMaxH3ChunkedDecodeStar7:
             width, height, route,
             "" if estimated_mib is None else f" | final frames≈{estimated_mib:.0f} MiB RAM",
         )
-        frames = video_vae.decode(video)
-        if frames.ndim == 5:
-            frames = frames.reshape(-1, *frames.shape[-3:])
+        frames = _decode_video_frames(video_vae, video)
         if frames.ndim != 4 or not _frames_are_finite(frames):
             raise RuntimeError(
                 f"Star7 H3 video VAE returned invalid frames with shape {tuple(frames.shape)}"
             )
+        frames, face_stitches = _stitch_deferred_faces(frames, av_latent, video_vae)
+        if face_stitches:
+            _LOG.info(
+                "Star7 H3 decode | final RGB face stitch completed | faces=%d",
+                face_stitches,
+            )
+        height, width = int(frames.shape[1]), int(frames.shape[2])
+        estimated_mib = frames.numel() * frames.element_size() / (1024 ** 2)
         decoded_audio = vae_decode_audio(audio_vae, {"samples": audio})
         elapsed = time.perf_counter() - started
         report = (
             f"Star7 H3 decode completed | {width}x{height} frames={int(frames.shape[0])} | "
-            f"{route} | {elapsed:.2f}s"
+            f"{route} | face stitches={face_stitches} | {elapsed:.2f}s"
         )
         if estimated_mib is not None:
             report += f" | final IMAGE tensor≈{estimated_mib:.0f} MiB RAM"

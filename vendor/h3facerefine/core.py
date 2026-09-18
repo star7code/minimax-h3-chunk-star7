@@ -1218,7 +1218,8 @@ class H3FaceTrackCrop:
             identity_reference=None, identity_threshold=0.28, identity_track=True,
             select_index=0, identity_model="insightface",
             identity_clip_vision=None, cut_detection="none", cut_threshold=3.0,
-            absent_shots="off", X=0, Y=0, frame_index=0, face_pick=None, verbose=True):
+            absent_shots="off", X=0, Y=0, frame_index=0, face_pick=None, verbose=True,
+            keep_all_frames=False):
         # Loaded on demand: with a face_pick the clip is never detected here, and the
         # insightface backend brings its own, so a run can finish without this file.
         _model_box = []
@@ -1723,7 +1724,7 @@ class H3FaceTrackCrop:
         # better padding than the reference content H3InjectVideoLatent would use.
         keep = np.arange(B)
         drop_note = ""
-        if absent.any():
+        if absent.any() and not keep_all_frames:
             present = np.nonzero(~absent)[0]
             spare = np.nonzero(absent)[0]
             need = len(present)
