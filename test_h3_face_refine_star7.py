@@ -35,6 +35,45 @@ from .vendor.h3facerefine.core import (
 )
 
 
+def test_face_mask_without_crop_edge_contact_is_pixel_identical():
+    original = torch.zeros(1, 1, 128, 128)
+    original[..., 40:88, 40:88] = 1
+    expected = face_core._gaussian_blur_mask(original, 12).clamp(0, 1)
+    actual = face_core._face_region_mask(
+        128, 128, (44, 44, 40, 40), 4, 12, "rect", "cpu", torch.float32,
+    )
+    assert torch.equal(actual, expected)
+
+
+def test_clipped_face_mask_fades_at_all_crop_edges_and_keeps_core():
+    mask = face_core._face_region_mask(
+        128, 128, (-20, -20, 168, 168), 16, 12, "rect", "cpu", torch.float32,
+    )[0, 0]
+    assert torch.count_nonzero(mask[0]) == 0
+    assert torch.count_nonzero(mask[-1]) == 0
+    assert torch.count_nonzero(mask[:, 0]) == 0
+    assert torch.count_nonzero(mask[:, -1]) == 0
+    assert torch.all(mask[12:-12, 12:-12] == 1)
+    assert torch.all(torch.diff(mask[:13, 64]) >= 0)
+    assert torch.diff(mask[:13, 64]).max() < 0.14
+
+
+def test_closeup_stitch_has_no_hard_crop_seam(monkeypatch):
+    monkeypatch.setattr(face_core.comfy.model_management, "get_torch_device", lambda: torch.device("cpu"))
+    base = torch.full((1, 128, 128, 3), 0.25)
+    refined = torch.full((1, 64, 64, 3), 0.75)
+    transform = {
+        "boxes": [(32, 32, 64, 64)], "canvas": (64, 64),
+        "src_size": (128, 128), "face_rect": [(-10, -10, 84, 84)],
+    }
+    result = H3FaceStitch().run(base, refined, transform, "face_only", 16, 12, 0.0, 1.0)[0]
+    assert torch.equal(result[:, :32], base[:, :32])
+    assert torch.equal(result[:, 96:], base[:, 96:])
+    assert torch.equal(result[:, 32, 64], base[:, 32, 64])
+    assert torch.all(result[:, 64, 64] == 0.75)
+    assert torch.diff(result[0, :, 64, 0]).abs().max() < 0.07
+
+
 def test_conditioning_copy_keeps_refs_and_removes_full_frame_keyframes():
     tensor = torch.zeros(1)
     source = [[tensor, {"minimax_refs": ["identity"], "minimax_keyframes": ["full-frame"]}]]

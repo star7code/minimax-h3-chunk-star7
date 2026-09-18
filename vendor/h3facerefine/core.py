@@ -716,7 +716,20 @@ def _face_region_mask(ch: int, cw: int, face_rect, dilation: int, feather: int,
         if x1 > x0 and y1 > y0:
             m[0, 0, y0:y1, x0:x1] = 1.0
 
-    return _gaussian_blur_mask(m, feather).clamp(0, 1).to(dtype)
+    m = _gaussian_blur_mask(m, feather).clamp(0, 1)
+    # A face mask can reach the crop boundary when a close-up exhausts the
+    # available context. Replicate-padding the blur leaves that boundary opaque,
+    # but the paste warp is zero outside it. Fade inside the crop to avoid a seam.
+    f = min(int(feather), (min(ch, cw) - 1) // 2)
+    if f > 0:
+        ramp = 0.5 - 0.5 * torch.cos(
+            torch.linspace(0, np.pi, f + 1, device=device, dtype=m.dtype)
+        )
+        m[..., :f + 1, :] *= ramp.view(-1, 1)
+        m[..., -f - 1:, :] *= ramp.flip(0).view(-1, 1)
+        m[..., :, :f + 1] *= ramp
+        m[..., :, -f - 1:] *= ramp.flip(0)
+    return m.to(dtype)
 
 
 def _feather_mask(h: int, w: int, feather: int, device, dtype) -> torch.Tensor:

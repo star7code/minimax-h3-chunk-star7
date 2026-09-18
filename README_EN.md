@@ -2,6 +2,8 @@
 
 [中文](README.md) · [Benchmarks](BENCHMARKS.md) · [Example workflows](examples/workflows)
 
+The refreshed 0919 examples use first pass → optional HD → optional Face Repair → Star7 Chunked Decode. HD and Face Repair are disabled by default. Select installed model files; load your own reference media and unbypass those nodes if needed. Face repair requires chunk project 2.16.2 or newer.
+
 Run high-quality, long-duration MiniMax H3 video generation on GPUs with limited VRAM. The core node combines independent QKV, RoPE, and MLP activation chunking with a selectable attention backend. It does not alter the sampler, sigma schedule, latent layout, VAE, duration, frame count, or output resolution.
 
 ## Main features
@@ -77,7 +79,7 @@ Sparse attention is not guaranteed to outperform CK at every resolution, duratio
 | `MiniMax H3 All-in-one Conditioning - Star7` | Builds text, keyframe, reference image/video, and audio conditioning in one node and emits reusable sampling context |
 | `MiniMax H3 One-click HD Upscale - Star7` | Upscales the sampled H3 latent to a target megapixel count with optional short refinement; VAE decoding remains external |
 | `MiniMax H3 Chunked Decode - Star7` | Independently decodes a complete H3 audio-video latent using the current H3 VAE's native temporal streaming and spatial tiling |
-| `MiniMax H3 One-click Face Repair - Star7` | Performs face detection, tracking, local second-pass sampling, and compositing, then returns a standard packed H3 latent for chaining with HD upscale and one final external decode |
+| `MiniMax H3 One-click Face Repair - Star7` | Detects and tracks faces, samples repair crops, and attaches them to the original H3 latent for final RGB compositing in Star7 Chunked Decode |
 
 Chinese ComfyUI environments display Chinese node and control labels; other locales display English. Attention backend IDs remain unchanged.
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.16.2 - 2026-09-18
+
+- Fade face masks at crop boundaries to prevent hard seams on extreme close-ups; preserve masks whose feathered support stays clear of those edges.
+- Replace Chinese and English examples with the 0919 workflow: optional HD, optional Face Repair, then independent chunked RGB decoding.
+
 ## 2.16.1 - 2026-09-18
 
 - Fix face-repair detail loss by decoding preserved repair crops and compositing them in RGB in Star7 Chunked Decode, without re-encoding the full video.

@@ -10,6 +10,7 @@ for (const name of [
     const links = new Map(workflow.links.map((link) => [link[0], link]));
     const hd = nodes.get(376);
     const decode = nodes.get(377);
+    const face = nodes.get(395);
     const videoCombine = nodes.get(150);
 
     assert.equal(hd.type, "MiniMaxH3OneClickHDStar7");
@@ -22,9 +23,19 @@ for (const name of [
     assert.equal(hd.inputs.at(-3).name, "enable_tiling");
     assert.equal(hd.widgets_values[0], false, "Second-pass refinement must be off by default");
     assert.equal(hd.widgets_values.at(-3), true);
-    assert.deepEqual(links.get(256).slice(1, 5), [127, 0, 376, 0]);
+    assert.equal(face.type, "MiniMaxH3FaceRefineLatentStar7");
+    assert.equal(face.widgets_values[0], false, "Face repair must be optional by default");
+    assert.equal(nodes.get(391).type, "MiniMaxH3ChunkEnhancedLoaderStar7");
+    assert.deepEqual(links.get(522).slice(1, 5), [127, 0, 376, 0]);
     assert.deepEqual(links.get(482).slice(1, 5), [275, 4, 376, 1]);
-    assert.deepEqual(links.get(488).slice(1, 5), [376, 0, 377, 0]);
+    assert.deepEqual(links.get(521).slice(1, 5), [376, 0, 395, 0]);
+    assert.deepEqual(links.get(520).slice(1, 5), [395, 0, 377, 0]);
+    assert.deepEqual(links.get(512).slice(1, 5), [275, 4, 395, 1]);
+    for (const [id, from, output, to, input, type] of workflow.links) {
+        assert.ok(nodes.get(from).outputs[output].links.includes(id));
+        assert.equal(nodes.get(to).inputs[input].link, id);
+        assert.equal(nodes.get(from).outputs[output].type, type);
+    }
     assert.deepEqual(links.get(489).slice(1, 5), [121, 0, 377, 1]);
     assert.deepEqual(links.get(490).slice(1, 5), [122, 0, 377, 2]);
     assert.deepEqual(links.get(487).slice(1, 5), [377, 0, 150, 0]);

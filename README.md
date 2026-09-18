@@ -2,6 +2,8 @@
 
 [中文说明](#中文说明) · [English](README_EN.md) · [实测记录](BENCHMARKS.md) · [示例工作流](examples/workflows)
 
+新版示例基于 0919 工作流，顺序为一采 → 可选二采 → 可选人脸修复 → Star7 分块解码；二采与修脸默认关闭。请先选择本机模型文件，需要参考素材时载入自己的图片或视频并取消绕过。修脸需分块项目 2.16.2 或更新版本。
+
 This ComfyUI project helps MiniMax H3 run high-quality, long-duration video generation on GPUs with limited VRAM. Its core node provides independent QKV, RoPE, and MLP activation chunking together with a selectable attention backend. It does not change the sampler, sigma schedule, latent layout, VAE, duration, frame count, or output resolution.
 
 Attention choices include preserving an upstream backend, Comfy Kitchen INT8, architecture-specific SLA/Sol sparse attention, and step-level CK/Sparse/CK Hybrid modes. The package also includes compact reference-image, reference-video, and prompt-loading helpers.
